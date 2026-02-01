@@ -627,7 +627,7 @@ Second content"
     mod search_headings {
         use super::*;
         use std::io::Write;
-        use std::sync::Arc;
+
         use tempfile::TempDir;
 
         #[test]
