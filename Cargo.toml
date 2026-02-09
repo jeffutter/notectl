@@ -10,7 +10,7 @@ repository = "https://github.com/jeffutter/markdown-todo-extractor"
 [dependencies]
 async-trait = "0.1"
 axum = "0.8"
-clap = { version = "4.5.0", features = ["derive", "env"] }
+clap = { version = "4.5.57", features = ["derive", "env"] }
 glob = "0.3"
 toml = "0.8"
 mimalloc = { version = "0.1.39" }
