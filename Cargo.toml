@@ -18,7 +18,7 @@ repository = "https://github.com/jeffutter/markdown-todo-extractor"
 [workspace.dependencies]
 async-trait = "0.1"
 axum = "0.8"
-clap = { version = "4.5.0", features = ["derive", "env"] }
+clap = { version = "4.5.59", features = ["derive", "env"] }
 glob = "0.3"
 toml = "0.8"
 rayon = "1.10"
