@@ -1,6 +1,6 @@
 ---
 id: mte-jeur
-status: open
+status: closed
 deps: [mte-46gp, mte-23h3, mte-urmv]
 links: []
 created: 2026-02-19T14:52:46Z
