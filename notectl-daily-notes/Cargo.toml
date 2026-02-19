@@ -1,15 +1,15 @@
 [package]
-name = "markdown-todo-extractor-outline"
+name = "notectl-daily-notes"
 version.workspace = true
 edition.workspace = true
-description = "Outline extraction capability for markdown-todo-extractor"
+description = "Daily notes capability for notectl"
 repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
-markdown-todo-extractor-core.workspace = true
-regex.workspace = true
+notectl-core.workspace = true
+notectl-files.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -17,3 +17,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true

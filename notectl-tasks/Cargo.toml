@@ -1,20 +1,21 @@
 [package]
-name = "markdown-todo-extractor-daily-notes"
+name = "notectl-tasks"
 version.workspace = true
 edition.workspace = true
-description = "Daily notes capability for markdown-todo-extractor"
+description = "Task extraction capability for notectl"
 repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
-markdown-todo-extractor-core.workspace = true
-markdown-todo-extractor-files.workspace = true
+notectl-core.workspace = true
+rayon.workspace = true
+regex.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+simdutf8.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio.workspace = true

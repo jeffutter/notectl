@@ -1,20 +1,16 @@
 [package]
-name = "markdown-todo-extractor-tags"
+name = "notectl-core"
 version.workspace = true
 edition.workspace = true
-description = "Tag extraction capability for markdown-todo-extractor"
+description = "Core types, traits, and utilities for notectl"
 repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
-markdown-todo-extractor-core.workspace = true
-rayon.workspace = true
+glob.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
+toml.workspace = true

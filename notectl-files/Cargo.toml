@@ -1,16 +1,18 @@
 [package]
-name = "markdown-todo-extractor-core"
+name = "notectl-files"
 version.workspace = true
 edition.workspace = true
-description = "Core types, traits, and utilities for markdown-todo-extractor"
+description = "File operations capability for notectl"
 repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
 clap.workspace = true
-glob.workspace = true
+notectl-core.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

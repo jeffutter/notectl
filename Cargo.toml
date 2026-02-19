@@ -1,12 +1,12 @@
 [workspace]
 members = [
     ".",
-    "markdown-todo-extractor-core",
-    "markdown-todo-extractor-tasks",
-    "markdown-todo-extractor-tags",
-    "markdown-todo-extractor-files",
-    "markdown-todo-extractor-daily-notes",
-    "markdown-todo-extractor-outline",
+    "notectl-core",
+    "notectl-tasks",
+    "notectl-tags",
+    "notectl-files",
+    "notectl-daily-notes",
+    "notectl-outline",
 ]
 resolver = "2"
 
@@ -33,15 +33,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tempfile = "3"
 
 # Workspace members
-markdown-todo-extractor-core = { path = "markdown-todo-extractor-core" }
-markdown-todo-extractor-tasks = { path = "markdown-todo-extractor-tasks" }
-markdown-todo-extractor-tags = { path = "markdown-todo-extractor-tags" }
-markdown-todo-extractor-files = { path = "markdown-todo-extractor-files" }
-markdown-todo-extractor-daily-notes = { path = "markdown-todo-extractor-daily-notes" }
-markdown-todo-extractor-outline = { path = "markdown-todo-extractor-outline" }
+notectl-core = { path = "notectl-core" }
+notectl-tasks = { path = "notectl-tasks" }
+notectl-tags = { path = "notectl-tags" }
+notectl-files = { path = "notectl-files" }
+notectl-daily-notes = { path = "notectl-daily-notes" }
+notectl-outline = { path = "notectl-outline" }
 
 [package]
-name = "markdown-todo-extractor"
+name = "notectl"
 version.workspace = true
 edition.workspace = true
 description = "Extractor to extract information about todo items from markdown files"
@@ -61,12 +61,12 @@ serde_json.workspace = true
 tokio.workspace = true
 
 # Workspace member crates
-markdown-todo-extractor-core.workspace = true
-markdown-todo-extractor-tasks.workspace = true
-markdown-todo-extractor-tags.workspace = true
-markdown-todo-extractor-files.workspace = true
-markdown-todo-extractor-daily-notes.workspace = true
-markdown-todo-extractor-outline.workspace = true
+notectl-core.workspace = true
+notectl-tasks.workspace = true
+notectl-tags.workspace = true
+notectl-files.workspace = true
+notectl-daily-notes.workspace = true
+notectl-outline.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
