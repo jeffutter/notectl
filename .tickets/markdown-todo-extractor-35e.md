@@ -1,6 +1,6 @@
 ---
 id: markdown-todo-extractor-35e
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-21T20:52:03.622063164-06:00

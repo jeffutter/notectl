@@ -1,6 +1,6 @@
 ---
 id: markdown-todo-extractor-ved
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-21T20:52:03.198816314-06:00

@@ -1,6 +1,6 @@
 ---
 id: markdown-todo-extractor-afx
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-01-21T20:52:02.753910016-06:00
