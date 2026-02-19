@@ -1,7 +1,7 @@
 use clap::{CommandFactory, FromArgMatches};
-use markdown_todo_extractor_core::CapabilityResult;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_core::error::{internal_error, invalid_params};
+use notectl_core::CapabilityResult;
+use notectl_core::config::Config;
+use notectl_core::error::{internal_error, invalid_params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -361,7 +361,7 @@ fn extract_file_name(file_path: &str) -> String {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for ListFilesOperation {
+impl notectl_core::operation::Operation for ListFilesOperation {
     fn name(&self) -> &'static str {
         list_files::CLI_NAME
     }
@@ -384,7 +384,7 @@ impl markdown_todo_extractor_core::operation::Operation for ListFilesOperation {
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: ListFilesRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.list_files(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -418,7 +418,7 @@ impl markdown_todo_extractor_core::operation::Operation for ListFilesOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for ReadFilesOperation {
+impl notectl_core::operation::Operation for ReadFilesOperation {
     fn name(&self) -> &'static str {
         read_files::CLI_NAME
     }
@@ -441,7 +441,7 @@ impl markdown_todo_extractor_core::operation::Operation for ReadFilesOperation {
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: ReadFilesRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.read_files(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }

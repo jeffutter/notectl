@@ -43,7 +43,7 @@ async fn tools_handler(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use capabilities::CapabilityRegistry;
-    use markdown_todo_extractor_core::config::Config;
+    use notectl_core::config::Config;
     use std::path::PathBuf;
 
     // Create a minimal registry (base path will come from the parsed request or command)

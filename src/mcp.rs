@@ -1,16 +1,14 @@
 use crate::capabilities::CapabilityRegistry;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_daily_notes::{
+use notectl_core::config::Config;
+use notectl_daily_notes::{
     GetDailyNoteRequest, GetDailyNoteResponse, SearchDailyNotesRequest, SearchDailyNotesResponse,
 };
-use markdown_todo_extractor_files::{
-    ListFilesRequest, ListFilesResponse, ReadFilesRequest, ReadFilesResponse,
-};
-use markdown_todo_extractor_tags::{
+use notectl_files::{ListFilesRequest, ListFilesResponse, ReadFilesRequest, ReadFilesResponse};
+use notectl_tags::{
     ExtractTagsRequest, ExtractTagsResponse, ListTagsRequest, ListTagsResponse,
     SearchByTagsRequest, SearchByTagsResponse,
 };
-use markdown_todo_extractor_tasks::{SearchTasksRequest, TaskSearchResponse};
+use notectl_tasks::{SearchTasksRequest, TaskSearchResponse};
 use rmcp::{
     ServerHandler,
     handler::server::{
@@ -183,14 +181,14 @@ impl ServerHandler for TaskSearchService {
              - {}\n\
              - {}\n\
              - {}",
-            markdown_todo_extractor_tasks::capability::search_tasks::DESCRIPTION,
-            markdown_todo_extractor_tags::extract_tags::DESCRIPTION,
-            markdown_todo_extractor_tags::list_tags::DESCRIPTION,
-            markdown_todo_extractor_tags::search_by_tags::DESCRIPTION,
-            markdown_todo_extractor_files::list_files::DESCRIPTION,
-            markdown_todo_extractor_files::read_files::DESCRIPTION,
-            markdown_todo_extractor_daily_notes::get_daily_note::DESCRIPTION,
-            markdown_todo_extractor_daily_notes::search_daily_notes::DESCRIPTION
+            notectl_tasks::capability::search_tasks::DESCRIPTION,
+            notectl_tags::extract_tags::DESCRIPTION,
+            notectl_tags::list_tags::DESCRIPTION,
+            notectl_tags::search_by_tags::DESCRIPTION,
+            notectl_files::list_files::DESCRIPTION,
+            notectl_files::read_files::DESCRIPTION,
+            notectl_daily_notes::get_daily_note::DESCRIPTION,
+            notectl_daily_notes::search_daily_notes::DESCRIPTION
         );
 
         ServerInfo {

@@ -1,9 +1,9 @@
 use crate::extractor::{Task, TaskExtractor};
 use crate::filter::{FilterOptions, filter_tasks};
 use clap::{CommandFactory, FromArgMatches, Parser};
-use markdown_todo_extractor_core::CapabilityResult;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_core::error::internal_error;
+use notectl_core::CapabilityResult;
+use notectl_core::config::Config;
+use notectl_core::error::internal_error;
 use rmcp::model::ErrorData;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,9 @@ impl TaskCapability {
 }
 
 /// Get the default limit for task results
-/// Reads from MARKDOWN_TODO_EXTRACTOR_DEFAULT_LIMIT env var, defaults to 50
+/// Reads from NOTECTL_DEFAULT_LIMIT env var, defaults to 50
 fn get_default_limit() -> usize {
-    std::env::var("MARKDOWN_TODO_EXTRACTOR_DEFAULT_LIMIT")
+    std::env::var("NOTECTL_DEFAULT_LIMIT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(50)
@@ -160,7 +160,7 @@ impl SearchTasksOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for SearchTasksOperation {
+impl notectl_core::operation::Operation for SearchTasksOperation {
     fn name(&self) -> &'static str {
         search_tasks::CLI_NAME
     }
@@ -179,7 +179,7 @@ impl markdown_todo_extractor_core::operation::Operation for SearchTasksOperation
 
     async fn execute_json(&self, json: serde_json::Value) -> Result<serde_json::Value, ErrorData> {
         let request: SearchTasksRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.search_tasks(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }

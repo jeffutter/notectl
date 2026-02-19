@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 /// Build a clap Command dynamically from all registered operations
-pub fn build_cli(
-    operations: &[Arc<dyn markdown_todo_extractor_core::operation::Operation>],
-) -> clap::Command {
-    let mut cmd = clap::Command::new("markdown-todo-extractor")
+pub fn build_cli(operations: &[Arc<dyn notectl_core::operation::Operation>]) -> clap::Command {
+    let mut cmd = clap::Command::new("notectl")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Extract todo items from Markdown files")
         .subcommand_required(true)
@@ -27,7 +25,7 @@ pub fn build_cli(
 
 /// Execute CLI command by routing to the appropriate operation
 pub async fn execute_cli(
-    operations: &[Arc<dyn markdown_todo_extractor_core::operation::Operation>],
+    operations: &[Arc<dyn notectl_core::operation::Operation>],
     matches: clap::ArgMatches,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Find the matching operation

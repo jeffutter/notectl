@@ -4,10 +4,10 @@
 //! Supports configurable date patterns and leverages multi-file reading for efficiency.
 
 use clap::{CommandFactory, FromArgMatches};
-use markdown_todo_extractor_core::CapabilityResult;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_core::error::{internal_error, invalid_params};
-use markdown_todo_extractor_files::{FileCapability, ReadFilesRequest};
+use notectl_core::CapabilityResult;
+use notectl_core::config::Config;
+use notectl_core::error::{internal_error, invalid_params};
+use notectl_files::{FileCapability, ReadFilesRequest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -411,7 +411,7 @@ impl SearchDailyNotesOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for GetDailyNoteOperation {
+impl notectl_core::operation::Operation for GetDailyNoteOperation {
     fn name(&self) -> &'static str {
         get_daily_note::CLI_NAME
     }
@@ -433,7 +433,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetDailyNoteOperatio
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: GetDailyNoteRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.get_daily_note(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -466,7 +466,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetDailyNoteOperatio
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for SearchDailyNotesOperation {
+impl notectl_core::operation::Operation for SearchDailyNotesOperation {
     fn name(&self) -> &'static str {
         search_daily_notes::CLI_NAME
     }
@@ -488,7 +488,7 @@ impl markdown_todo_extractor_core::operation::Operation for SearchDailyNotesOper
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: SearchDailyNotesRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.search_daily_notes(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -569,8 +569,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -624,8 +623,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -661,8 +659,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -700,8 +697,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -740,8 +736,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -771,8 +766,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -800,8 +794,7 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),

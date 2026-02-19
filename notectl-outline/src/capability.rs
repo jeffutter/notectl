@@ -1,8 +1,8 @@
 use crate::outline_extractor::{Heading, HeadingMatch, OutlineExtractor, Section};
 use clap::{CommandFactory, FromArgMatches};
-use markdown_todo_extractor_core::CapabilityResult;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_core::error::{internal_error, invalid_params};
+use notectl_core::CapabilityResult;
+use notectl_core::config::Config;
+use notectl_core::error::{internal_error, invalid_params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -336,7 +336,7 @@ impl SearchHeadingsOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for GetOutlineOperation {
+impl notectl_core::operation::Operation for GetOutlineOperation {
     fn name(&self) -> &'static str {
         get_outline::CLI_NAME
     }
@@ -358,7 +358,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetOutlineOperation 
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: GetOutlineRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.get_outline(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -390,7 +390,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetOutlineOperation 
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for GetSectionOperation {
+impl notectl_core::operation::Operation for GetSectionOperation {
     fn name(&self) -> &'static str {
         get_section::CLI_NAME
     }
@@ -412,7 +412,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetSectionOperation 
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: GetSectionRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.get_section(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -444,7 +444,7 @@ impl markdown_todo_extractor_core::operation::Operation for GetSectionOperation 
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for SearchHeadingsOperation {
+impl notectl_core::operation::Operation for SearchHeadingsOperation {
     fn name(&self) -> &'static str {
         search_headings::CLI_NAME
     }
@@ -466,7 +466,7 @@ impl markdown_todo_extractor_core::operation::Operation for SearchHeadingsOperat
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: SearchHeadingsRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.search_headings(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }

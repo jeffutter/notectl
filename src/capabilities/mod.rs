@@ -1,18 +1,18 @@
-use markdown_todo_extractor_core::config::Config;
+use notectl_core::config::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use markdown_todo_extractor_daily_notes::{
+pub use notectl_daily_notes::{
     DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation,
 };
-pub use markdown_todo_extractor_files::{FileCapability, ListFilesOperation, ReadFilesOperation};
-pub use markdown_todo_extractor_outline::{
+pub use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation};
+pub use notectl_outline::{
     GetOutlineOperation, GetSectionOperation, OutlineCapability, SearchHeadingsOperation,
 };
-pub use markdown_todo_extractor_tags::{
+pub use notectl_tags::{
     ExtractTagsOperation, ListTagsOperation, SearchByTagsOperation, TagCapability,
 };
-pub use markdown_todo_extractor_tasks::{SearchTasksOperation, TaskCapability};
+pub use notectl_tasks::{SearchTasksOperation, TaskCapability};
 
 /// Registry for managing capabilities
 pub struct CapabilityRegistry {
@@ -61,9 +61,7 @@ impl CapabilityRegistry {
         Arc::clone(&self.outline_capability)
     }
 
-    pub fn create_operations(
-        &self,
-    ) -> Vec<Arc<dyn markdown_todo_extractor_core::operation::Operation>> {
+    pub fn create_operations(&self) -> Vec<Arc<dyn notectl_core::operation::Operation>> {
         vec![
             Arc::new(SearchTasksOperation::new(self.tasks())),
             Arc::new(ExtractTagsOperation::new(self.tags())),

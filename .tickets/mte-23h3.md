@@ -1,6 +1,6 @@
 ---
 id: mte-23h3
-status: open
+status: closed
 deps: [mte-46gp]
 links: []
 created: 2026-02-19T15:03:44Z
@@ -33,3 +33,9 @@ Also update config file lookup in notectl-core/src/config.rs:
 
 Run: cargo build to verify
 
+
+## Notes
+
+**2026-02-19T15:13:42Z**
+
+Also fixed: MARKDOWN_TODO_EXTRACTOR_DEFAULT_LIMIT env var in notectl-tasks/src/capability.rs → NOTECTL_DEFAULT_LIMIT, CLI binary name in cli_router.rs markdown-todo-extractor → notectl, test constants in config.rs tests. CLAUDE.md docs deferred to mte-urmv per its scope.

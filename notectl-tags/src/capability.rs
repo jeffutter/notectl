@@ -1,8 +1,8 @@
 use crate::tag_extractor::{TagCount, TagExtractor, TaggedFile};
 use clap::{CommandFactory, FromArgMatches};
-use markdown_todo_extractor_core::CapabilityResult;
-use markdown_todo_extractor_core::config::Config;
-use markdown_todo_extractor_core::error::internal_error;
+use notectl_core::CapabilityResult;
+use notectl_core::config::Config;
+use notectl_core::error::internal_error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -276,7 +276,7 @@ impl SearchByTagsOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for ExtractTagsOperation {
+impl notectl_core::operation::Operation for ExtractTagsOperation {
     fn name(&self) -> &'static str {
         extract_tags::CLI_NAME
     }
@@ -299,7 +299,7 @@ impl markdown_todo_extractor_core::operation::Operation for ExtractTagsOperation
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: ExtractTagsRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.extract_tags(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -333,7 +333,7 @@ impl markdown_todo_extractor_core::operation::Operation for ExtractTagsOperation
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for ListTagsOperation {
+impl notectl_core::operation::Operation for ListTagsOperation {
     fn name(&self) -> &'static str {
         list_tags::CLI_NAME
     }
@@ -356,7 +356,7 @@ impl markdown_todo_extractor_core::operation::Operation for ListTagsOperation {
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: ListTagsRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.list_tags(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -390,7 +390,7 @@ impl markdown_todo_extractor_core::operation::Operation for ListTagsOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for SearchByTagsOperation {
+impl notectl_core::operation::Operation for SearchByTagsOperation {
     fn name(&self) -> &'static str {
         search_by_tags::CLI_NAME
     }
@@ -413,7 +413,7 @@ impl markdown_todo_extractor_core::operation::Operation for SearchByTagsOperatio
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: SearchByTagsRequest = serde_json::from_value(json)
-            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self.capability.search_by_tags(request).await?;
         Ok(serde_json::to_value(response).unwrap())
     }

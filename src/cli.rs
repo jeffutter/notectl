@@ -51,7 +51,7 @@ impl ServeOperation {
 }
 
 #[async_trait::async_trait]
-impl markdown_todo_extractor_core::operation::Operation for ServeOperation {
+impl notectl_core::operation::Operation for ServeOperation {
     fn name(&self) -> &'static str {
         "serve"
     }

@@ -1,4 +1,4 @@
-use markdown_todo_extractor_core::config::Config;
+use notectl_core::config::Config;
 use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -653,8 +653,7 @@ tags:
         let temp_dir = TempDir::new().unwrap();
         let config = Arc::new(Config {
             exclude_paths: vec!["excluded".to_string()],
-            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
-            ),
+            daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
         });
         let extractor = TagExtractor::new(config);
 

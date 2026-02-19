@@ -39,10 +39,10 @@ impl Config {
         }
     }
 
-    /// Load configuration from the base path (looks for .markdown-todo-extractor.toml)
+    /// Load configuration from the base path (looks for .notectl.toml)
     /// Also merges configuration from environment variables
     pub fn load_from_base_path(base_path: &Path) -> Self {
-        let config_path = base_path.join(".markdown-todo-extractor.toml");
+        let config_path = base_path.join(".notectl.toml");
         let mut config = Self::load_from_file(&config_path);
 
         // Merge in environment variable configuration
@@ -52,13 +52,13 @@ impl Config {
     }
 
     /// Merge configuration from environment variables
-    /// MARKDOWN_TODO_EXTRACTOR_EXCLUDE_PATHS: comma-separated list of exclusion patterns
-    /// MARKDOWN_TODO_EXTRACTOR_DAILY_NOTE_PATTERNS: comma-separated list of daily note patterns
+    /// NOTECTL_EXCLUDE_PATHS: comma-separated list of exclusion patterns
+    /// NOTECTL_DAILY_NOTE_PATTERNS: comma-separated list of daily note patterns
     fn merge_from_env(&mut self) {
-        self.merge_from_env_var("MARKDOWN_TODO_EXTRACTOR_EXCLUDE_PATHS");
+        self.merge_from_env_var("NOTECTL_EXCLUDE_PATHS");
 
         // Merge daily note patterns from environment variable
-        if let Ok(env_patterns) = std::env::var("MARKDOWN_TODO_EXTRACTOR_DAILY_NOTE_PATTERNS") {
+        if let Ok(env_patterns) = std::env::var("NOTECTL_DAILY_NOTE_PATTERNS") {
             let env_daily_patterns: Vec<String> = env_patterns
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn test_merge_from_env() {
         // Use a unique env var name for this test to avoid parallel test conflicts
-        const TEST_VAR: &str = "MARKDOWN_TODO_EXTRACTOR_TEST_MERGE_FROM_ENV";
+        const TEST_VAR: &str = "NOTECTL_TEST_MERGE_FROM_ENV";
 
         // Set env var
         unsafe {
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_env_with_empty_patterns() {
         // Use a unique env var name for this test to avoid parallel test conflicts
-        const TEST_VAR: &str = "MARKDOWN_TODO_EXTRACTOR_TEST_EMPTY_PATTERNS";
+        const TEST_VAR: &str = "NOTECTL_TEST_EMPTY_PATTERNS";
 
         // Test that empty strings are filtered out
         unsafe {

@@ -262,7 +262,7 @@ impl OutlineExtractor {
         min_level: Option<u8>,
         max_level: Option<u8>,
         limit: Option<usize>,
-        config: &markdown_todo_extractor_core::config::Config,
+        config: &notectl_core::config::Config,
     ) -> Result<Vec<HeadingMatch>, Box<dyn std::error::Error>> {
         let mut matches = Vec::new();
         let pattern_lower = pattern.to_lowercase();
@@ -330,7 +330,7 @@ impl OutlineExtractor {
         &self,
         dir: &Path,
         files: &mut Vec<std::path::PathBuf>,
-        config: &markdown_todo_extractor_core::config::Config,
+        config: &notectl_core::config::Config,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -634,7 +634,7 @@ Second content"
         fn test_search_across_files() {
             let extractor = create_test_extractor();
             let temp_dir = TempDir::new().unwrap();
-            let config = markdown_todo_extractor_core::config::Config::default();
+            let config = notectl_core::config::Config::default();
 
             let mut file1 = std::fs::File::create(temp_dir.path().join("file1.md")).unwrap();
             write!(file1, "# Introduction\n## Search Target").unwrap();
@@ -652,7 +652,7 @@ Second content"
         fn test_search_with_level_filter() {
             let extractor = create_test_extractor();
             let temp_dir = TempDir::new().unwrap();
-            let config = markdown_todo_extractor_core::config::Config::default();
+            let config = notectl_core::config::Config::default();
 
             let mut file = std::fs::File::create(temp_dir.path().join("file.md")).unwrap();
             write!(file, "# Target\n## Target\n### Target").unwrap();
@@ -668,7 +668,7 @@ Second content"
         fn test_search_limit() {
             let extractor = create_test_extractor();
             let temp_dir = TempDir::new().unwrap();
-            let config = markdown_todo_extractor_core::config::Config::default();
+            let config = notectl_core::config::Config::default();
 
             let mut file = std::fs::File::create(temp_dir.path().join("file.md")).unwrap();
             write!(file, "# Target 1\n# Target 2\n# Target 3").unwrap();
@@ -683,7 +683,7 @@ Second content"
         fn test_case_insensitive_search() {
             let extractor = create_test_extractor();
             let temp_dir = TempDir::new().unwrap();
-            let config = markdown_todo_extractor_core::config::Config::default();
+            let config = notectl_core::config::Config::default();
 
             let mut file = std::fs::File::create(temp_dir.path().join("file.md")).unwrap();
             write!(file, "# UPPERCASE\n# lowercase\n# MixedCase").unwrap();
