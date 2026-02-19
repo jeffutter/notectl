@@ -6,6 +6,7 @@ set -e
 # Default models
 MODEL="sonnet"
 PLAN_MODEL="opus"
+MAX_ITERATIONS=""
 
 # Parse arguments
 while [ $# -gt 0 ]; do
@@ -18,17 +19,41 @@ while [ $# -gt 0 ]; do
       PLAN_MODEL="$2"
       shift 2
       ;;
-    *)
+    --*)
       echo "Unknown argument: $1"
-      echo "Usage: $0 [--model MODEL] [--plan-model PLAN_MODEL]"
+      echo "Usage: $0 [--model MODEL] [--plan-model PLAN_MODEL] <max-iterations>"
       exit 1
+      ;;
+    *)
+      if [ -z "$MAX_ITERATIONS" ]; then
+        MAX_ITERATIONS="$1"
+        shift
+      else
+        echo "Unexpected argument: $1"
+        echo "Usage: $0 [--model MODEL] [--plan-model PLAN_MODEL] <max-iterations>"
+        exit 1
+      fi
       ;;
   esac
 done
 
-echo "Starting autonomous work loop (model=$MODEL, plan-model=$PLAN_MODEL)..."
+if [ -z "$MAX_ITERATIONS" ]; then
+  echo "Usage: $0 [--model MODEL] [--plan-model PLAN_MODEL] <max-iterations>"
+  exit 1
+fi
 
+echo "Starting autonomous work loop (model=$MODEL, plan-model=$PLAN_MODEL, max-iterations=$MAX_ITERATIONS)..."
+
+ITERATION=0
 while true; do
+  if [ "$ITERATION" -ge "$MAX_ITERATIONS" ]; then
+    echo "========================================"
+    echo "Reached max iterations ($MAX_ITERATIONS). Stopping."
+    echo "========================================"
+    exit 0
+  fi
+  ITERATION=$((ITERATION + 1))
+  echo "Iteration $ITERATION of $MAX_ITERATIONS"
   echo ""
   echo "========================================"
   echo "Checking for work..."
