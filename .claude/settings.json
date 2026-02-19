@@ -6,11 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cargo fmt"
-          },
-          {
-            "type": "command",
-            "command": "cargo clippy --all-targets --all-features --workspace --fix --allow-dirty"
+            "command": "lefthook run pre-commit"
           }
         ]
       }

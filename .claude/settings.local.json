@@ -22,6 +22,7 @@
       "Bash(git push)",
       "Bash(grep:*)",
       "Bash(jq:*)",
+      "Bash(lefthook:*)",
       "Bash(sed:*)",
       "Bash(time ./target/release/markdown-todo-extractor:*)",
       "Bash(timeout 2 cargo run:*)",

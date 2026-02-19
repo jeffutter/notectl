@@ -64,6 +64,7 @@
               cargo
               cargo-watch
               clang
+              lefthook
               rust-analyzer
               rust-bin.stable.latest.default
               rustc

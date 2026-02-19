@@ -1,0 +1,22 @@
+pre-commit:
+  commands:
+    rustfmt:
+      run: cargo fmt -- {staged_files}
+      glob: "*.rs"
+      stage_fixed: true
+    clippy:
+      run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+      glob: "*.rs"
+
+pre-push:
+  commands:
+    rustfmt:
+      run: cargo fmt --all --check
+    clippy:
+      run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+    test:
+      run: cargo test --all-features --workspace
+    docs:
+      env:
+        RUSTDOCFLAGS: -D warnings
+      run: cargo doc --no-deps --document-private-items --all-features --workspace
