@@ -71,13 +71,13 @@ cargo run -- test.md
 
 ## Configuration
 
-The tool supports configuration via a `.markdown-todo-extractor.toml` file placed in the vault's root directory.
+The tool supports configuration via a `.notectl.toml` file placed in the vault's root directory.
 
 ### Path Exclusions
 
 You can exclude specific paths or path patterns from being scanned for tasks. This is useful for ignoring template directories, recipe folders, or any other content you don't want to include in task searches.
 
-**Option 1: Configuration file `.markdown-todo-extractor.toml`**
+**Option 1: Configuration file `.notectl.toml`**
 
 ```toml
 # Path exclusion patterns
@@ -93,7 +93,7 @@ exclude_paths = [
 
 ```bash
 # Comma-separated list of exclusion patterns
-export MARKDOWN_TODO_EXTRACTOR_EXCLUDE_PATHS="Template,Recipes,**/Archive/**"
+export NOTECTL_EXCLUDE_PATHS="Template,Recipes,**/Archive/**"
 
 # Start the server with exclusions
 cargo run -- --mcp-stdio /path/to/vault
@@ -115,7 +115,7 @@ cargo run -- --mcp-stdio /path/to/vault
 The project is organized as a Rust workspace with separate crates for each functional area:
 
 ```
-markdown-todo-extractor/              (workspace root + main binary)
+notectl/                              (workspace root + main binary)
   Cargo.toml                          ([workspace] + [package])
   src/
     main.rs                           (entry point)
@@ -125,7 +125,7 @@ markdown-todo-extractor/              (workspace root + main binary)
     cli_router.rs                     (CLI dispatch)
     capabilities/mod.rs               (CapabilityRegistry - integration point)
 
-  markdown-todo-extractor-core/       (shared types, traits, config)
+  notectl-core/                       (shared types, traits, config)
     src/
       lib.rs
       config.rs                       (Config struct, load_from_base_path)
@@ -133,32 +133,32 @@ markdown-todo-extractor/              (workspace root + main binary)
       operation.rs                    (Operation trait for HTTP/CLI/MCP)
       file_walker.rs                  (collect_markdown_files utility)
 
-  markdown-todo-extractor-tasks/      (task extraction)
+  notectl-tasks/                      (task extraction)
     src/
       lib.rs
       extractor.rs                    (TaskExtractor, Task struct)
       filter.rs                       (FilterOptions, filter_tasks)
       capability.rs                   (TaskCapability, SearchTasksOperation)
 
-  markdown-todo-extractor-tags/       (tag operations)
+  notectl-tags/                       (tag operations)
     src/
       lib.rs
       tag_extractor.rs                (TagExtractor)
       capability.rs                   (TagCapability, Extract/List/SearchByTagsOperation)
 
-  markdown-todo-extractor-files/      (file operations)
+  notectl-files/                      (file operations)
     src/
       lib.rs
       capability.rs                   (FileCapability, ListFilesOperation, ReadFilesOperation)
 
-  markdown-todo-extractor-daily-notes/ (daily note operations)
+  notectl-daily-notes/                (daily note operations)
     src/
       lib.rs
       date_utils.rs                   (validate_date, date_range, today)
       pattern.rs                      (apply_pattern, find_daily_note)
       capability.rs                   (DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation)
 
-  markdown-todo-extractor-outline/    (document outline/structure)
+  notectl-outline/                    (document outline/structure)
     src/
       lib.rs
       outline_extractor.rs            (OutlineExtractor, heading parsing)
@@ -184,7 +184,7 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 
 **Key components:**
 
-- **`markdown_todo_extractor_core::operation::Operation`**: Unified trait for all operations
+- **`notectl_core::operation::Operation`**: Unified trait for all operations
   - `name()`: CLI command name
   - `path()`: HTTP endpoint path
   - `execute_json()`: HTTP/MCP execution with JSON I/O
@@ -205,15 +205,15 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 
 **Core Extractors (in domain crates):**
 
-- **`markdown-todo-extractor-tasks`**: Task extraction pipeline (regex patterns, parsing, filtering)
-- **`markdown-todo-extractor-tags`**: YAML frontmatter tag extraction
-- **`markdown-todo-extractor-files`**: File tree listing and content reading
-- **`markdown-todo-extractor-daily-notes`**: Daily note lookup by date pattern
-- **`markdown-todo-extractor-outline`**: Heading hierarchy extraction
+- **`notectl-tasks`**: Task extraction pipeline (regex patterns, parsing, filtering)
+- **`notectl-tags`**: YAML frontmatter tag extraction
+- **`notectl-files`**: File tree listing and content reading
+- **`notectl-daily-notes`**: Daily note lookup by date pattern
+- **`notectl-outline`**: Heading hierarchy extraction
 
 ### Task Extraction Pipeline
 
-All task extraction lives in `markdown-todo-extractor-tasks/src/`:
+All task extraction lives in `notectl-tasks/src/`:
 
 1. **File Discovery**: `extract_tasks()` → `extract_tasks_from_dir()` recursively finds `.md` files
 2. **Line Parsing**: `extract_tasks_from_file()` → `parse_task_line()` matches task patterns
@@ -252,15 +252,15 @@ The cleaning step is critical: content is extracted first with all metadata inta
 
 To add a new capability (e.g., for bookmarks):
 
-1. **Create a new workspace crate** `markdown-todo-extractor-bookmarks/`:
-   - `Cargo.toml`: depend on `markdown-todo-extractor-core.workspace = true` plus any needed deps
+1. **Create a new workspace crate** `notectl-bookmarks/`:
+   - `Cargo.toml`: depend on `notectl-core.workspace = true` plus any needed deps
    - `src/lib.rs`: `pub mod capability; pub use capability::*;`
    - `src/capability.rs`: implement the capability struct and `Operation` structs
 
-2. **Capability pattern** (see `markdown-todo-extractor-files/src/capability.rs` for reference):
+2. **Capability pattern** (see `notectl-files/src/capability.rs` for reference):
    ```rust
-   use markdown_todo_extractor_core::{CapabilityResult, config::Config};
-   use markdown_todo_extractor_core::error::{internal_error, invalid_params};
+   use notectl_core::{CapabilityResult, config::Config};
+   use notectl_core::error::{internal_error, invalid_params};
 
    pub struct NewCapability { base_path: PathBuf, config: Arc<Config> }
 
@@ -272,7 +272,7 @@ To add a new capability (e.g., for bookmarks):
    pub struct DoThingOperation { capability: Arc<NewCapability> }
 
    #[async_trait::async_trait]
-   impl markdown_todo_extractor_core::operation::Operation for DoThingOperation {
+   impl notectl_core::operation::Operation for DoThingOperation {
        fn name(&self) -> &'static str { "do-thing" }
        fn path(&self) -> &'static str { "/api/things" }
        fn description(&self) -> &'static str { "..." }
@@ -284,12 +284,12 @@ To add a new capability (e.g., for bookmarks):
    ```
 
 3. **Add to workspace** in root `Cargo.toml`:
-   - Add `"markdown-todo-extractor-bookmarks"` to `[workspace] members`
-   - Add `markdown-todo-extractor-bookmarks = { path = "markdown-todo-extractor-bookmarks" }` under `[workspace.dependencies]`
-   - Add `markdown-todo-extractor-bookmarks.workspace = true` to `[dependencies]`
+   - Add `"notectl-bookmarks"` to `[workspace] members`
+   - Add `notectl-bookmarks = { path = "notectl-bookmarks" }` under `[workspace.dependencies]`
+   - Add `notectl-bookmarks.workspace = true` to `[dependencies]`
 
 4. **Register in `src/capabilities/mod.rs`**:
-   - Add `pub use markdown_todo_extractor_bookmarks::{NewCapability, DoThingOperation};`
+   - Add `pub use notectl_bookmarks::{NewCapability, DoThingOperation};`
    - Add field to `CapabilityRegistry` and getter method
    - Add operation to `create_operations()`
 
@@ -303,13 +303,13 @@ To add a new capability (e.g., for bookmarks):
 
 ### Adding New Metadata Types or Task Statuses
 
-In `markdown-todo-extractor-tasks/src/extractor.rs`:
+In `notectl-tasks/src/extractor.rs`:
 - Add regex pattern to `TaskExtractor::new()`
 - Add extraction method and call it in `create_task()`
 - Add cleaning logic to `clean_content()`
 - Add field to `Task` struct
 
-If filtering is needed, in `markdown-todo-extractor-tasks/src/`:
+If filtering is needed, in `notectl-tasks/src/`:
 - Add field to `FilterOptions` in `filter.rs`
 - Add filter logic in `filter_tasks()` in `filter.rs`
 - Update `SearchTasksRequest` in `capability.rs`

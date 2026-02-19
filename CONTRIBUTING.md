@@ -1,6 +1,6 @@
 # Contribution guidelines
 
-First off, thank you for considering contributing to markdown-todo-extractor.
+First off, thank you for considering contributing to notectl.
 
 If your contribution is not straightforward, please first discuss the change you
 wish to make by creating a new issue before making the change.
@@ -8,7 +8,7 @@ wish to make by creating a new issue before making the change.
 ## Reporting issues
 
 Before reporting an issue on the
-[issue tracker](https://github.com/jeffutter/markdown-todo-extractor/issues),
+[issue tracker](https://github.com/jeffutter/notectl/issues),
 please check that it has not already been reported by searching for some related
 keywords.
 
@@ -19,7 +19,7 @@ Try to do one pull request per change.
 ### Updating the changelog
 
 Update the changes you have made in
-[CHANGELOG](https://github.com/jeffutter/markdown-todo-extractor/blob/main/CHANGELOG.md)
+[CHANGELOG](https://github.com/jeffutter/notectl/blob/main/CHANGELOG.md)
 file under the **Unreleased** section.
 
 Add the changes of your pull request to one of the following subsections,
@@ -42,8 +42,8 @@ If the required subsection does not exist yet under **Unreleased**, create it!
 This is no different than other Rust projects.
 
 ```shell
-git clone https://github.com/jeffutter/markdown-todo-extractor
-cd markdown-todo-extractor
+git clone https://github.com/jeffutter/notectl
+cd notectl
 cargo test
 ```
 
