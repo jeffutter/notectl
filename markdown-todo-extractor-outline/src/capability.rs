@@ -1,8 +1,8 @@
-use crate::capabilities::CapabilityResult;
-use crate::config::Config;
-use crate::error::{internal_error, invalid_params};
 use crate::outline_extractor::{Heading, HeadingMatch, OutlineExtractor, Section};
 use clap::{CommandFactory, FromArgMatches};
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_core::error::{internal_error, invalid_params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -336,7 +336,7 @@ impl SearchHeadingsOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for GetOutlineOperation {
+impl markdown_todo_extractor_core::operation::Operation for GetOutlineOperation {
     fn name(&self) -> &'static str {
         get_outline::CLI_NAME
     }
@@ -357,14 +357,15 @@ impl crate::operation::Operation for GetOutlineOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.get_outline(req))
-            .await
+        let request: GetOutlineRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.get_outline(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let request = GetOutlineRequest::from_arg_matches(matches)?;
 
@@ -389,7 +390,7 @@ impl crate::operation::Operation for GetOutlineOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for GetSectionOperation {
+impl markdown_todo_extractor_core::operation::Operation for GetSectionOperation {
     fn name(&self) -> &'static str {
         get_section::CLI_NAME
     }
@@ -410,14 +411,15 @@ impl crate::operation::Operation for GetSectionOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.get_section(req))
-            .await
+        let request: GetSectionRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.get_section(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let request = GetSectionRequest::from_arg_matches(matches)?;
 
@@ -442,7 +444,7 @@ impl crate::operation::Operation for GetSectionOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for SearchHeadingsOperation {
+impl markdown_todo_extractor_core::operation::Operation for SearchHeadingsOperation {
     fn name(&self) -> &'static str {
         search_headings::CLI_NAME
     }
@@ -463,14 +465,15 @@ impl crate::operation::Operation for SearchHeadingsOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.search_headings(req))
-            .await
+        let request: SearchHeadingsRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.search_headings(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let request = SearchHeadingsRequest::from_arg_matches(matches)?;
 

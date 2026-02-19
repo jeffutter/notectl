@@ -1,15 +1,8 @@
 mod capabilities;
 mod cli;
 mod cli_router;
-mod config;
-mod error;
-mod extractor;
-mod filter;
 mod http_router;
 mod mcp;
-mod operation;
-mod outline_extractor;
-mod tag_extractor;
 
 use clap::FromArgMatches;
 use cli::{ServeCommand, ServerMode};
@@ -50,7 +43,7 @@ async fn tools_handler(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use capabilities::CapabilityRegistry;
-    use config::Config;
+    use markdown_todo_extractor_core::config::Config;
     use std::path::PathBuf;
 
     // Create a minimal registry (base path will come from the parsed request or command)
@@ -102,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Load configuration from base path
-                let config = Arc::new(config::Config::load_from_base_path(&base_path));
+                let config = Arc::new(Config::load_from_base_path(&base_path));
 
                 // Create capability registry
                 let capability_registry = Arc::new(capabilities::CapabilityRegistry::new(
@@ -150,5 +143,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // For all other commands, use the cli_router
-    cli_router::execute_cli(&operations, matches, &registry).await
+    cli_router::execute_cli(&operations, matches).await
 }

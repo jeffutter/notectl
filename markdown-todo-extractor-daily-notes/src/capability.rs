@@ -3,22 +3,19 @@
 //! Provides operations for querying Obsidian daily notes by date or date range.
 //! Supports configurable date patterns and leverages multi-file reading for efficiency.
 
-pub mod date_utils;
-pub mod pattern;
-
-use crate::capabilities::CapabilityResult;
-use crate::capabilities::files::{FileCapability, ReadFilesRequest};
-use crate::config::Config;
-use crate::error::{internal_error, invalid_params};
 use clap::{CommandFactory, FromArgMatches};
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_core::error::{internal_error, invalid_params};
+use markdown_todo_extractor_files::{FileCapability, ReadFilesRequest};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 // Re-export for internal use
-use date_utils::{date_range, today, validate_date};
-use pattern::get_daily_note_relative_path;
+use crate::date_utils::{date_range, today, validate_date};
+use crate::pattern::get_daily_note_relative_path;
 
 /// Operation metadata for get_daily_note
 pub mod get_daily_note {
@@ -261,7 +258,7 @@ impl DailyNoteCapability {
                 end_date.clone()
             } else {
                 // Try to go back 30 days
-                let all_dates = date_utils::date_range("2000-01-01", &end_date);
+                let all_dates = crate::date_utils::date_range("2000-01-01", &end_date);
                 let start_idx = all_dates.len().saturating_sub(30);
                 all_dates
                     .get(start_idx)
@@ -414,7 +411,7 @@ impl SearchDailyNotesOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for GetDailyNoteOperation {
+impl markdown_todo_extractor_core::operation::Operation for GetDailyNoteOperation {
     fn name(&self) -> &'static str {
         get_daily_note::CLI_NAME
     }
@@ -435,14 +432,15 @@ impl crate::operation::Operation for GetDailyNoteOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.get_daily_note(req))
-            .await
+        let request: GetDailyNoteRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.get_daily_note(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let request = GetDailyNoteRequest::from_arg_matches(matches)?;
 
@@ -468,7 +466,7 @@ impl crate::operation::Operation for GetDailyNoteOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for SearchDailyNotesOperation {
+impl markdown_todo_extractor_core::operation::Operation for SearchDailyNotesOperation {
     fn name(&self) -> &'static str {
         search_daily_notes::CLI_NAME
     }
@@ -489,16 +487,15 @@ impl crate::operation::Operation for SearchDailyNotesOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| {
-            self.capability.search_daily_notes(req)
-        })
-        .await
+        let request: SearchDailyNotesRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.search_daily_notes(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let request = SearchDailyNotesRequest::from_arg_matches(matches)?;
 
@@ -572,7 +569,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -626,7 +624,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -662,7 +661,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -700,7 +700,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -739,7 +740,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -769,7 +771,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -797,7 +800,8 @@ mod tests {
 
         let config = Arc::new(Config {
             exclude_paths: vec![],
-            daily_note_patterns: crate::config::default_daily_note_patterns(),
+            daily_note_patterns: markdown_todo_extractor_core::config::default_daily_note_patterns(
+            ),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),

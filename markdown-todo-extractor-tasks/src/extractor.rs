@@ -1,4 +1,4 @@
-use crate::config::Config;
+use markdown_todo_extractor_core::config::Config;
 use rayon::prelude::*;
 use regex::Regex;
 use schemars::JsonSchema;

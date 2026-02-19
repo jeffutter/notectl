@@ -1,8 +1,8 @@
-use crate::capabilities::CapabilityResult;
-use crate::config::Config;
-use crate::error::internal_error;
 use crate::tag_extractor::{TagCount, TagExtractor, TaggedFile};
 use clap::{CommandFactory, FromArgMatches};
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_core::error::internal_error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -276,7 +276,7 @@ impl SearchByTagsOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for ExtractTagsOperation {
+impl markdown_todo_extractor_core::operation::Operation for ExtractTagsOperation {
     fn name(&self) -> &'static str {
         extract_tags::CLI_NAME
     }
@@ -298,14 +298,15 @@ impl crate::operation::Operation for ExtractTagsOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.extract_tags(req))
-            .await
+        let request: ExtractTagsRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.extract_tags(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse request from ArgMatches
         let request = ExtractTagsRequest::from_arg_matches(matches)?;
@@ -332,7 +333,7 @@ impl crate::operation::Operation for ExtractTagsOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for ListTagsOperation {
+impl markdown_todo_extractor_core::operation::Operation for ListTagsOperation {
     fn name(&self) -> &'static str {
         list_tags::CLI_NAME
     }
@@ -354,13 +355,15 @@ impl crate::operation::Operation for ListTagsOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.list_tags(req)).await
+        let request: ListTagsRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.list_tags(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse request from ArgMatches
         let request = ListTagsRequest::from_arg_matches(matches)?;
@@ -387,7 +390,7 @@ impl crate::operation::Operation for ListTagsOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for SearchByTagsOperation {
+impl markdown_todo_extractor_core::operation::Operation for SearchByTagsOperation {
     fn name(&self) -> &'static str {
         search_by_tags::CLI_NAME
     }
@@ -409,14 +412,15 @@ impl crate::operation::Operation for SearchByTagsOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.search_by_tags(req))
-            .await
+        let request: SearchByTagsRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.search_by_tags(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse request from ArgMatches
         let request = SearchByTagsRequest::from_arg_matches(matches)?;

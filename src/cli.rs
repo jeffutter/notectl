@@ -1,4 +1,3 @@
-use crate::capabilities::CapabilityRegistry;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand as ClapSubcommand};
 use rmcp::model::ErrorData;
 use std::path::PathBuf;
@@ -52,7 +51,7 @@ impl ServeOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for ServeOperation {
+impl markdown_todo_extractor_core::operation::Operation for ServeOperation {
     fn name(&self) -> &'static str {
         "serve"
     }
@@ -82,7 +81,6 @@ impl crate::operation::Operation for ServeOperation {
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let _cmd = ServeCommand::from_arg_matches(matches)?;
 

@@ -1,9 +1,9 @@
-use crate::capabilities::CapabilityResult;
-use crate::config::Config;
-use crate::error::internal_error;
 use crate::extractor::{Task, TaskExtractor};
 use crate::filter::{FilterOptions, filter_tasks};
 use clap::{CommandFactory, FromArgMatches, Parser};
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_core::error::internal_error;
 use rmcp::model::ErrorData;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -160,7 +160,7 @@ impl SearchTasksOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for SearchTasksOperation {
+impl markdown_todo_extractor_core::operation::Operation for SearchTasksOperation {
     fn name(&self) -> &'static str {
         search_tasks::CLI_NAME
     }
@@ -174,40 +174,32 @@ impl crate::operation::Operation for SearchTasksOperation {
     }
 
     fn get_command(&self) -> clap::Command {
-        // Get command from request struct's Parser derive
         SearchTasksRequest::command()
     }
 
     async fn execute_json(&self, json: serde_json::Value) -> Result<serde_json::Value, ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.search_tasks(req))
-            .await
+        let request: SearchTasksRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.search_tasks(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        // Parse directly from ArgMatches using clap's from_arg_matches
         let request = SearchTasksRequest::from_arg_matches(matches)?;
 
-        // For CLI usage, if a path was provided, we need to create a new capability
-        // with that path instead of using the registry's default
         let response = if let Some(ref path) = request.path {
-            // Create a new capability with the provided path
             let config = Arc::new(Config::load_from_base_path(path.as_path()));
             let capability = TaskCapability::new(path.clone(), config);
-
-            // Clear the path from request since it's not part of the search parameters
             let mut req_without_path = request;
             req_without_path.path = None;
             capability.search_tasks(req_without_path).await?
         } else {
-            // Use the registry's capability (for when path comes from registry)
             self.capability.search_tasks(request).await?
         };
 
-        // Serialize to JSON
         Ok(serde_json::to_string_pretty(&response.tasks)?)
     }
 

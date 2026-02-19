@@ -2,8 +2,8 @@
 //!
 //! Handles pattern substitution (YYYY/MM/DD) and file discovery with security checks.
 
-use crate::capabilities::daily_notes::date_utils::parse_date;
-use crate::config::Config;
+use crate::date_utils::parse_date;
+use markdown_todo_extractor_core::config::Config;
 use std::path::{Path, PathBuf};
 
 /// Apply a pattern by substituting YYYY, MM, DD placeholders with date components

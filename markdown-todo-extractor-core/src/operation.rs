@@ -2,8 +2,6 @@ use async_trait::async_trait;
 use rmcp::model::ErrorData;
 use std::error::Error;
 
-use crate::capabilities::CapabilityRegistry;
-
 /// Unified trait for operations that can be exposed via HTTP, CLI, or MCP
 ///
 /// This trait combines the functionality of HttpOperation and CliOperation,
@@ -35,14 +33,10 @@ pub trait Operation: Send + Sync + 'static {
     ///
     /// This method receives:
     /// - matches: The clap ArgMatches for this subcommand
-    /// - registry: The capability registry to use (for CLI path handling)
     ///
     /// Returns output string (typically JSON)
-    async fn execute_from_args(
-        &self,
-        matches: &clap::ArgMatches,
-        registry: &CapabilityRegistry,
-    ) -> Result<String, Box<dyn Error>>;
+    async fn execute_from_args(&self, matches: &clap::ArgMatches)
+    -> Result<String, Box<dyn Error>>;
 
     /// Get the JSON Schema for this operation's input
     ///

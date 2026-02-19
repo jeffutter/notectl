@@ -110,66 +110,110 @@ cargo run -- --mcp-stdio /path/to/vault
 
 ## Architecture
 
+### Workspace Structure
+
+The project is organized as a Rust workspace with separate crates for each functional area:
+
+```
+markdown-todo-extractor/              (workspace root + main binary)
+  Cargo.toml                          ([workspace] + [package])
+  src/
+    main.rs                           (entry point)
+    mcp.rs                            (MCP server adapter)
+    http_router.rs                    (HTTP routing helpers)
+    cli.rs                            (serve command + ServeOperation)
+    cli_router.rs                     (CLI dispatch)
+    capabilities/mod.rs               (CapabilityRegistry - integration point)
+
+  markdown-todo-extractor-core/       (shared types, traits, config)
+    src/
+      lib.rs
+      config.rs                       (Config struct, load_from_base_path)
+      error.rs                        (internal_error, invalid_params helpers)
+      operation.rs                    (Operation trait for HTTP/CLI/MCP)
+      file_walker.rs                  (collect_markdown_files utility)
+
+  markdown-todo-extractor-tasks/      (task extraction)
+    src/
+      lib.rs
+      extractor.rs                    (TaskExtractor, Task struct)
+      filter.rs                       (FilterOptions, filter_tasks)
+      capability.rs                   (TaskCapability, SearchTasksOperation)
+
+  markdown-todo-extractor-tags/       (tag operations)
+    src/
+      lib.rs
+      tag_extractor.rs                (TagExtractor)
+      capability.rs                   (TagCapability, Extract/List/SearchByTagsOperation)
+
+  markdown-todo-extractor-files/      (file operations)
+    src/
+      lib.rs
+      capability.rs                   (FileCapability, ListFilesOperation, ReadFilesOperation)
+
+  markdown-todo-extractor-daily-notes/ (daily note operations)
+    src/
+      lib.rs
+      date_utils.rs                   (validate_date, date_range, today)
+      pattern.rs                      (apply_pattern, find_daily_note)
+      capability.rs                   (DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation)
+
+  markdown-todo-extractor-outline/    (document outline/structure)
+    src/
+      lib.rs
+      outline_extractor.rs            (OutlineExtractor, heading parsing)
+      capability.rs                   (OutlineCapability, GetOutline/GetSection/SearchHeadingsOperation)
+```
+
+### Dependency Graph (no cycles)
+
+```
+core
+  ^
+  |--- tasks (core)
+  |--- tags (core)
+  |--- files (core)
+  |--- outline (core)
+  |--- daily-notes (core, files)
+  |--- binary (core, tasks, tags, files, daily-notes, outline)
+```
+
 ### Capability-Based Architecture
 
-The project uses a **capability-based architecture** where each functional area (tasks, tags, files) is encapsulated in a capability that can be exposed via multiple interfaces (MCP, HTTP, CLI).
+Each workspace crate provides one or more **capabilities** that encapsulate a functional area. Capabilities can be exposed via multiple interfaces (MCP, HTTP, CLI) through the **Operation** trait defined in core.
 
-**Core Components:**
+**Key components:**
 
-1. **`src/capabilities/mod.rs`**: Capability registry and trait system
-   - `Capability` trait: Common interface for all capabilities
-   - `CapabilityRegistry`: Manages lazy initialization of capabilities
-   - `CapabilityResult<T>`: Result type for capability operations
+- **`markdown_todo_extractor_core::operation::Operation`**: Unified trait for all operations
+  - `name()`: CLI command name
+  - `path()`: HTTP endpoint path
+  - `execute_json()`: HTTP/MCP execution with JSON I/O
+  - `execute_from_args()`: CLI execution from clap ArgMatches
+  - `input_schema()`: JSON schema for the operation's input
 
-2. **`src/capabilities/tasks.rs`**: Task operations capability
-   - `TaskCapability`: Wraps `TaskExtractor` for task search and filtering
-   - Exposes: `search_tasks()` with sync and async versions
+- **`src/capabilities/mod.rs`**: `CapabilityRegistry` - the integration point
+  - Instantiates all capabilities from workspace crates
+  - `create_operations()` returns all registered operations for automatic HTTP/CLI/MCP registration
 
-3. **`src/capabilities/tags.rs`**: Tag operations capability
-   - `TagCapability`: Wraps `TagExtractor` for tag extraction and search
-   - Exposes: `extract_tags()`, `list_tags()`, `search_by_tags()`
+**Interface Adapters (in binary `src/`):**
 
-4. **`src/capabilities/files.rs`**: File operations capability
-   - `FileCapability`: Handles file tree listing and reading
-   - Exposes: `list_files()`, `read_file()`
-   - Contains `build_file_tree()` helper function
+- **`src/mcp.rs`**: MCP server adapter using rmcp's `#[tool_router]` macro
+- **`src/http_router.rs`**: HTTP route registration helpers
+- **`src/cli_router.rs`**: CLI command dispatch
+- **`src/cli.rs`**: Serve command definition
+- **`src/main.rs`**: Entry point, wires everything together
 
-**Interface Adapters:**
+**Core Extractors (in domain crates):**
 
-5. **`src/mcp.rs`**: MCP server adapter
-   - `TaskSearchService`: Thin delegation layer to capabilities
-   - Uses rmcp's `#[tool_router]` macro for automatic MCP protocol handling
-   - All `#[tool]` methods delegate to appropriate capabilities
-
-6. **`src/cli.rs`**: Command-line interface
-   - Creates `CapabilityRegistry` and calls synchronous capability methods
-   - `Args` struct: CLI argument parsing
-   - `run_cli()` function: Delegates to capabilities
-
-7. **`src/main.rs`**: Application entry point
-   - HTTP mode: Creates `AppState` with `CapabilityRegistry`
-   - MCP mode: Creates `TaskSearchService` with registry
-   - CLI mode: Calls `run_cli()` which uses registry
-
-**Core Extractors:**
-
-8. **`src/extractor.rs`**: Task extraction and parsing
-   - `Task` struct: Serializable data structure for task information
-   - `TaskExtractor` struct: Regex patterns and extraction logic
-
-9. **`src/tag_extractor.rs`**: Tag extraction from YAML frontmatter
-   - `TagExtractor`: Parses YAML frontmatter for tags
-   - `TagCount`, `TaggedFile`: Supporting data structures
-
-10. **`src/filter.rs`**: Task filtering functionality
-    - `FilterOptions` struct: Filter configuration
-    - `filter_tasks()` function: Applies filter criteria
-
-11. **`src/config.rs`**: Configuration management
-    - `Config` struct: Application configuration (path exclusions, etc.)
-    - `load_from_base_path()`: Loads from `.markdown-todo-extractor.toml`
+- **`markdown-todo-extractor-tasks`**: Task extraction pipeline (regex patterns, parsing, filtering)
+- **`markdown-todo-extractor-tags`**: YAML frontmatter tag extraction
+- **`markdown-todo-extractor-files`**: File tree listing and content reading
+- **`markdown-todo-extractor-daily-notes`**: Daily note lookup by date pattern
+- **`markdown-todo-extractor-outline`**: Heading hierarchy extraction
 
 ### Task Extraction Pipeline
+
+All task extraction lives in `markdown-todo-extractor-tasks/src/`:
 
 1. **File Discovery**: `extract_tasks()` → `extract_tasks_from_dir()` recursively finds `.md` files
 2. **Line Parsing**: `extract_tasks_from_file()` → `parse_task_line()` matches task patterns
@@ -181,7 +225,7 @@ The project uses a **capability-based architecture** where each functional area 
 
 ### Regex Pattern System
 
-The `TaskExtractor` holds compiled regex patterns that are reused across all files:
+The `TaskExtractor` (in `extractor.rs`) holds compiled regex patterns that are reused across all files:
 
 - **Task patterns**: Detect `- [ ]`, `- [x]`, `- [-]`, `- [?]` checkboxes with various statuses
 - **Metadata patterns**: Extract dates (`📅 YYYY-MM-DD`, `due: YYYY-MM-DD`), priorities (emoji or text), tags (`#tag`)
@@ -204,197 +248,104 @@ The cleaning step is critical: content is extracted first with all metadata inta
 
 ## Adding New Features
 
-### Adding a New Capability
+### Adding a New Capability (as a new workspace crate)
 
-To add a new capability (e.g., for notes, bookmarks, etc.):
+To add a new capability (e.g., for bookmarks):
 
-1. **Create capability module** (`src/capabilities/new_capability.rs`):
+1. **Create a new workspace crate** `markdown-todo-extractor-bookmarks/`:
+   - `Cargo.toml`: depend on `markdown-todo-extractor-core.workspace = true` plus any needed deps
+   - `src/lib.rs`: `pub mod capability; pub use capability::*;`
+   - `src/capability.rs`: implement the capability struct and `Operation` structs
+
+2. **Capability pattern** (see `markdown-todo-extractor-files/src/capability.rs` for reference):
    ```rust
-   use crate::capabilities::{Capability, CapabilityResult};
+   use markdown_todo_extractor_core::{CapabilityResult, config::Config};
+   use markdown_todo_extractor_core::error::{internal_error, invalid_params};
 
-   pub struct NewCapability {
-       base_path: PathBuf,
-       config: Arc<Config>,
-   }
+   pub struct NewCapability { base_path: PathBuf, config: Arc<Config> }
 
    impl NewCapability {
-       pub fn new(base_path: PathBuf, config: Arc<Config>) -> Self {
-           Self { base_path, config }
-       }
-
-       pub async fn operation(&self, request: Request) -> CapabilityResult<Response> {
-           // Implementation
-       }
-
-       pub fn operation_sync(&self, request: Request) -> CapabilityResult<Response> {
-           // Synchronous implementation for CLI
-       }
+       pub fn new(base_path: PathBuf, config: Arc<Config>) -> Self { ... }
+       pub async fn do_thing(&self, request: Request) -> CapabilityResult<Response> { ... }
    }
 
-   impl Capability for NewCapability {
-       fn id(&self) -> &'static str { "new_capability" }
-       fn description(&self) -> &'static str { "Description" }
+   pub struct DoThingOperation { capability: Arc<NewCapability> }
+
+   #[async_trait::async_trait]
+   impl markdown_todo_extractor_core::operation::Operation for DoThingOperation {
+       fn name(&self) -> &'static str { "do-thing" }
+       fn path(&self) -> &'static str { "/api/things" }
+       fn description(&self) -> &'static str { "..." }
+       fn get_command(&self) -> clap::Command { RequestStruct::command() }
+       async fn execute_json(&self, json: serde_json::Value) -> Result<serde_json::Value, ErrorData> { ... }
+       async fn execute_from_args(&self, matches: &clap::ArgMatches) -> Result<String, Box<dyn Error>> { ... }
+       fn input_schema(&self) -> serde_json::Value { serde_json::to_value(schema_for!(RequestStruct)).unwrap() }
    }
    ```
 
-2. **Register in `src/capabilities/mod.rs`**:
-   - Add `pub mod new_capability;`
-   - Import: `use self::new_capability::NewCapability;`
-   - Add field: `new_capability: OnceLock<Arc<NewCapability>>`
-   - Update `new()` to initialize the `OnceLock`
-   - Add getter method: `pub fn new_cap(&self) -> Arc<NewCapability>`
+3. **Add to workspace** in root `Cargo.toml`:
+   - Add `"markdown-todo-extractor-bookmarks"` to `[workspace] members`
+   - Add `markdown-todo-extractor-bookmarks = { path = "markdown-todo-extractor-bookmarks" }` under `[workspace.dependencies]`
+   - Add `markdown-todo-extractor-bookmarks.workspace = true` to `[dependencies]`
 
-3. **Add MCP tool in `src/mcp.rs`**:
+4. **Register in `src/capabilities/mod.rs`**:
+   - Add `pub use markdown_todo_extractor_bookmarks::{NewCapability, DoThingOperation};`
+   - Add field to `CapabilityRegistry` and getter method
+   - Add operation to `create_operations()`
+
+5. **Add MCP tool in `src/mcp.rs`**:
    ```rust
    #[tool(description = "...")]
-   async fn operation(&self, Parameters(req): Parameters<Request>)
-       -> Result<Json<Response>, ErrorData>
-   {
-       let response = self.capability_registry.new_cap().operation(req).await?;
-       Ok(Json(response))
+   async fn do_thing(&self, Parameters(req): Parameters<Request>) -> Result<Json<Response>, ErrorData> {
+       Ok(Json(self.capability_registry.bookmarks().do_thing(req).await?))
    }
    ```
-
-4. **Add CLI command in `src/cli.rs`** (if needed):
-   - Add variant to `Commands` enum
-   - Handle in `run_cli()` by calling capability's sync method
-
-5. **Add HTTP handler in `src/main.rs`** (if needed):
-   - Create handler function that uses `state.capability_registry.new_cap()`
-   - Add route in router
 
 ### Adding New Metadata Types or Task Statuses
 
-1. In `src/extractor.rs`:
-   - Add regex pattern to `TaskExtractor::new()`
-   - Add extraction method (e.g., `extract_new_field()`)
-   - Call extraction in `create_task()`
-   - Add cleaning logic to `clean_content()` to remove the metadata from displayed text
-   - Add field to `Task` struct
+In `markdown-todo-extractor-tasks/src/extractor.rs`:
+- Add regex pattern to `TaskExtractor::new()`
+- Add extraction method and call it in `create_task()`
+- Add cleaning logic to `clean_content()`
+- Add field to `Task` struct
 
-2. If filtering is needed:
-   - Add field to `FilterOptions` in `src/filter.rs`
-   - Add filter logic in `filter_tasks()` function in `src/filter.rs`
-   - Add CLI argument to `Args` in `src/cli.rs`
-   - Add parameter to `SearchTasksRequest` in `src/mcp.rs`
-   - Update capability method to handle new filter option
+If filtering is needed, in `markdown-todo-extractor-tasks/src/`:
+- Add field to `FilterOptions` in `filter.rs`
+- Add filter logic in `filter_tasks()` in `filter.rs`
+- Update `SearchTasksRequest` in `capability.rs`
 
-### Adding CLI Automatic Registration for an Operation
+### Operation Pattern (request struct doubles as CLI args)
 
-The project uses an automatic CLI registration system where operations implement the `CliOperation` trait to self-register their CLI commands. This eliminates boilerplate and makes operations self-contained.
+Request structs implement both `serde::Deserialize` (for HTTP/MCP) and `clap::Parser` (for CLI). CLI-only fields use `#[serde(skip)]` and `#[schemars(skip)]`.
 
-**Reference Implementation**: See `src/capabilities/tasks.rs` for `SearchTasksOperation`
+```rust
+#[derive(Debug, Deserialize, Serialize, JsonSchema, clap::Parser)]
+#[command(name = "list-tags", about = "List all tags with document counts")]
+pub struct ListTagsRequest {
+    #[arg(index = 1, required = true)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub path: Option<PathBuf>,  // CLI only
 
-**Pattern Overview**:
-1. Request structs double as CLI argument definitions using `#[derive(Parser)]`
-2. Operations implement `CliOperation` to provide command metadata and execution
-3. Registry lists operations in `create_cli_operations()`
-4. Router automatically builds CLI and routes to operations
+    #[arg(long)]
+    pub min_count: Option<usize>,
+}
+```
 
-**Step-by-Step Instructions**:
-
-1. **Add Parser derive to the request struct** (e.g., in `src/capabilities/tags.rs`):
-   ```rust
-   use clap::{CommandFactory, FromArgMatches, Parser};
-
-   #[derive(Debug, Deserialize, Serialize, JsonSchema, Parser)]
-   #[command(name = "list-tags", about = "List all tags with document counts")]
-   pub struct ListTagsRequest {
-       /// Path to scan (CLI only - not used in HTTP/MCP)
-       #[arg(index = 1, required = true, help = "Path to file or folder to scan")]
-       #[serde(skip_serializing_if = "Option::is_none")]
-       #[schemars(skip)]
-       pub path: Option<PathBuf>,
-
-       #[arg(long, help = "Minimum document count to include a tag")]
-       #[schemars(description = "Minimum document count to include a tag")]
-       pub min_count: Option<usize>,
-
-       #[arg(long, help = "Maximum number of tags to return")]
-       #[schemars(description = "Maximum number of tags to return")]
-       pub limit: Option<usize>,
-   }
-   ```
-
-   **Key points**:
-   - Add `Parser` to derives (alongside existing `Deserialize`, `Serialize`, `JsonSchema`)
-   - Import `CommandFactory` and `FromArgMatches` traits
-   - Add `#[command(name = "...", about = "...")]` attribute
-   - Add `#[arg(...)]` attributes to each field
-   - Add CLI-specific `path` field if needed (with `#[serde(skip)]` and `#[schemars(skip)]`)
-
-2. **Implement CliOperation for the operation struct** (add to end of capability file):
-   ```rust
-   impl crate::cli_router::CliOperation for ListTagsOperation {
-       fn command_name(&self) -> &'static str {
-           list_tags::CLI_NAME  // Use existing constant
-       }
-
-       fn get_command(&self) -> clap::Command {
-           // Get command from request struct's Parser derive
-           ListTagsRequest::command()
-       }
-
-       fn execute_from_args(
-           &self,
-           matches: &clap::ArgMatches,
-           _registry: &crate::capabilities::CapabilityRegistry,
-       ) -> Result<String, Box<dyn std::error::Error>> {
-           // Parse request from ArgMatches
-           let request = ListTagsRequest::from_arg_matches(matches)?;
-
-           // Handle CLI-specific path if present
-           let response = if let Some(ref path) = request.path {
-               let config = Arc::new(Config::load_from_base_path(path.as_path()));
-               let capability = TagCapability::new(path.clone(), config);
-               let mut req_without_path = request;
-               req_without_path.path = None;
-               capability.list_tags_sync(req_without_path)?
-           } else {
-               self.capability.list_tags_sync(request)?
-           };
-
-           // Serialize to JSON
-           Ok(serde_json::to_string_pretty(&response)?)
-       }
-   }
-   ```
-
-   **Key points**:
-   - Use existing `CLI_NAME` constant from operation metadata module
-   - Call `RequestStruct::command()` to get clap command definition
-   - Use `from_arg_matches()` to parse arguments
-   - Handle CLI-specific path field by creating temporary capability if needed
-   - Return JSON string for output
-
-3. **Register in `create_cli_operations()`** (`src/capabilities/mod.rs`):
-   ```rust
-   pub fn create_cli_operations(&self) -> Vec<Arc<dyn crate::cli_router::CliOperation>> {
-       vec![
-           Arc::new(tasks::SearchTasksOperation::new(self.tasks())),
-           Arc::new(tags::ListTagsOperation::new(self.tags())),  // Add this line
-           // ... other operations
-       ]
-   }
-   ```
-
-4. **Remove manual routing** (if migrating from old CLI):
-   - Remove the command struct from `src/cli.rs` (e.g., `ListTagsCommand`)
-   - Remove the variant from `Commands` enum
-   - Remove the match arm in `run_cli()`
-
-**Path Handling Pattern**:
-- CLI operations receive a positional `path` argument (user-friendly)
-- This path is stored in a `path: Option<PathBuf>` field on the request struct
-- The field is marked with `#[serde(skip)]` and `#[schemars(skip)]` so it doesn't appear in HTTP/MCP APIs
-- In `execute_from_args()`, if path is present, create a temporary capability with that path
-- If path is absent, use the registry's default capability
-
-**Benefits**:
-- Reduces boilerplate from ~40 lines to ~15 lines per operation
-- Single source of truth (request struct defines CLI, HTTP, and MCP interface)
-- Type-safe argument parsing via clap
-- Self-contained operations (CLI definition lives with the operation)
+In `execute_from_args`, if a path is provided, create a temporary capability with that path:
+```rust
+async fn execute_from_args(&self, matches: &clap::ArgMatches) -> Result<String, Box<dyn Error>> {
+    let request = ListTagsRequest::from_arg_matches(matches)?;
+    let response = if let Some(ref path) = request.path {
+        let config = Arc::new(Config::load_from_base_path(path));
+        let capability = TagCapability::new(path.clone(), config);
+        capability.list_tags(request).await?
+    } else {
+        self.capability.list_tags(request).await?
+    };
+    Ok(serde_json::to_string_pretty(&response)?)
+}
+```
 
 **Testing**:
 ```bash

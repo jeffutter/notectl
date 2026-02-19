@@ -1,16 +1,16 @@
 use crate::capabilities::CapabilityRegistry;
-use crate::capabilities::daily_notes::{
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_daily_notes::{
     GetDailyNoteRequest, GetDailyNoteResponse, SearchDailyNotesRequest, SearchDailyNotesResponse,
 };
-use crate::capabilities::files::{
+use markdown_todo_extractor_files::{
     ListFilesRequest, ListFilesResponse, ReadFilesRequest, ReadFilesResponse,
 };
-use crate::capabilities::tags::{
+use markdown_todo_extractor_tags::{
     ExtractTagsRequest, ExtractTagsResponse, ListTagsRequest, ListTagsResponse,
     SearchByTagsRequest, SearchByTagsResponse,
 };
-use crate::capabilities::tasks::{SearchTasksRequest, TaskSearchResponse};
-use crate::config::Config;
+use markdown_todo_extractor_tasks::{SearchTasksRequest, TaskSearchResponse};
 use rmcp::{
     ServerHandler,
     handler::server::{
@@ -183,14 +183,14 @@ impl ServerHandler for TaskSearchService {
              - {}\n\
              - {}\n\
              - {}",
-            crate::capabilities::tasks::search_tasks::DESCRIPTION,
-            crate::capabilities::tags::extract_tags::DESCRIPTION,
-            crate::capabilities::tags::list_tags::DESCRIPTION,
-            crate::capabilities::tags::search_by_tags::DESCRIPTION,
-            crate::capabilities::files::list_files::DESCRIPTION,
-            crate::capabilities::files::read_files::DESCRIPTION,
-            crate::capabilities::daily_notes::get_daily_note::DESCRIPTION,
-            crate::capabilities::daily_notes::search_daily_notes::DESCRIPTION
+            markdown_todo_extractor_tasks::capability::search_tasks::DESCRIPTION,
+            markdown_todo_extractor_tags::extract_tags::DESCRIPTION,
+            markdown_todo_extractor_tags::list_tags::DESCRIPTION,
+            markdown_todo_extractor_tags::search_by_tags::DESCRIPTION,
+            markdown_todo_extractor_files::list_files::DESCRIPTION,
+            markdown_todo_extractor_files::read_files::DESCRIPTION,
+            markdown_todo_extractor_daily_notes::get_daily_note::DESCRIPTION,
+            markdown_todo_extractor_daily_notes::search_daily_notes::DESCRIPTION
         );
 
         ServerInfo {

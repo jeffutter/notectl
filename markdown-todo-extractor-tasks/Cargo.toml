@@ -1,0 +1,21 @@
+[package]
+name = "markdown-todo-extractor-tasks"
+version.workspace = true
+edition.workspace = true
+description = "Task extraction capability for markdown-todo-extractor"
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+clap.workspace = true
+markdown-todo-extractor-core.workspace = true
+rayon.workspace = true
+regex.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+simdutf8.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

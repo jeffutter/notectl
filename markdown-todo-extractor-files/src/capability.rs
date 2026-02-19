@@ -1,7 +1,7 @@
-use crate::capabilities::CapabilityResult;
-use crate::config::Config;
-use crate::error::{internal_error, invalid_params};
 use clap::{CommandFactory, FromArgMatches};
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::config::Config;
+use markdown_todo_extractor_core::error::{internal_error, invalid_params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -361,7 +361,7 @@ fn extract_file_name(file_path: &str) -> String {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for ListFilesOperation {
+impl markdown_todo_extractor_core::operation::Operation for ListFilesOperation {
     fn name(&self) -> &'static str {
         list_files::CLI_NAME
     }
@@ -383,14 +383,15 @@ impl crate::operation::Operation for ListFilesOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.list_files(req))
-            .await
+        let request: ListFilesRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.list_files(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse request from ArgMatches
         let request = ListFilesRequest::from_arg_matches(matches)?;
@@ -417,7 +418,7 @@ impl crate::operation::Operation for ListFilesOperation {
 }
 
 #[async_trait::async_trait]
-impl crate::operation::Operation for ReadFilesOperation {
+impl markdown_todo_extractor_core::operation::Operation for ReadFilesOperation {
     fn name(&self) -> &'static str {
         read_files::CLI_NAME
     }
@@ -439,14 +440,15 @@ impl crate::operation::Operation for ReadFilesOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
-        crate::http_router::execute_json_operation(json, |req| self.capability.read_files(req))
-            .await
+        let request: ReadFilesRequest = serde_json::from_value(json)
+            .map_err(|e| markdown_todo_extractor_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.read_files(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
     }
 
     async fn execute_from_args(
         &self,
         matches: &clap::ArgMatches,
-        _registry: &crate::capabilities::CapabilityRegistry,
     ) -> Result<String, Box<dyn std::error::Error>> {
         // Parse request from ArgMatches
         let request = ReadFilesRequest::from_arg_matches(matches)?;

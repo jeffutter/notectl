@@ -1,8 +1,9 @@
-use crate::capabilities::CapabilityRegistry;
 use std::sync::Arc;
 
 /// Build a clap Command dynamically from all registered operations
-pub fn build_cli(operations: &[Arc<dyn crate::operation::Operation>]) -> clap::Command {
+pub fn build_cli(
+    operations: &[Arc<dyn markdown_todo_extractor_core::operation::Operation>],
+) -> clap::Command {
     let mut cmd = clap::Command::new("markdown-todo-extractor")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Extract todo items from Markdown files")
@@ -26,15 +27,14 @@ pub fn build_cli(operations: &[Arc<dyn crate::operation::Operation>]) -> clap::C
 
 /// Execute CLI command by routing to the appropriate operation
 pub async fn execute_cli(
-    operations: &[Arc<dyn crate::operation::Operation>],
+    operations: &[Arc<dyn markdown_todo_extractor_core::operation::Operation>],
     matches: clap::ArgMatches,
-    registry: &CapabilityRegistry,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Find the matching operation
     if let Some((subcommand_name, sub_matches)) = matches.subcommand() {
         for operation in operations {
             if operation.name() == subcommand_name {
-                let output = operation.execute_from_args(sub_matches, registry).await?;
+                let output = operation.execute_from_args(sub_matches).await?;
                 println!("{}", output);
                 return Ok(());
             }

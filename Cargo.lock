@@ -657,19 +657,111 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
- "glob",
+ "markdown-todo-extractor-core",
+ "markdown-todo-extractor-daily-notes",
+ "markdown-todo-extractor-files",
+ "markdown-todo-extractor-outline",
+ "markdown-todo-extractor-tags",
+ "markdown-todo-extractor-tasks",
  "mimalloc",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "markdown-todo-extractor-core"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "glob",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "markdown-todo-extractor-daily-notes"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "markdown-todo-extractor-core",
+ "markdown-todo-extractor-files",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "markdown-todo-extractor-files"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "markdown-todo-extractor-core",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "markdown-todo-extractor-outline"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "markdown-todo-extractor-core",
+ "regex",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "markdown-todo-extractor-tags"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "markdown-todo-extractor-core",
+ "rayon",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
+name = "markdown-todo-extractor-tasks"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "markdown-todo-extractor-core",
  "rayon",
  "regex",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
- "serde_yaml",
  "simdutf8",
  "tempfile",
- "tokio",
- "toml",
 ]
 
 [[package]]

@@ -3,14 +3,11 @@ use axum::{
     extract::{Json, Query},
     routing::get,
 };
+use markdown_todo_extractor_core::CapabilityResult;
+use markdown_todo_extractor_core::error::{internal_error, invalid_params};
 use rmcp::model::ErrorData;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{future::Future, sync::Arc};
-
-use crate::{
-    capabilities::CapabilityResult,
-    error::{internal_error, invalid_params},
-};
 
 /// Generic helper to execute an HTTP operation with automatic JSON serialization/deserialization
 ///
@@ -59,7 +56,7 @@ where
 /// The router state type must remain generic to work with the application's state.
 pub fn register_operation<S>(
     router: Router<S>,
-    operation: Arc<dyn crate::operation::Operation>,
+    operation: Arc<dyn markdown_todo_extractor_core::operation::Operation>,
 ) -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
