@@ -85,13 +85,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             ServerMode::Http { port, .. } => {
                 // Start HTTP MCP server
-                use rmcp::transport::streamable_http_server::StreamableHttpService;
+                use rmcp::transport::streamable_http_server::{
+                    StreamableHttpServerConfig, StreamableHttpService,
+                };
+                use tokio_util::sync::CancellationToken;
 
+                let ct = CancellationToken::new();
                 let base_path_clone = base_path.clone();
                 let service = StreamableHttpService::new(
                     move || Ok(TaskSearchService::new(base_path_clone.clone())),
                     Arc::new(LocalSessionManager::default()),
-                    Default::default(),
+                    StreamableHttpServerConfig {
+                        cancellation_token: ct.clone(),
+                        ..Default::default()
+                    },
                 );
 
                 // Load configuration from base path
@@ -132,8 +139,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(async {
+                    .with_graceful_shutdown(async move {
                         tokio::signal::ctrl_c().await.ok();
+                        eprintln!("Received Ctrl-C, shutting down...");
+                        ct.cancel();
                     })
                     .await?;
 
