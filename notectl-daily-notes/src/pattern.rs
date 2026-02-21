@@ -107,6 +107,10 @@ mod tests {
             Some("Daily/2025/01-20.md".to_string())
         );
         assert_eq!(
+            apply_pattern("YYYY/Daily/MM/YYYY-MM-DD.md", "2025-01-20"),
+            Some("2025/Daily/01/2025-01-20.md".to_string())
+        );
+        assert_eq!(
             apply_pattern("YYYY/MM/DD.md", "2025-01-20"),
             Some("2025/01/20.md".to_string())
         );

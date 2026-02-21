@@ -4,7 +4,10 @@ use std::fs;
 use std::path::Path;
 
 pub fn default_daily_note_patterns() -> Vec<String> {
-    vec!["YYYY-MM-DD.md".to_string()]
+    vec![
+        "YYYY-MM-DD.md".to_string(),
+        "0. PeriodicNotes/YYYY/Daily/MM/YYYY-MM-DD.md".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Deserialize)]
