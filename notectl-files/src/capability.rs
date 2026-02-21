@@ -474,6 +474,22 @@ impl notectl_core::operation::Operation for ReadFilesOperation {
     }
 }
 
+/// Format a byte count as a human-readable size string
+fn format_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} B", bytes)
+    } else {
+        format!("{:.1} {}", size, UNITS[unit_idx])
+    }
+}
+
 /// Helper function to format a file tree as visual indented text
 fn format_tree_visual(node: &FileTreeNode, indent_level: usize) -> String {
     let mut output = String::new();
@@ -482,6 +498,13 @@ fn format_tree_visual(node: &FileTreeNode, indent_level: usize) -> String {
     // Add current node
     if node.is_directory {
         output.push_str(&format!("{}{}/\n", indent, node.name));
+    } else if let Some(size) = node.size_bytes {
+        output.push_str(&format!(
+            "{}{} ({})\n",
+            indent,
+            node.name,
+            format_size(size)
+        ));
     } else {
         output.push_str(&format!("{}{}\n", indent, node.name));
     }
