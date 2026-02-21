@@ -60,13 +60,19 @@ cargo build
 # Build release version
 cargo build --release
 
-# Run with arguments
-cargo run -- path/to/file.md
-cargo run -- path/to/vault --status incomplete --tags work
+# Run task search with arguments
+cargo run -- tasks path/to/file.md
+cargo run -- tasks path/to/vault --status incomplete --tags work --limit 20
+
+# Start MCP server (stdio)
+cargo run -- serve stdio path/to/vault
+
+# Start HTTP server
+cargo run -- serve http path/to/vault --port 8000
 
 # Test the tool manually
 echo "- [ ] Test task #tag 📅 2025-12-10" > test.md
-cargo run -- test.md
+cargo run -- tasks test.md
 ```
 
 ## Configuration
@@ -235,6 +241,12 @@ The cleaning step is critical: content is extracted first with all metadata inta
 
 ## Supported Metadata Formats
 
+**Task Statuses**:
+- `- [ ]` → `"incomplete"`
+- `- [x]` or `- [X]` → `"completed"`
+- `- [-]` → `"cancelled"`
+- `- [?]` or any other char → `"other_?"` (the char is embedded in the status string)
+
 **Dates** (YYYY-MM-DD format):
 - Due: `📅 2025-12-10`, `due: 2025-12-10`, `@due(2025-12-10)`
 - Created: `➕ 2025-12-10`, `created: 2025-12-10`
@@ -244,7 +256,9 @@ The cleaning step is critical: content is extracted first with all metadata inta
 - Emojis: `⏫` (urgent), `🔼` (high), `🔽` (low), `⏬` (lowest)
 - Text: `priority: high/medium/low`
 
-**Tags**: `#tagname` (alphanumeric only)
+**Tags**: `#tagname` (alphanumeric/underscore only; tags are preserved in `content` after cleaning)
+
+**Result Limit**: Results default to 50 (override with `--limit` flag or `NOTECTL_DEFAULT_LIMIT` env var)
 
 ## Adding New Features
 
@@ -300,6 +314,8 @@ To add a new capability (e.g., for bookmarks):
        Ok(Json(self.capability_registry.bookmarks().do_thing(req).await?))
    }
    ```
+
+> **Note**: As of now, `notectl-outline` operations (`get_outline`, `get_section`, `search_headings`) are registered for HTTP and CLI but **not** exposed as MCP tools in `src/mcp.rs`. They are available via HTTP and CLI only.
 
 ### Adding New Metadata Types or Task Statuses
 
