@@ -62,6 +62,7 @@
           {
             packages = [
               cargo
+              cargo-nextest
               cargo-watch
               clang
               lefthook
