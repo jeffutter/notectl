@@ -330,6 +330,15 @@ impl notectl_core::operation::Operation for ExtractTagsOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(ExtractTagsRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = ExtractTagsRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -387,6 +396,15 @@ impl notectl_core::operation::Operation for ListTagsOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(ListTagsRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = ListTagsRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -443,5 +461,14 @@ impl notectl_core::operation::Operation for SearchByTagsOperation {
     fn input_schema(&self) -> serde_json::Value {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(SearchByTagsRequest)).unwrap()
+    }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = SearchByTagsRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
     }
 }

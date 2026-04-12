@@ -16,7 +16,7 @@ pub mod list_files {
 }
 
 /// Parameters for the list_files operation
-#[derive(Debug, Deserialize, JsonSchema, clap::Parser)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, clap::Parser)]
 #[command(name = "list-files", about = "List the directory tree of the vault")]
 pub struct ListFilesRequest {
     /// Path to scan (CLI only - not used in HTTP/MCP)
@@ -100,7 +100,7 @@ pub struct ReadFilesResponse {
 }
 
 /// Parameters for the read_files operation
-#[derive(Debug, Deserialize, JsonSchema, clap::Parser)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, clap::Parser)]
 #[command(name = "read-files", about = "Read one or more markdown files")]
 pub struct ReadFilesRequest {
     /// Vault path (CLI only - not used in HTTP/MCP)
@@ -415,6 +415,15 @@ impl notectl_core::operation::Operation for ListFilesOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(ListFilesRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = ListFilesRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -471,6 +480,15 @@ impl notectl_core::operation::Operation for ReadFilesOperation {
     fn input_schema(&self) -> serde_json::Value {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(ReadFilesRequest)).unwrap()
+    }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = ReadFilesRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
     }
 }
 

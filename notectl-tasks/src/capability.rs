@@ -207,4 +207,68 @@ impl notectl_core::operation::Operation for SearchTasksOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(SearchTasksRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = SearchTasksRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notectl_core::operation::Operation;
+    use std::sync::Arc;
+
+    fn make_operation() -> SearchTasksOperation {
+        // Capability is not invoked in args_to_json, so a dummy path is fine
+        let config = Arc::new(notectl_core::config::Config::default());
+        let capability = Arc::new(TaskCapability::new(
+            std::path::PathBuf::from("/tmp"),
+            config,
+        ));
+        SearchTasksOperation::new(capability)
+    }
+
+    #[test]
+    fn args_to_json_strips_path_and_preserves_filters() {
+        let op = make_operation();
+        // Simulate: notectl tasks /some/vault --status incomplete --limit 10
+        let cmd = SearchTasksRequest::command();
+        let matches = cmd
+            .try_get_matches_from([
+                "tasks",
+                "/some/vault",
+                "--status",
+                "incomplete",
+                "--limit",
+                "10",
+            ])
+            .expect("parse failed");
+        let json = op.args_to_json(&matches).expect("args_to_json failed");
+
+        // path should not appear in output (it's CLI-only)
+        assert!(json.get("path").is_none(), "path should be stripped");
+        // filters should be present
+        assert_eq!(json["status"], "incomplete");
+        assert_eq!(json["limit"], 10);
+    }
+
+    #[test]
+    fn args_to_json_minimal_args() {
+        let op = make_operation();
+        let cmd = SearchTasksRequest::command();
+        let matches = cmd
+            .try_get_matches_from(["tasks", "/vault"])
+            .expect("parse failed");
+        let json = op.args_to_json(&matches).expect("args_to_json failed");
+
+        assert!(json.get("path").is_none());
+        // Optional filters absent → serialized as null or absent
+        assert!(json.get("status").is_none() || json["status"].is_null());
+    }
 }

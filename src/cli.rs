@@ -97,4 +97,12 @@ impl notectl_core::operation::Operation for ServeOperation {
             "properties": {}
         })
     }
+
+    fn args_to_json(
+        &self,
+        _matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        // ServeOperation is CLI-only and not available for remote execution
+        Err("serve command is not available for remote execution".into())
+    }
 }

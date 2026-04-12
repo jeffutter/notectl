@@ -463,6 +463,15 @@ impl notectl_core::operation::Operation for GetDailyNoteOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(GetDailyNoteRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = GetDailyNoteRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -517,6 +526,15 @@ impl notectl_core::operation::Operation for SearchDailyNotesOperation {
     fn input_schema(&self) -> serde_json::Value {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(SearchDailyNotesRequest)).unwrap()
+    }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = SearchDailyNotesRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
     }
 }
 

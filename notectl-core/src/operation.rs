@@ -43,4 +43,12 @@ pub trait Operation: Send + Sync + 'static {
     /// Returns the schema as a serde_json::Value for easy serialization.
     /// Implementations should use schemars::schema_for! on their request type.
     fn input_schema(&self) -> serde_json::Value;
+
+    /// Parse CLI arguments into a JSON value suitable for HTTP/MCP execution
+    ///
+    /// Parses the request struct from ArgMatches, clears any CLI-only fields
+    /// (e.g., path/vault_path), and serializes to JSON. This lets a remote
+    /// client reuse CLI argument parsing without local execution.
+    fn args_to_json(&self, matches: &clap::ArgMatches)
+    -> Result<serde_json::Value, Box<dyn Error>>;
 }

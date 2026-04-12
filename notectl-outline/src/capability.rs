@@ -387,6 +387,15 @@ impl notectl_core::operation::Operation for GetOutlineOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(GetOutlineRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = GetOutlineRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -441,6 +450,15 @@ impl notectl_core::operation::Operation for GetSectionOperation {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(GetSectionRequest)).unwrap()
     }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = GetSectionRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }
 
 #[async_trait::async_trait]
@@ -494,5 +512,14 @@ impl notectl_core::operation::Operation for SearchHeadingsOperation {
     fn input_schema(&self) -> serde_json::Value {
         use schemars::schema_for;
         serde_json::to_value(schema_for!(SearchHeadingsRequest)).unwrap()
+    }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = SearchHeadingsRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
     }
 }

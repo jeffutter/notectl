@@ -1,6 +1,6 @@
 ---
 id: mte-c5oz
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-04-12T03:51:42Z
