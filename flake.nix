@@ -50,12 +50,27 @@
         );
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        bin = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+        notectl = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = "--bin notectl";
+          }
+        );
+
+        notectl-remote = craneLib.buildPackage (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoExtraArgs = "--bin notectl-remote";
+          }
+        );
       in
       with pkgs;
       {
         packages = {
-          default = bin;
+          default = notectl;
+          inherit notectl notectl-remote;
         };
 
         devShells.default = mkShell (
