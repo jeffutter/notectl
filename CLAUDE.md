@@ -260,6 +260,18 @@ The cleaning step is critical: content is extracted first with all metadata inta
 
 **Result Limit**: Results default to 50 (override with `--limit` flag or `NOTECTL_DEFAULT_LIMIT` env var)
 
+## Keeping `prime` Up to Date
+
+The `prime` command (`src/prime.rs`) outputs a static LLM reference for all CLI commands. **You must update `PRIME_TEXT` whenever you:**
+
+- Add, rename, or remove a command
+- Add, rename, or remove an option on any command
+- Change argument names or positional argument order
+- Change a default value (e.g. default `--limit`)
+- Change path conventions (vault_path vs path, relative vs absolute)
+
+There are no automated tests for this — it is purely editorial. After any CLI surface change, open `src/prime.rs` and update the relevant section before committing.
+
 ## Adding New Features
 
 ### Adding a New Capability (as a new workspace crate)

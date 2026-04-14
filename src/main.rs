@@ -3,6 +3,7 @@ mod cli;
 mod cli_router;
 mod http_router;
 mod mcp;
+mod prime;
 
 use clap::FromArgMatches;
 use cli::{ServeCommand, ServerMode};
@@ -59,6 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse command line arguments
     let matches = cli.get_matches();
+
+    // Check if this is the prime command
+    if let Some(("prime", _)) = matches.subcommand() {
+        print!("{}", prime::PRIME_TEXT);
+        return Ok(());
+    }
 
     // Check if this is the serve command
     if let Some(("serve", serve_matches)) = matches.subcommand() {

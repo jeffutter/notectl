@@ -20,6 +20,8 @@ pub fn build_cli(operations: &[Arc<dyn notectl_core::operation::Operation>]) -> 
         cmd = cmd.subcommand(operation.get_command());
     }
 
+    cmd = cmd.subcommand(crate::prime::command());
+
     cmd
 }
 
