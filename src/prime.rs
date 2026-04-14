@@ -1,24 +1,72 @@
 /// Generate LLM priming text for the given binary name.
 ///
+/// `remote` — when true, omits local path arguments (the server owns the vault
+/// path) and instead documents the `--server` / `NOTECTL_SERVER` connection arg.
+///
 /// Keep this in sync with the actual CLI surface. Update it whenever you:
 /// - Add, rename, or remove a command
 /// - Add, rename, or remove an option on an existing command
 /// - Change argument names or semantics
 /// - Change default values (e.g. default limit)
-pub fn generate(binary_name: &str) -> String {
+pub fn generate(binary_name: &str, remote: bool) -> String {
     let bin = binary_name;
+
+    // Positional path arguments shown in command signatures.
+    let p = if remote { "" } else { " <path>" };
+    let vp = if remote { "" } else { " <vault_path>" };
+
+    // Vault prefix used in examples ("~/vault" locally, empty remotely).
+    let v = if remote { "" } else { " ~/vault" };
+
+    let connection_section = if remote {
+        format!(
+            r#"## Connection
+
+Set the server URL with `--server <url>` (or `NOTECTL_SERVER` env var) on every
+command. The vault path is configured on the server at startup.
+
+  export NOTECTL_SERVER=http://host:8000
+  {bin} tasks --status incomplete
+
+"#
+        )
+    } else {
+        String::new()
+    };
+
+    let path_conventions = if remote {
+        String::new()
+    } else {
+        r#"## Path conventions
+
+- `<path>` — file or directory to scan (many commands accept either)
+- `<vault_path>` — the vault root directory
+- `<file_path>` — always relative to vault root
+
+"#
+        .to_string()
+    };
+
+    let description = if remote {
+        format!("{bin} forwards commands to a remote notectl HTTP server. All output is JSON.")
+    } else {
+        format!(
+            "{bin} extracts structured data from Obsidian-style Markdown vaults. All output is JSON."
+        )
+    };
+
     format!(
         r#"# {bin} — Markdown Vault Assistant
 
-{bin} extracts structured data from Obsidian-style Markdown vaults. All output is JSON.
+{description}
 
-## Capabilities
+{connection_section}## Capabilities
 
 ### Tasks
 
 Search and filter todo checkboxes across the vault.
 
-`{bin} tasks <path>`
+`{bin} tasks{p}`
   --status incomplete|completed|cancelled|other_<char>
   --due-on YYYY-MM-DD          exact due date
   --due-before YYYY-MM-DD
@@ -33,59 +81,58 @@ Search and filter todo checkboxes across the vault.
 Task statuses in output: "incomplete", "completed", "cancelled", "other_<char>"
 
 Examples:
-  {bin} tasks ~/vault --status incomplete --tags work --limit 20
-  {bin} tasks ~/vault --due-before 2025-12-31 --status incomplete
-  {bin} tasks ~/vault/Projects/Plan.md --tags urgent
+  {bin} tasks{v} --status incomplete --tags work --limit 20
+  {bin} tasks{v} --due-before 2025-12-31 --status incomplete
 
 ### Tags
 
-`{bin} tags <path>`              extract unique tags from YAML frontmatter
+`{bin} tags{p}`              extract unique tags from YAML frontmatter
 
 Examples:
-  {bin} tags ~/vault
-  {bin} tags ~/vault/Projects
+  {bin} tags{v}
+  {bin} tags{v} --subpath Projects
 
-`{bin} list-tags <path>`         list tags with document counts
+`{bin} list-tags{p}`         list tags with document counts
   --min-count N                only tags appearing in at least N documents
   --subpath <subpath>          restrict to subdirectory
   --limit N
 
 Examples:
-  {bin} list-tags ~/vault --min-count 3
-  {bin} list-tags ~/vault --subpath Projects --limit 20
+  {bin} list-tags{v} --min-count 3
+  {bin} list-tags{v} --subpath Projects --limit 20
 
-`{bin} search-tags <path>`       find files by YAML frontmatter tags
+`{bin} search-tags{p}`       find files by YAML frontmatter tags
   --tags tag1,tag2
   --match-all true|false       AND vs OR logic (default: false = OR)
   --subpath <subpath>
   --limit N
 
 Examples:
-  {bin} search-tags ~/vault --tags work,urgent --match-all true
-  {bin} search-tags ~/vault --tags meeting --subpath Meetings
+  {bin} search-tags{v} --tags work,urgent --match-all true
+  {bin} search-tags{v} --tags meeting --subpath Meetings
 
 ### Files
 
-`{bin} list-files <path>`        directory tree of the vault
+`{bin} list-files{p}`        directory tree of the vault
   --subpath <subpath>          restrict to subdirectory
   --max-depth N
   --include-sizes true
 
-`{bin} read-files <vault_path> <file1> [file2 ...]`   read file contents
+`{bin} read-files{vp} <file1> [file2 ...]`   read file contents
   Paths are relative to vault root.
   --continue-on-error true     don't abort if a file is missing
 
 Examples:
-  {bin} list-files ~/vault --subpath Projects --max-depth 2
-  {bin} read-files ~/vault Projects/Plan.md Daily/2025-01-15.md
-  {bin} read-files ~/vault README.md --continue-on-error true
+  {bin} list-files{v} --subpath Projects --max-depth 2
+  {bin} read-files{v} Projects/Plan.md Daily/2025-01-15.md
+  {bin} read-files{v} README.md --continue-on-error true
 
 ### Daily Notes
 
-`{bin} get-daily-note <vault_path>`
+`{bin} get-daily-note{vp}`
   --date YYYY-MM-DD            (required)
 
-`{bin} search-daily-notes <vault_path>`
+`{bin} search-daily-notes{vp}`
   --start-date YYYY-MM-DD
   --end-date YYYY-MM-DD
   --sort asc|desc              (default: desc)
@@ -93,36 +140,30 @@ Examples:
   --limit N
 
 Examples:
-  {bin} get-daily-note ~/vault --date 2025-06-01
-  {bin} search-daily-notes ~/vault --start-date 2025-01-01 --end-date 2025-03-31
-  {bin} search-daily-notes ~/vault --sort asc --include-content true --limit 7
+  {bin} get-daily-note{v} --date 2025-06-01
+  {bin} search-daily-notes{v} --start-date 2025-01-01 --end-date 2025-03-31
+  {bin} search-daily-notes{v} --sort asc --include-content true --limit 7
 
 ### Document Structure
 
-`{bin} outline <vault_path> <file_path>`   heading hierarchy for one file
+`{bin} outline{vp} <file_path>`   heading hierarchy for one file
   file_path is relative to vault root.
   --hierarchical true          nested tree instead of flat list
 
-`{bin} section <vault_path> <file_path> <heading>`   content under a heading
+`{bin} section{vp} <file_path> <heading>`   content under a heading
   --include-subsections true   include nested sub-sections
 
-`{bin} search-headings <vault_path> <pattern>`   search headings across all files
+`{bin} search-headings{vp} <pattern>`   search headings across all files
   --min-level N                minimum heading depth (1=H1 … 6=H6)
   --max-level N
   --limit N
 
 Examples:
-  {bin} outline ~/vault Projects/Plan.md --hierarchical true
-  {bin} section ~/vault Projects/Plan.md "Implementation" --include-subsections true
-  {bin} search-headings ~/vault "TODO" --max-level 3 --limit 20
+  {bin} outline{v} Projects/Plan.md --hierarchical true
+  {bin} section{v} Projects/Plan.md "Implementation" --include-subsections true
+  {bin} search-headings{v} "TODO" --max-level 3 --limit 20
 
-## Path conventions
-
-- `<path>` — file or directory to scan (many commands accept either)
-- `<vault_path>` — the vault root directory
-- `<file_path>` — always relative to vault root
-
-## General notes
+{path_conventions}## General notes
 
 - All output is JSON.
 - Default result limit is 50; override with --limit.
@@ -154,5 +195,7 @@ fn binary_name() -> String {
 }
 
 pub fn generate_for_current_binary() -> String {
-    generate(&binary_name())
+    let name = binary_name();
+    let remote = name.contains("remote");
+    generate(&name, remote)
 }
