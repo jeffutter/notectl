@@ -83,6 +83,8 @@ fn build_cli(operations: &[Arc<dyn Operation>]) -> clap::Command {
         }
     }
 
+    cmd = cmd.subcommand(notectl::prime::command());
+
     cmd
 }
 
@@ -91,6 +93,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let operations = create_operations();
     let cli = build_cli(&operations);
     let matches = cli.get_matches();
+
+    if let Some(("prime", _)) = matches.subcommand() {
+        print!("{}", notectl::prime::generate_for_current_binary());
+        return Ok(());
+    }
 
     let server = matches
         .get_one::<String>("server")

@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if this is the prime command
     if let Some(("prime", _)) = matches.subcommand() {
-        print!("{}", prime::PRIME_TEXT);
+        print!("{}", prime::generate_for_current_binary());
         return Ok(());
     }
 
