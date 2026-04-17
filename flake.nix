@@ -77,6 +77,7 @@
           {
             packages = [
               cargo
+              cargo-audit
               cargo-nextest
               cargo-watch
               clang
