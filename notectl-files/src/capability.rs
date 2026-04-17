@@ -379,6 +379,11 @@ impl notectl_core::operation::Operation for ListFilesOperation {
         ListFilesRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -443,6 +448,25 @@ impl notectl_core::operation::Operation for ReadFilesOperation {
     fn get_command(&self) -> clap::Command {
         // Get command from request struct's Parser derive
         ReadFilesRequest::command()
+    }
+
+    fn get_remote_command(&self) -> clap::Command {
+        // Rebuild without the vault_path positional; shift file_paths to index 1
+        clap::Command::new("read-files")
+            .about("Read one or more markdown files")
+            .arg(
+                clap::Arg::new("file_paths")
+                    .index(1)
+                    .required(true)
+                    .value_delimiter(',')
+                    .help("Comma-separated file paths relative to vault root"),
+            )
+            .arg(
+                clap::Arg::new("continue_on_error")
+                    .long("continue-on-error")
+                    .value_parser(clap::value_parser!(bool))
+                    .help("Continue reading files even if some fail"),
+            )
     }
 
     async fn execute_json(

@@ -353,6 +353,24 @@ impl notectl_core::operation::Operation for GetOutlineOperation {
         GetOutlineRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        // Rebuild without the vault_path positional; shift file_path to index 1
+        clap::Command::new("outline")
+            .about("Extract heading hierarchy from a markdown file")
+            .arg(
+                clap::Arg::new("file_path")
+                    .index(1)
+                    .required(true)
+                    .help("File path relative to vault root"),
+            )
+            .arg(
+                clap::Arg::new("hierarchical")
+                    .long("hierarchical")
+                    .value_parser(clap::value_parser!(bool))
+                    .help("Return hierarchical tree structure"),
+            )
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -416,6 +434,30 @@ impl notectl_core::operation::Operation for GetSectionOperation {
         GetSectionRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        // Rebuild without the vault_path positional; shift file_path/heading down by one
+        clap::Command::new("section")
+            .about("Extract content under a specific heading")
+            .arg(
+                clap::Arg::new("file_path")
+                    .index(1)
+                    .required(true)
+                    .help("File path relative to vault root"),
+            )
+            .arg(
+                clap::Arg::new("heading")
+                    .index(2)
+                    .required(true)
+                    .help("Heading title to search for"),
+            )
+            .arg(
+                clap::Arg::new("include_subsections")
+                    .long("include-subsections")
+                    .value_parser(clap::value_parser!(bool))
+                    .help("Include subsection content"),
+            )
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -477,6 +519,36 @@ impl notectl_core::operation::Operation for SearchHeadingsOperation {
 
     fn get_command(&self) -> clap::Command {
         SearchHeadingsRequest::command()
+    }
+
+    fn get_remote_command(&self) -> clap::Command {
+        // Rebuild without the vault_path positional; shift pattern to index 1
+        clap::Command::new("search-headings")
+            .about("Search for headings across all files")
+            .arg(
+                clap::Arg::new("pattern")
+                    .index(1)
+                    .required(true)
+                    .help("Pattern to search for in headings (case-insensitive substring match)"),
+            )
+            .arg(
+                clap::Arg::new("min_level")
+                    .long("min-level")
+                    .value_parser(clap::value_parser!(u8))
+                    .help("Minimum heading level to include"),
+            )
+            .arg(
+                clap::Arg::new("max_level")
+                    .long("max-level")
+                    .value_parser(clap::value_parser!(u8))
+                    .help("Maximum heading level to include"),
+            )
+            .arg(
+                clap::Arg::new("limit")
+                    .long("limit")
+                    .value_parser(clap::value_parser!(usize))
+                    .help("Maximum number of results"),
+            )
     }
 
     async fn execute_json(

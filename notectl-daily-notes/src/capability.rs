@@ -428,6 +428,11 @@ impl notectl_core::operation::Operation for GetDailyNoteOperation {
         GetDailyNoteRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("vault_path", |a| a.required(false).hide(true))
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -490,6 +495,11 @@ impl notectl_core::operation::Operation for SearchDailyNotesOperation {
 
     fn get_command(&self) -> clap::Command {
         SearchDailyNotesRequest::command()
+    }
+
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("vault_path", |a| a.required(false).hide(true))
     }
 
     async fn execute_json(

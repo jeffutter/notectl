@@ -79,7 +79,7 @@ fn build_cli(operations: &[Arc<dyn Operation>]) -> clap::Command {
     for operation in operations {
         // Exclude operations with no HTTP path (e.g. serve)
         if !operation.path().is_empty() {
-            cmd = cmd.subcommand(operation.get_command());
+            cmd = cmd.subcommand(operation.get_remote_command());
         }
     }
 

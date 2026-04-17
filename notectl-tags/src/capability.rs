@@ -294,6 +294,11 @@ impl notectl_core::operation::Operation for ExtractTagsOperation {
         ExtractTagsRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -360,6 +365,11 @@ impl notectl_core::operation::Operation for ListTagsOperation {
         ListTagsRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
+    }
+
     async fn execute_json(
         &self,
         json: serde_json::Value,
@@ -424,6 +434,11 @@ impl notectl_core::operation::Operation for SearchByTagsOperation {
     fn get_command(&self) -> clap::Command {
         // Get command from request struct's Parser derive
         SearchByTagsRequest::command()
+    }
+
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
     }
 
     async fn execute_json(

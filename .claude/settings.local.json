@@ -39,7 +39,15 @@
       "WebSearch",
       "mcp__plugin_context7_context7__query-docs",
       "mcp__plugin_context7_context7__resolve-library-id",
-      "WebFetch(domain:crates.io)"
+      "WebFetch(domain:crates.io)",
+      "Bash(git tag:*)",
+      "Bash(git push:*)",
+      "Bash(./target/debug/notectl-remote search-daily-notes:*)",
+      "Bash(./target/debug/notectl-remote tasks:*)",
+      "Bash(./target/debug/notectl-remote outline:*)",
+      "Bash(./target/debug/notectl-remote section:*)",
+      "Bash(./target/debug/notectl-remote read-files:*)",
+      "Bash(./target/debug/notectl-remote search-headings:*)"
     ],
     "deny": [],
     "ask": []

@@ -177,6 +177,11 @@ impl notectl_core::operation::Operation for SearchTasksOperation {
         SearchTasksRequest::command()
     }
 
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
+    }
+
     async fn execute_json(&self, json: serde_json::Value) -> Result<serde_json::Value, ErrorData> {
         let request: SearchTasksRequest = serde_json::from_value(json)
             .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;

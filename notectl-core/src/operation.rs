@@ -23,6 +23,15 @@ pub trait Operation: Send + Sync + 'static {
     /// This is typically derived from the request struct's `Parser` implementation.
     fn get_command(&self) -> clap::Command;
 
+    /// Get the clap Command definition for remote CLI parsing
+    ///
+    /// Unlike `get_command`, this omits the vault/path positional argument since
+    /// the remote server already has its vault path configured. Defaults to
+    /// `get_command()` — operations with a vault path positional arg should override.
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+    }
+
     /// Execute the operation with JSON input (for HTTP/MCP)
     ///
     /// This method performs type erasure by accepting and returning JSON values,
