@@ -1,7 +1,7 @@
 use notectl_core::config::Config;
 use notectl_core::operation::Operation;
 use notectl_daily_notes::{DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation};
-use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation};
+use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation, RecentFilesOperation};
 use notectl_outline::{
     GetOutlineOperation, GetSectionOperation, OutlineCapability, SearchHeadingsOperation,
 };
@@ -41,6 +41,7 @@ fn create_operations() -> Vec<Arc<dyn Operation>> {
         )))),
         Arc::new(ListFilesOperation::new(Arc::clone(&file_capability))),
         Arc::new(ReadFilesOperation::new(Arc::clone(&file_capability))),
+        Arc::new(RecentFilesOperation::new(Arc::clone(&file_capability))),
         Arc::new(GetDailyNoteOperation::new(Arc::clone(
             &daily_note_capability,
         ))),

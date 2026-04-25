@@ -122,10 +122,18 @@ Examples:
   Paths are relative to vault root.
   --continue-on-error true     don't abort if a file is missing
 
+`{bin} recent-files{p}`      recently modified files, newest first
+  Uses frontmatter `updated:` field when present; falls back to filesystem mtime.
+  --since YYYY-MM-DD           only files modified on or after this date
+  --limit N                    max results (default 20)
+  Output fields: file_path, file_name, updated_at (ISO 8601), date_source ("frontmatter"|"mtime"), total_found
+
 Examples:
   {bin} list-files{v} --subpath Projects --max-depth 2
   {bin} read-files{v} Projects/Plan.md Daily/2025-01-15.md
   {bin} read-files{v} README.md --continue-on-error true
+  {bin} recent-files{v} --limit 10
+  {bin} recent-files{v} --since 2025-01-01 --limit 50
 
 ### Daily Notes
 

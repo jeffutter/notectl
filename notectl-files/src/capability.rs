@@ -2,6 +2,7 @@ use clap::{CommandFactory, FromArgMatches};
 use notectl_core::CapabilityResult;
 use notectl_core::config::Config;
 use notectl_core::error::{internal_error, invalid_params};
+use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -702,4 +703,204 @@ fn build_file_tree(
         total_files,
         total_directories,
     ))
+}
+
+// ── recent-files ─────────────────────────────────────────────────────────────
+
+/// Operation metadata for recent_files
+pub mod recent_files_op {
+    pub const DESCRIPTION: &str = "List recently modified markdown files, sorted by modification time descending. Checks the frontmatter `updated` field first; falls back to filesystem mtime.";
+    #[allow(dead_code)]
+    pub const CLI_NAME: &str = "recent-files";
+    pub const HTTP_PATH: &str = "/api/files/recent";
+}
+
+/// Parameters for the recent_files operation
+#[derive(Debug, Serialize, Deserialize, JsonSchema, clap::Parser)]
+#[command(name = "recent-files", about = "List recently modified vault files")]
+pub struct RecentFilesRequest {
+    /// Path to vault (CLI only)
+    #[arg(index = 1, required = true, help = "Path to vault to scan")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    pub path: Option<PathBuf>,
+
+    /// Only include files modified on or after this date (YYYY-MM-DD)
+    #[arg(long, help = "Only files modified on or after YYYY-MM-DD")]
+    #[schemars(description = "ISO date lower bound: YYYY-MM-DD (inclusive)")]
+    pub since: Option<String>,
+
+    /// Maximum number of results (default 20)
+    #[arg(long, help = "Maximum number of results (default 20)")]
+    #[schemars(description = "Maximum results to return (default 20)")]
+    pub limit: Option<usize>,
+}
+
+/// A single result entry for recent_files
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RecentFileEntry {
+    /// File path relative to vault root
+    pub file_path: String,
+    /// File name only
+    pub file_name: String,
+    /// The timestamp used for sorting, as an ISO 8601 string
+    pub updated_at: String,
+    /// Whether the date came from frontmatter or filesystem mtime
+    pub date_source: String,
+}
+
+/// Response from the recent_files operation
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RecentFilesResponse {
+    pub files: Vec<RecentFileEntry>,
+    /// Total matching files before the limit was applied
+    pub total_found: usize,
+}
+
+impl FileCapability {
+    pub async fn recent_files(
+        &self,
+        request: RecentFilesRequest,
+    ) -> CapabilityResult<RecentFilesResponse> {
+        use crate::recent_files::{file_timestamp, parse_iso8601_to_unix};
+
+        // Resolve the since threshold to a unix timestamp (midnight UTC on that date)
+        let since_ts: Option<i64> = request
+            .since
+            .as_deref()
+            .map(|s| {
+                let expanded = format!("{}T00:00:00Z", s);
+                parse_iso8601_to_unix(&expanded)
+                    .ok_or_else(|| invalid_params(format!("Invalid since date: {}", s)))
+            })
+            .transpose()?;
+
+        let limit = request.limit.unwrap_or(20);
+
+        // Collect all markdown files
+        let markdown_files =
+            notectl_core::file_walker::collect_markdown_files(&self.base_path, &self.config)
+                .map_err(|e| internal_error(format!("Failed to walk vault: {}", e)))?;
+
+        // Build entries in parallel
+        let base = &self.base_path;
+        let mut entries: Vec<(i64, RecentFileEntry)> = markdown_files
+            .par_iter()
+            .filter_map(|path| {
+                let (ts, source, display) = file_timestamp(path)?;
+
+                // Apply since filter
+                if let Some(threshold) = since_ts
+                    && ts < threshold
+                {
+                    return None;
+                }
+
+                let rel_path = path
+                    .strip_prefix(base)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                let file_name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+
+                Some((
+                    ts,
+                    RecentFileEntry {
+                        file_path: rel_path,
+                        file_name,
+                        updated_at: display,
+                        date_source: source.to_string(),
+                    },
+                ))
+            })
+            .collect();
+
+        // Sort descending by timestamp
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let total_found = entries.len();
+        let files = entries.into_iter().take(limit).map(|(_, e)| e).collect();
+
+        Ok(RecentFilesResponse { files, total_found })
+    }
+}
+
+/// Operation struct for recent_files (HTTP, CLI, and MCP)
+pub struct RecentFilesOperation {
+    capability: Arc<FileCapability>,
+}
+
+impl RecentFilesOperation {
+    pub fn new(capability: Arc<FileCapability>) -> Self {
+        Self { capability }
+    }
+}
+
+#[async_trait::async_trait]
+impl notectl_core::operation::Operation for RecentFilesOperation {
+    fn name(&self) -> &'static str {
+        recent_files_op::CLI_NAME
+    }
+
+    fn path(&self) -> &'static str {
+        recent_files_op::HTTP_PATH
+    }
+
+    fn description(&self) -> &'static str {
+        recent_files_op::DESCRIPTION
+    }
+
+    fn get_command(&self) -> clap::Command {
+        RecentFilesRequest::command()
+    }
+
+    fn get_remote_command(&self) -> clap::Command {
+        self.get_command()
+            .mut_arg("path", |a| a.required(false).hide(true))
+    }
+
+    async fn execute_json(
+        &self,
+        json: serde_json::Value,
+    ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
+        let request: RecentFilesRequest = serde_json::from_value(json)
+            .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
+        let response = self.capability.recent_files(request).await?;
+        Ok(serde_json::to_value(response).unwrap())
+    }
+
+    async fn execute_from_args(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let request = RecentFilesRequest::from_arg_matches(matches)?;
+        let response = if let Some(ref path) = request.path {
+            let config = Arc::new(Config::load_from_base_path(path.as_path()));
+            let capability = FileCapability::new(path.clone(), config);
+            let mut req = request;
+            req.path = None;
+            capability.recent_files(req).await?
+        } else {
+            self.capability.recent_files(request).await?
+        };
+        Ok(serde_json::to_string_pretty(&response)?)
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        use schemars::schema_for;
+        serde_json::to_value(schema_for!(RecentFilesRequest)).unwrap()
+    }
+
+    fn args_to_json(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut request = RecentFilesRequest::from_arg_matches(matches)?;
+        request.path = None;
+        Ok(serde_json::to_value(request)?)
+    }
 }

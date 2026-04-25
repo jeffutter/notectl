@@ -5,7 +5,9 @@ use std::sync::Arc;
 pub use notectl_daily_notes::{
     DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation,
 };
-pub use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation};
+pub use notectl_files::{
+    FileCapability, ListFilesOperation, ReadFilesOperation, RecentFilesOperation,
+};
 pub use notectl_outline::{
     GetOutlineOperation, GetSectionOperation, OutlineCapability, SearchHeadingsOperation,
 };
@@ -69,6 +71,7 @@ impl CapabilityRegistry {
             Arc::new(SearchByTagsOperation::new(self.tags())),
             Arc::new(ListFilesOperation::new(self.files())),
             Arc::new(ReadFilesOperation::new(self.files())),
+            Arc::new(RecentFilesOperation::new(self.files())),
             Arc::new(GetDailyNoteOperation::new(self.daily_notes())),
             Arc::new(SearchDailyNotesOperation::new(self.daily_notes())),
             Arc::new(GetOutlineOperation::new(self.outline())),

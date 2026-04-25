@@ -3,7 +3,10 @@ use notectl_core::config::Config;
 use notectl_daily_notes::{
     GetDailyNoteRequest, GetDailyNoteResponse, SearchDailyNotesRequest, SearchDailyNotesResponse,
 };
-use notectl_files::{ListFilesRequest, ListFilesResponse, ReadFilesRequest, ReadFilesResponse};
+use notectl_files::{
+    ListFilesRequest, ListFilesResponse, ReadFilesRequest, ReadFilesResponse, RecentFilesRequest,
+    RecentFilesResponse,
+};
 use notectl_tags::{
     ExtractTagsRequest, ExtractTagsResponse, ListTagsRequest, ListTagsResponse,
     SearchByTagsRequest, SearchByTagsResponse,
@@ -129,6 +132,21 @@ impl TaskSearchService {
         // Delegate to FileCapability
         let response = self.capability_registry.files().read_files(request).await?;
 
+        Ok(Json(response))
+    }
+
+    #[tool(
+        description = "List recently modified markdown files, sorted by modification time descending. Checks the frontmatter `updated` field first; falls back to filesystem mtime."
+    )]
+    async fn recent_files(
+        &self,
+        Parameters(request): Parameters<RecentFilesRequest>,
+    ) -> Result<Json<RecentFilesResponse>, ErrorData> {
+        let response = self
+            .capability_registry
+            .files()
+            .recent_files(request)
+            .await?;
         Ok(Json(response))
     }
 
