@@ -1,4 +1,5 @@
 use notectl_core::config::Config;
+use notectl_core::{CapabilityResult, error::internal_error};
 use rayon::prelude::*;
 use regex::Regex;
 use schemars::JsonSchema;
@@ -6,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use tracing;
 
 /// Represents a task found in a markdown file
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -26,6 +28,7 @@ pub struct Task {
 }
 
 /// Extracts tasks from markdown files
+#[derive(Clone)]
 pub struct TaskExtractor {
     task_incomplete: Regex,
     task_completed: Regex,
@@ -252,16 +255,25 @@ impl TaskExtractor {
         Ok(tasks)
     }
 
-    pub fn extract_tasks(&self, path: &Path) -> Result<Vec<Task>, Box<dyn std::error::Error>> {
+    pub async fn extract_tasks(&self, path: &Path) -> CapabilityResult<Vec<Task>> {
+        let me = self.clone();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            me.extract_tasks_blocking(&path)
+                .map_err(|e| internal_error(format!("Failed to extract tasks: {}", e)))
+        })
+        .await
+        .map_err(|e| internal_error(format!("Task extraction panicked: {}", e)))?
+    }
+
+    fn extract_tasks_blocking(&self, path: &Path) -> Result<Vec<Task>, Box<dyn std::error::Error>> {
         if path.is_file() {
-            // Single file
             if path.extension().and_then(|s| s.to_str()) == Some("md") {
                 self.extract_tasks_from_file(path)
             } else {
                 Ok(Vec::new())
             }
         } else if path.is_dir() {
-            // Directory - recursively find all .md files in parallel
             self.extract_tasks_from_dir(path)
         } else {
             Err(format!("Path does not exist: {}", path.display()).into())
@@ -288,7 +300,7 @@ impl TaskExtractor {
                         match self.extract_tasks_from_file(&path) {
                             Ok(file_tasks) => file_tasks,
                             Err(e) => {
-                                eprintln!("Warning: Could not read {:?}: {}", path, e);
+                                tracing::warn!(path = ?path, error = %e, "Could not read file");
                                 Vec::new()
                             }
                         }
@@ -300,7 +312,7 @@ impl TaskExtractor {
                     match self.extract_tasks_from_dir(&path) {
                         Ok(dir_tasks) => dir_tasks,
                         Err(e) => {
-                            eprintln!("Warning: Could not read directory {:?}: {}", path, e);
+                            tracing::warn!(path = ?path, error = %e, "Could not read directory");
                             Vec::new()
                         }
                     }

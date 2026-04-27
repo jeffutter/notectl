@@ -5,6 +5,8 @@ mod http_router;
 mod mcp;
 mod prime;
 
+use tracing_subscriber::{EnvFilter, fmt};
+
 use clap::FromArgMatches;
 use cli::{ServeCommand, ServerMode};
 use mcp::TaskSearchService;
@@ -43,6 +45,12 @@ async fn tools_handler(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Log to stderr so stdout remains clean for stdio MCP transport.
+    // Set RUST_LOG=debug (or info/warn) to control verbosity.
+    fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     use capabilities::CapabilityRegistry;
     use notectl_core::config::Config;
     use std::path::PathBuf;

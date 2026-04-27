@@ -12,6 +12,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing;
 
 // Re-export for internal use
 use crate::date_utils::{date_range, today, validate_date};
@@ -168,18 +169,21 @@ impl DailyNoteCapability {
         &self,
         request: GetDailyNoteRequest,
     ) -> CapabilityResult<GetDailyNoteResponse> {
-        // Validate date format
         if !validate_date(&request.date) {
             return Err(invalid_params("Date must be in YYYY-MM-DD format"));
         }
 
-        // Find the daily note file
-        let relative_path = get_daily_note_relative_path(
-            &self.base_path,
-            &request.date,
-            &self.config.daily_note_patterns,
-            &self.config,
-        );
+        let base_path = self.base_path.clone();
+        let config = Arc::clone(&self.config);
+        let date = request.date.clone();
+
+        tracing::debug!(date = %date, "Looking up daily note");
+
+        let relative_path = tokio::task::spawn_blocking(move || {
+            find_note_path_blocking(&base_path, &date, &config)
+        })
+        .await
+        .map_err(|e| internal_error(format!("Daily note lookup panicked: {}", e)))?;
 
         match relative_path {
             Some(path) => {
@@ -291,52 +295,21 @@ impl DailyNoteCapability {
         let limit = request.limit.unwrap_or(100);
         let include_content = request.include_content.unwrap_or(false);
 
-        // Collect all daily notes in the range
-        let mut found_notes: Vec<DailyNoteResult> = Vec::new();
+        let base_path = self.base_path.clone();
+        let config = Arc::clone(&self.config);
+        let dates_clone = dates.clone();
 
-        for date in &dates {
-            match get_daily_note_relative_path(
-                &self.base_path,
-                date,
-                &self.config.daily_note_patterns,
-                &self.config,
-            ) {
-                Some(file_path) => {
-                    let file_name = PathBuf::from(&file_path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| file_path.clone());
+        tracing::debug!(date_range_days = dates.len(), "Searching daily notes");
 
-                    found_notes.push(DailyNoteResult {
-                        date: date.clone(),
-                        file_path,
-                        file_name,
-                        content: None,
-                        error: None,
-                    });
-                }
-                None => {
-                    // Note doesn't exist - skip it
-                }
-            }
-        }
+        let (mut notes, total_count) = tokio::task::spawn_blocking(move || {
+            scan_date_range_blocking(&base_path, &config, &dates_clone, sort_desc, limit)
+        })
+        .await
+        .map_err(|e| internal_error(format!("Daily note search panicked: {}", e)))?;
 
-        // Sort found notes
-        if sort_desc {
-            found_notes.sort_by(|a, b| b.date.cmp(&a.date));
-        } else {
-            found_notes.sort_by(|a, b| a.date.cmp(&b.date));
-        }
+        tracing::debug!(found = total_count, "Daily note search complete");
 
-        // Count total found notes
-        let total_count = found_notes.len();
         let dates_searched = dates.len();
-
-        // Apply limit to found notes only
-        let mut notes = found_notes;
-        if notes.len() > limit {
-            notes.truncate(limit);
-        }
 
         // If include_content is true, read all found notes in batch
         if include_content {
@@ -386,6 +359,54 @@ impl DailyNoteCapability {
             dates_searched,
         })
     }
+}
+
+fn find_note_path_blocking(
+    base_path: &std::path::Path,
+    date: &str,
+    config: &notectl_core::config::Config,
+) -> Option<String> {
+    get_daily_note_relative_path(base_path, date, &config.daily_note_patterns, config)
+}
+
+fn scan_date_range_blocking(
+    base_path: &std::path::Path,
+    config: &notectl_core::config::Config,
+    dates: &[String],
+    sort_desc: bool,
+    limit: usize,
+) -> (Vec<DailyNoteResult>, usize) {
+    let mut found_notes: Vec<DailyNoteResult> = Vec::new();
+
+    for date in dates {
+        if let Some(file_path) =
+            get_daily_note_relative_path(base_path, date, &config.daily_note_patterns, config)
+        {
+            let file_name = PathBuf::from(&file_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| file_path.clone());
+            found_notes.push(DailyNoteResult {
+                date: date.clone(),
+                file_path,
+                file_name,
+                content: None,
+                error: None,
+            });
+        }
+    }
+
+    if sort_desc {
+        found_notes.sort_by(|a, b| b.date.cmp(&a.date));
+    } else {
+        found_notes.sort_by(|a, b| a.date.cmp(&b.date));
+    }
+
+    let total_count = found_notes.len();
+    if found_notes.len() > limit {
+        found_notes.truncate(limit);
+    }
+    (found_notes, total_count)
 }
 
 /// Operation struct for get_daily_note (HTTP, CLI, and MCP)

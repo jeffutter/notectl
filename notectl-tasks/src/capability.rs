@@ -3,12 +3,12 @@ use crate::filter::{FilterOptions, filter_tasks};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use notectl_core::CapabilityResult;
 use notectl_core::config::Config;
-use notectl_core::error::internal_error;
 use rmcp::model::ErrorData;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing;
 
 /// Operation metadata for search_tasks
 pub mod search_tasks {
@@ -109,11 +109,11 @@ impl TaskCapability {
         &self,
         request: SearchTasksRequest,
     ) -> CapabilityResult<TaskSearchResponse> {
-        // Extract tasks from the base path using the pre-compiled extractor
-        let tasks = self
-            .task_extractor
-            .extract_tasks(&self.base_path)
-            .map_err(|e| internal_error(format!("Failed to extract tasks: {}", e)))?;
+        tracing::debug!(path = %self.base_path.display(), "Starting task extraction");
+
+        let tasks = self.task_extractor.extract_tasks(&self.base_path).await?;
+
+        tracing::debug!(count = tasks.len(), "Task extraction complete");
 
         // Apply filters
         let filter_options = FilterOptions {

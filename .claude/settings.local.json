@@ -47,7 +47,11 @@
       "Bash(./target/debug/notectl-remote outline:*)",
       "Bash(./target/debug/notectl-remote section:*)",
       "Bash(./target/debug/notectl-remote read-files:*)",
-      "Bash(./target/debug/notectl-remote search-headings:*)"
+      "Bash(./target/debug/notectl-remote search-headings:*)",
+      "Bash(cargo update:*)",
+      "Bash(rtk cargo *)",
+      "Bash(cargo audit *)",
+      "Skill(update-config)"
     ],
     "deny": [],
     "ask": []

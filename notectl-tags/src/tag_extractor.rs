@@ -1,4 +1,5 @@
 use notectl_core::config::Config;
+use notectl_core::{CapabilityResult, error::internal_error};
 use rayon::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Extractor for YAML frontmatter tags
+#[derive(Clone)]
 pub struct TagExtractor {
     config: Arc<Config>,
 }
@@ -67,8 +69,21 @@ impl TagExtractor {
         Self { config }
     }
 
-    /// Extract all unique tags from markdown files in the given path
-    pub fn extract_tags(&self, path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    pub async fn extract_tags(&self, path: &Path) -> CapabilityResult<Vec<String>> {
+        let me = self.clone();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            me.extract_tags_blocking(&path)
+                .map_err(|e| internal_error(format!("Failed to extract tags: {}", e)))
+        })
+        .await
+        .map_err(|e| internal_error(format!("Tag extraction panicked: {}", e)))?
+    }
+
+    fn extract_tags_blocking(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         let files = if path.is_file() {
             vec![path.to_path_buf()]
         } else {
@@ -173,9 +188,18 @@ impl TagExtractor {
         }
     }
 
-    /// Extract all tags with document counts from markdown files in the given path
-    /// Returns tags sorted by document_count descending, then alphabetically
-    pub fn extract_tags_with_counts(
+    pub async fn extract_tags_with_counts(&self, path: &Path) -> CapabilityResult<Vec<TagCount>> {
+        let me = self.clone();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            me.extract_tags_with_counts_blocking(&path)
+                .map_err(|e| internal_error(format!("Failed to list tags: {}", e)))
+        })
+        .await
+        .map_err(|e| internal_error(format!("Tag list panicked: {}", e)))?
+    }
+
+    fn extract_tags_with_counts_blocking(
         &self,
         path: &Path,
     ) -> Result<Vec<TagCount>, Box<dyn std::error::Error>> {
@@ -231,13 +255,24 @@ impl TagExtractor {
         Ok(result)
     }
 
-    /// Search for files by tags with AND/OR logic
-    ///
-    /// # Arguments
-    /// * `path` - Directory to search
-    /// * `tags` - Tags to search for
-    /// * `match_all` - If true, file must have ALL tags (AND logic). If false, file must have ANY tag (OR logic)
-    pub fn search_by_tags(
+    pub async fn search_by_tags(
+        &self,
+        path: &Path,
+        tags: &[String],
+        match_all: bool,
+    ) -> CapabilityResult<Vec<TaggedFile>> {
+        let me = self.clone();
+        let path = path.to_path_buf();
+        let tags = tags.to_vec();
+        tokio::task::spawn_blocking(move || {
+            me.search_by_tags_blocking(&path, &tags, match_all)
+                .map_err(|e| internal_error(format!("Failed to search by tags: {}", e)))
+        })
+        .await
+        .map_err(|e| internal_error(format!("Tag search panicked: {}", e)))?
+    }
+
+    fn search_by_tags_blocking(
         &self,
         path: &Path,
         tags: &[String],
@@ -434,8 +469,8 @@ tags: ""
         assert_eq!(tags.len(), 0);
     }
 
-    #[test]
-    fn test_extract_tags_with_counts_single_file() {
+    #[tokio::test]
+    async fn test_extract_tags_with_counts_single_file() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -450,7 +485,10 @@ tags:
 "#;
         create_test_file(temp_dir.path(), "test1.md", content);
 
-        let counts = extractor.extract_tags_with_counts(temp_dir.path()).unwrap();
+        let counts = extractor
+            .extract_tags_with_counts(temp_dir.path())
+            .await
+            .unwrap();
 
         assert_eq!(counts.len(), 2);
         assert!(
@@ -465,8 +503,8 @@ tags:
         );
     }
 
-    #[test]
-    fn test_extract_tags_with_counts_multiple_files() {
+    #[tokio::test]
+    async fn test_extract_tags_with_counts_multiple_files() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -490,7 +528,10 @@ tags:
 "#;
         create_test_file(temp_dir.path(), "file2.md", content2);
 
-        let counts = extractor.extract_tags_with_counts(temp_dir.path()).unwrap();
+        let counts = extractor
+            .extract_tags_with_counts(temp_dir.path())
+            .await
+            .unwrap();
 
         // rust appears in 2 documents, programming and cli in 1 each
         let rust = counts.iter().find(|t| t.tag == "rust").unwrap();
@@ -506,8 +547,8 @@ tags:
         assert_eq!(counts[0].tag, "rust");
     }
 
-    #[test]
-    fn test_extract_tags_with_counts_duplicate_in_same_file() {
+    #[tokio::test]
+    async fn test_extract_tags_with_counts_duplicate_in_same_file() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -523,14 +564,17 @@ tags:
 "#;
         create_test_file(temp_dir.path(), "file.md", content);
 
-        let counts = extractor.extract_tags_with_counts(temp_dir.path()).unwrap();
+        let counts = extractor
+            .extract_tags_with_counts(temp_dir.path())
+            .await
+            .unwrap();
 
         let rust = counts.iter().find(|t| t.tag == "rust").unwrap();
         assert_eq!(rust.document_count, 1); // Should be 1, not 2
     }
 
-    #[test]
-    fn test_search_by_tags_or_logic() {
+    #[tokio::test]
+    async fn test_search_by_tags_or_logic() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -560,6 +604,7 @@ tags:
                 &["rust".to_string(), "python".to_string()],
                 false,
             )
+            .await
             .unwrap();
 
         assert_eq!(results.len(), 2);
@@ -567,8 +612,8 @@ tags:
         assert!(results.iter().any(|f| f.file_name == "file2.md"));
     }
 
-    #[test]
-    fn test_search_by_tags_and_logic() {
+    #[tokio::test]
+    async fn test_search_by_tags_and_logic() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -593,14 +638,15 @@ tags:
                 &["rust".to_string(), "cli".to_string()],
                 true,
             )
+            .await
             .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "file1.md");
     }
 
-    #[test]
-    fn test_search_by_tags_case_insensitive() {
+    #[tokio::test]
+    async fn test_search_by_tags_case_insensitive() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -616,18 +662,20 @@ tags:
         // Search with lowercase
         let results = extractor
             .search_by_tags(temp_dir.path(), &["rust".to_string()], false)
+            .await
             .unwrap();
         assert_eq!(results.len(), 1);
 
         // Search with uppercase
         let results = extractor
             .search_by_tags(temp_dir.path(), &["RUST".to_string()], false)
+            .await
             .unwrap();
         assert_eq!(results.len(), 1);
     }
 
-    #[test]
-    fn test_search_by_tags_empty_result() {
+    #[tokio::test]
+    async fn test_search_by_tags_empty_result() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -643,12 +691,13 @@ tags:
         // Search for non-existent tag
         let results = extractor
             .search_by_tags(temp_dir.path(), &["nonexistent".to_string()], false)
+            .await
             .unwrap();
         assert!(results.is_empty());
     }
 
-    #[test]
-    fn test_search_by_tags_respects_exclusions() {
+    #[tokio::test]
+    async fn test_search_by_tags_respects_exclusions() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = Arc::new(Config {
@@ -676,13 +725,14 @@ tags:
         // Search should not include excluded file
         let results = extractor
             .search_by_tags(temp_dir.path(), &["rust".to_string()], false)
+            .await
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_name, "file1.md");
     }
 
-    #[test]
-    fn test_tagged_file_contains_all_tags() {
+    #[tokio::test]
+    async fn test_tagged_file_contains_all_tags() {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config();
@@ -698,6 +748,7 @@ tags:
         // Search for one tag
         let results = extractor
             .search_by_tags(temp_dir.path(), &["rust".to_string()], false)
+            .await
             .unwrap();
 
         assert_eq!(results.len(), 1);

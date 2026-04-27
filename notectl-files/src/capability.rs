@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing;
 
 /// Operation metadata for list_files
 pub mod list_files {
@@ -138,52 +139,18 @@ impl FileCapability {
         Self { base_path, config }
     }
 
-    /// List the directory tree of the vault
     pub async fn list_files(
         &self,
         request: ListFilesRequest,
     ) -> CapabilityResult<ListFilesResponse> {
-        // Resolve the search path
-        let search_path = if let Some(ref subpath) = request.subpath {
-            let requested_path = PathBuf::from(subpath);
-            self.base_path.join(&requested_path)
-        } else {
-            self.base_path.clone()
-        };
-
-        // Canonicalize paths for security check
-        let canonical_base = self
-            .base_path
-            .canonicalize()
-            .map_err(|e| internal_error(format!("Failed to resolve base path: {}", e)))?;
-
-        let canonical_search = search_path
-            .canonicalize()
-            .map_err(|_e| invalid_params(format!("Path not found: {:?}", request.subpath)))?;
-
-        // Security: Ensure path is within base directory
-        if !canonical_search.starts_with(&canonical_base) {
-            return Err(invalid_params(
-                "Invalid path: path must be within the vault",
-            ));
-        }
-
-        // Build the file tree
-        let include_sizes = request.include_sizes.unwrap_or(false);
-
-        let (root, total_files, total_directories) = build_file_tree(
-            &canonical_search,
-            &canonical_base,
-            &self.config,
-            0,
-            request.max_depth,
-            include_sizes,
-        )
-        .map_err(|e| internal_error(format!("Failed to build file tree: {}", e)))?;
-
-        // Generate visual tree representation
-        let visual_tree = format_tree_visual(&root, 0);
-
+        let base_path = self.base_path.clone();
+        let config = Arc::clone(&self.config);
+        tracing::debug!(path = %base_path.display(), "Listing files");
+        let (visual_tree, total_files, total_directories) =
+            tokio::task::spawn_blocking(move || list_files_blocking(base_path, config, request))
+                .await
+                .map_err(|e| internal_error(format!("File listing panicked: {}", e)))??;
+        tracing::debug!(total_files, total_directories, "File listing complete");
         Ok(ListFilesResponse {
             visual_tree,
             total_files,
@@ -191,94 +158,83 @@ impl FileCapability {
         })
     }
 
-    /// Read one or more markdown files
     pub async fn read_files(
         &self,
         request: ReadFilesRequest,
     ) -> CapabilityResult<ReadFilesResponse> {
-        let continue_on_error = request.continue_on_error.unwrap_or(false);
+        let base_path = self.base_path.clone();
+        tracing::debug!(file_count = request.file_paths.len(), "Reading files");
+        tokio::task::spawn_blocking(move || read_files_blocking(base_path, request))
+            .await
+            .map_err(|e| internal_error(format!("File read panicked: {}", e)))?
+    }
+}
 
-        // Validation phase (if fail-fast mode)
-        if !continue_on_error {
-            self.validate_all_paths(&request.file_paths)?;
-        }
+fn list_files_blocking(
+    base_path: PathBuf,
+    config: Arc<Config>,
+    request: ListFilesRequest,
+) -> CapabilityResult<(String, usize, usize)> {
+    let search_path = if let Some(ref subpath) = request.subpath {
+        base_path.join(PathBuf::from(subpath))
+    } else {
+        base_path.clone()
+    };
 
-        // Reading phase
-        let mut results = Vec::new();
-        let mut success_count = 0;
-        let mut failure_count = 0;
+    let canonical_base = base_path
+        .canonicalize()
+        .map_err(|e| internal_error(format!("Failed to resolve base path: {}", e)))?;
 
-        for file_path in &request.file_paths {
-            match self.read_single_file(file_path) {
-                Ok(content) => {
-                    let file_name = extract_file_name(file_path);
-                    results.push(ReadFileResult {
-                        file_path: file_path.clone(),
-                        file_name,
-                        success: true,
-                        content: Some(content),
-                        error: None,
-                    });
-                    success_count += 1;
-                }
-                Err(e) => {
-                    if continue_on_error {
-                        let file_name = extract_file_name(file_path);
-                        results.push(ReadFileResult {
-                            file_path: file_path.clone(),
-                            file_name,
-                            success: false,
-                            content: None,
-                            error: Some(e.to_string()),
-                        });
-                        failure_count += 1;
-                    } else {
-                        return Err(e);
-                    }
-                }
-            }
-        }
+    let canonical_search = search_path
+        .canonicalize()
+        .map_err(|_e| invalid_params(format!("Path not found: {:?}", request.subpath)))?;
 
-        Ok(ReadFilesResponse {
-            files: results,
-            total_requested: request.file_paths.len(),
-            success_count,
-            failure_count,
-        })
+    if !canonical_search.starts_with(&canonical_base) {
+        return Err(invalid_params(
+            "Invalid path: path must be within the vault",
+        ));
     }
 
-    /// Validate all paths before reading (fail-fast mode)
-    fn validate_all_paths(&self, file_paths: &[String]) -> CapabilityResult<()> {
-        // Check non-empty
-        if file_paths.is_empty() {
+    let include_sizes = request.include_sizes.unwrap_or(false);
+
+    let (root, total_files, total_directories) = build_file_tree(
+        &canonical_search,
+        &canonical_base,
+        &config,
+        0,
+        request.max_depth,
+        include_sizes,
+    )
+    .map_err(|e| internal_error(format!("Failed to build file tree: {}", e)))?;
+
+    Ok((format_tree_visual(&root, 0), total_files, total_directories))
+}
+
+fn read_files_blocking(
+    base_path: PathBuf,
+    request: ReadFilesRequest,
+) -> CapabilityResult<ReadFilesResponse> {
+    let continue_on_error = request.continue_on_error.unwrap_or(false);
+
+    let canonical_base = base_path
+        .canonicalize()
+        .map_err(|e| internal_error(format!("Failed to resolve base path: {}", e)))?;
+
+    if !continue_on_error {
+        if request.file_paths.is_empty() {
             return Err(invalid_params("file_paths cannot be empty"));
         }
-
-        // Canonicalize base path once
-        let canonical_base = self
-            .base_path
-            .canonicalize()
-            .map_err(|e| internal_error(format!("Failed to resolve base path: {}", e)))?;
-
-        // Validate each path
-        for file_path in file_paths {
-            let requested_path = PathBuf::from(file_path);
-            let full_path = self.base_path.join(&requested_path);
-
-            // Check existence
-            let canonical_full = full_path
+        for file_path in &request.file_paths {
+            let canonical_full = base_path
+                .join(PathBuf::from(file_path))
                 .canonicalize()
                 .map_err(|_| invalid_params(format!("File not found: {}", file_path)))?;
-
-            // Security check
             if !canonical_full.starts_with(&canonical_base) {
                 return Err(invalid_params(format!(
                     "Invalid path '{}': must be within vault",
                     file_path
                 )));
             }
-
-            // File type check
             if canonical_full.extension().and_then(|s| s.to_str()) != Some("md") {
                 return Err(invalid_params(format!(
                     "Invalid file type '{}': only .md files allowed",
@@ -286,48 +242,73 @@ impl FileCapability {
                 )));
             }
         }
-
-        Ok(())
     }
 
-    /// Read a single file (internal helper)
-    fn read_single_file(&self, file_path: &str) -> CapabilityResult<String> {
-        // 1. Construct the full path
-        let requested_path = PathBuf::from(file_path);
-        let full_path = self.base_path.join(&requested_path);
+    let mut results = Vec::new();
+    let mut success_count = 0;
+    let mut failure_count = 0;
 
-        // 2. Canonicalize paths for security check
-        let canonical_base = self
-            .base_path
-            .canonicalize()
-            .map_err(|e| internal_error(format!("Failed to resolve base path: {}", e)))?;
-
-        let canonical_full = full_path
-            .canonicalize()
-            .map_err(|_| invalid_params(format!("File not found: {}", file_path)))?;
-
-        // 3. Security: Ensure path is within base directory
-        if !canonical_full.starts_with(&canonical_base) {
-            return Err(invalid_params(format!(
-                "Invalid path '{}': must be within vault",
-                file_path
-            )));
+    for file_path in &request.file_paths {
+        let result = read_single_file_blocking(&base_path, &canonical_base, file_path);
+        match result {
+            Ok(content) => {
+                results.push(ReadFileResult {
+                    file_path: file_path.clone(),
+                    file_name: extract_file_name(file_path),
+                    success: true,
+                    content: Some(content),
+                    error: None,
+                });
+                success_count += 1;
+            }
+            Err(e) => {
+                if continue_on_error {
+                    results.push(ReadFileResult {
+                        file_path: file_path.clone(),
+                        file_name: extract_file_name(file_path),
+                        success: false,
+                        content: None,
+                        error: Some(e.to_string()),
+                    });
+                    failure_count += 1;
+                } else {
+                    return Err(e);
+                }
+            }
         }
-
-        // 4. Validate it's a markdown file
-        if canonical_full.extension().and_then(|s| s.to_str()) != Some("md") {
-            return Err(invalid_params(format!(
-                "Invalid file type '{}': only .md files allowed",
-                file_path
-            )));
-        }
-
-        // 5. Read the file content
-        let content = std::fs::read_to_string(&canonical_full)
-            .map_err(|e| internal_error(format!("Failed to read file: {}", e)))?;
-
-        Ok(content)
     }
+
+    Ok(ReadFilesResponse {
+        files: results,
+        total_requested: request.file_paths.len(),
+        success_count,
+        failure_count,
+    })
+}
+
+fn read_single_file_blocking(
+    base_path: &Path,
+    canonical_base: &Path,
+    file_path: &str,
+) -> CapabilityResult<String> {
+    let canonical_full = base_path
+        .join(PathBuf::from(file_path))
+        .canonicalize()
+        .map_err(|_| invalid_params(format!("File not found: {}", file_path)))?;
+    if !canonical_full.starts_with(canonical_base) {
+        return Err(invalid_params(format!(
+            "Invalid path '{}': must be within vault",
+            file_path
+        )));
+    }
+    if canonical_full.extension().and_then(|s| s.to_str()) != Some("md") {
+        return Err(invalid_params(format!(
+            "Invalid file type '{}': only .md files allowed",
+            file_path
+        )));
+    }
+    std::fs::read_to_string(&canonical_full)
+        .map_err(|e| internal_error(format!("Failed to read file: {}", e)))
 }
 
 /// Operation struct for list_files (HTTP, CLI, and MCP)
@@ -762,9 +743,8 @@ impl FileCapability {
         &self,
         request: RecentFilesRequest,
     ) -> CapabilityResult<RecentFilesResponse> {
-        use crate::recent_files::{file_timestamp, parse_iso8601_to_unix};
+        use crate::recent_files::parse_iso8601_to_unix;
 
-        // Resolve the since threshold to a unix timestamp (midnight UTC on that date)
         let since_ts: Option<i64> = request
             .since
             .as_deref()
@@ -776,57 +756,69 @@ impl FileCapability {
             .transpose()?;
 
         let limit = request.limit.unwrap_or(20);
+        let base_path = self.base_path.clone();
+        let config = Arc::clone(&self.config);
 
-        // Collect all markdown files
-        let markdown_files =
-            notectl_core::file_walker::collect_markdown_files(&self.base_path, &self.config)
-                .map_err(|e| internal_error(format!("Failed to walk vault: {}", e)))?;
+        tracing::debug!(path = %base_path.display(), "Listing recent files");
 
-        // Build entries in parallel
-        let base = &self.base_path;
-        let mut entries: Vec<(i64, RecentFileEntry)> = markdown_files
-            .par_iter()
-            .filter_map(|path| {
-                let (ts, source, display) = file_timestamp(path)?;
+        let (files, total_found) = tokio::task::spawn_blocking(move || {
+            recent_files_blocking(base_path, config, since_ts, limit)
+        })
+        .await
+        .map_err(|e| internal_error(format!("Recent files scan panicked: {}", e)))??;
 
-                // Apply since filter
-                if let Some(threshold) = since_ts
-                    && ts < threshold
-                {
-                    return None;
-                }
-
-                let rel_path = path
-                    .strip_prefix(base)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
-                let file_name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-
-                Some((
-                    ts,
-                    RecentFileEntry {
-                        file_path: rel_path,
-                        file_name,
-                        updated_at: display,
-                        date_source: source.to_string(),
-                    },
-                ))
-            })
-            .collect();
-
-        // Sort descending by timestamp
-        entries.sort_by(|a, b| b.0.cmp(&a.0));
-
-        let total_found = entries.len();
-        let files = entries.into_iter().take(limit).map(|(_, e)| e).collect();
+        tracing::debug!(total_found, "Recent files scan complete");
 
         Ok(RecentFilesResponse { files, total_found })
     }
+}
+
+fn recent_files_blocking(
+    base_path: PathBuf,
+    config: Arc<Config>,
+    since_ts: Option<i64>,
+    limit: usize,
+) -> CapabilityResult<(Vec<RecentFileEntry>, usize)> {
+    use crate::recent_files::file_timestamp;
+
+    let markdown_files = notectl_core::file_walker::collect_markdown_files(&base_path, &config)
+        .map_err(|e| internal_error(format!("Failed to walk vault: {}", e)))?;
+
+    let mut entries: Vec<(i64, RecentFileEntry)> = markdown_files
+        .par_iter()
+        .filter_map(|path| {
+            let (ts, source, display) = file_timestamp(path)?;
+            if let Some(threshold) = since_ts
+                && ts < threshold
+            {
+                return None;
+            }
+            let rel_path = path
+                .strip_prefix(&base_path)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            let file_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            Some((
+                ts,
+                RecentFileEntry {
+                    file_path: rel_path,
+                    file_name,
+                    updated_at: display,
+                    date_source: source.to_string(),
+                },
+            ))
+        })
+        .collect();
+
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    let total_found = entries.len();
+    let files = entries.into_iter().take(limit).map(|(_, e)| e).collect();
+    Ok((files, total_found))
 }
 
 /// Operation struct for recent_files (HTTP, CLI, and MCP)

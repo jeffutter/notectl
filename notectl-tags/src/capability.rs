@@ -2,11 +2,11 @@ use crate::tag_extractor::{TagCount, TagExtractor, TaggedFile};
 use clap::{CommandFactory, FromArgMatches};
 use notectl_core::CapabilityResult;
 use notectl_core::config::Config;
-use notectl_core::error::internal_error;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing;
 
 /// Operation metadata for extract_tags
 pub mod extract_tags {
@@ -153,36 +153,37 @@ impl TagCapability {
         &self,
         request: ExtractTagsRequest,
     ) -> CapabilityResult<ExtractTagsResponse> {
-        // Determine the search path (base path + optional subpath)
         let search_path = if let Some(subpath) = request.subpath {
             self.base_path.join(subpath)
         } else {
             self.base_path.clone()
         };
 
-        // Extract tags from the search path
-        let tags = self
-            .tag_extractor
-            .extract_tags(&search_path)
-            .map_err(|e| internal_error(format!("Failed to extract tags: {}", e)))?;
+        tracing::debug!(path = %search_path.display(), "Starting tag extraction");
+
+        let tags = self.tag_extractor.extract_tags(&search_path).await?;
+
+        tracing::debug!(count = tags.len(), "Tag extraction complete");
 
         Ok(ExtractTagsResponse { tags })
     }
 
     /// List all tags with document counts
     pub async fn list_tags(&self, request: ListTagsRequest) -> CapabilityResult<ListTagsResponse> {
-        // Resolve search path
         let search_path = if let Some(ref subpath) = request.subpath {
             self.base_path.join(subpath)
         } else {
             self.base_path.clone()
         };
 
-        // Extract tags with counts
+        tracing::debug!(path = %search_path.display(), "Starting tag count extraction");
+
         let mut tags = self
             .tag_extractor
             .extract_tags_with_counts(&search_path)
-            .map_err(|e| internal_error(format!("Failed to extract tags: {}", e)))?;
+            .await?;
+
+        tracing::debug!(count = tags.len(), "Tag count extraction complete");
 
         // Track total before filtering
         let total_unique_tags = tags.len();
@@ -216,7 +217,6 @@ impl TagCapability {
         &self,
         request: SearchByTagsRequest,
     ) -> CapabilityResult<SearchByTagsResponse> {
-        // Determine the search path (base path + optional subpath)
         let search_path = if let Some(ref subpath) = request.subpath {
             self.base_path.join(subpath)
         } else {
@@ -225,11 +225,14 @@ impl TagCapability {
 
         let match_all = request.match_all.unwrap_or(false);
 
-        // Search for files by tags
+        tracing::debug!(path = %search_path.display(), tag_count = request.tags.len(), "Starting tag search");
+
         let mut files = self
             .tag_extractor
             .search_by_tags(&search_path, &request.tags, match_all)
-            .map_err(|e| internal_error(format!("Failed to search by tags: {}", e)))?;
+            .await?;
+
+        tracing::debug!(count = files.len(), "Tag search complete");
 
         let total_count = files.len();
 
