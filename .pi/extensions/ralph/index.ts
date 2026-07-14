@@ -314,8 +314,10 @@ async function doPlan(
   const planPrompt = [
     `/backlog-planner ${ticket.id}`,
     "",
-    "Research gathered before planning:",
-    research.ok ? research.output : "(research step failed or returned nothing; plan from repo context alone)",
+    "Research gathered before planning (best-effort — the research step may have been cut short by a",
+    "timeout partway through, or its output may just be an unrelated startup warning with no real",
+    "content; use it if it's useful, ignore it and rely on repo context otherwise):",
+    research.output.trim() || "(no output was produced)",
     "",
     `After planning completes (the ticket has a plan and, if applicable, is labeled planned), set its`,
     `status to Dev Ready: \`backlog task edit ${ticket.id} -s "Dev Ready"\`. If /backlog-planner instead`,
