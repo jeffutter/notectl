@@ -1,0 +1,41 @@
+[package]
+name = "notectl-search"
+version.workspace = true
+edition.workspace = true
+description = "Semantic search capability for notectl"
+repository.workspace = true
+
+[dependencies]
+# Always available: chunker, BM25, storage
+async-trait.workspace = true
+clap.workspace = true
+notectl-core.workspace = true
+rayon.workspace = true
+regex.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+# Dense embedding deps - gated behind 'embeddings' feature
+candle-core = { workspace = true, optional = true }
+candle-transformers = { workspace = true, optional = true }
+candle-nn = { workspace = true, optional = true }
+hf-hub = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+bm25 = { workspace = true, optional = true }
+
+[features]
+embeddings = [
+  "candle-core",
+  "candle-transformers",
+  "candle-nn",
+  "hf-hub",
+  "tokenizers",
+  "bm25",
+]
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -7,6 +7,7 @@ members = [
   "notectl-files",
   "notectl-daily-notes",
   "notectl-outline",
+  "notectl-search",
 ]
 resolver = "2"
 
@@ -45,6 +46,14 @@ tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# Dense embedding deps (optional, gated behind 'embeddings' feature)
+candle-core = "0.8"
+candle-transformers = "0.8"
+candle-nn = "0.8"
+hf-hub = "0.4"
+tokenizers = "0.21"
+bm25 = "2.3"
+
 # Workspace members
 notectl-core = { path = "notectl-core" }
 notectl-tasks = { path = "notectl-tasks" }
@@ -52,6 +61,7 @@ notectl-tags = { path = "notectl-tags" }
 notectl-files = { path = "notectl-files" }
 notectl-daily-notes = { path = "notectl-daily-notes" }
 notectl-outline = { path = "notectl-outline" }
+notectl-search = { path = "notectl-search" }
 
 [package]
 name = "notectl"
@@ -87,6 +97,14 @@ notectl-tags.workspace = true
 notectl-files.workspace = true
 notectl-daily-notes.workspace = true
 notectl-outline.workspace = true
+notectl-search = { path = "notectl-search", optional = true }
+
+[features]
+# Enable semantic search capability.
+# Without embeddings: sparse BM25 search only (lightweight).
+# With embeddings: dense + sparse hybrid search via RRF fusion (requires ML deps).
+search = ["notectl-search"]
+search-dense = ["notectl-search/embeddings"]
 
 [dev-dependencies]
 tempfile.workspace = true
