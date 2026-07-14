@@ -4,8 +4,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{self};
 use std::path::{Path, PathBuf};
 
-use crate::chunker::Chunk;
 use crate::SearchError;
+use crate::chunker::Chunk;
 
 /// Version of the search index format
 const INDEX_FORMAT_VERSION: u32 = 1;
