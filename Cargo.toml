@@ -1,12 +1,12 @@
 [workspace]
 members = [
-    ".",
-    "notectl-core",
-    "notectl-tasks",
-    "notectl-tags",
-    "notectl-files",
-    "notectl-daily-notes",
-    "notectl-outline",
+  ".",
+  "notectl-core",
+  "notectl-tasks",
+  "notectl-tags",
+  "notectl-files",
+  "notectl-daily-notes",
+  "notectl-outline",
 ]
 resolver = "2"
 
@@ -23,13 +23,23 @@ glob = "0.3"
 toml = "0.8"
 rayon = "1.12"
 regex = { version = "1.13", features = ["perf"] }
-rmcp = { version = "0.16", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "0.16", features = [
+  "server",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9"
 simdutf8 = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "net",
+  "signal",
+  "sync",
+] }
 tokio-util = { version = "0.7" }
 tempfile = "3"
 tracing = "0.1"
@@ -57,7 +67,10 @@ async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
 mimalloc = { version = "0.1.52" }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13", features = [
+  "json",
+  "rustls",
+], default-features = false }
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
