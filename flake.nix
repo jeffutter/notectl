@@ -26,6 +26,12 @@
 
         src = lib.cleanSourceWith { src = craneLib.path ./.; };
 
+        # Single source of truth for the Rust toolchain (rustc/cargo/rustfmt/clippy
+        # all from the same rust-overlay release) — nixpkgs' own `cargo`/`rustc`
+        # are deliberately not used alongside it, since mixing the two pulls in two
+        # differently-versioned toolchains with no defined precedence between them.
+        rustToolchain = pkgs.rust-bin.stable.latest.default;
+
         envVars =
           { }
           // (lib.attrsets.optionalAttrs pkgs.stdenv.isLinux {
@@ -38,11 +44,8 @@
             buildInputs =
               with pkgs;
               [
-                cargo
                 clang
-                rust-analyzer
-                rust-bin.stable.latest.default
-                rustc
+                rustToolchain
               ]
               ++ lib.optionals stdenv.isDarwin [ libiconv ];
           }
@@ -73,23 +76,36 @@
           inherit notectl notectl-remote;
         };
 
-        devShells.default = mkShell (
-          {
-            packages = [
-              cargo
-              cargo-audit
-              cargo-nextest
-              cargo-watch
-              clang
-              lefthook
-              rust-analyzer
-              rust-bin.stable.latest.default
-              rustc
-              rustfmt
-            ];
-          }
-          // envVars
-        );
+        devShells = {
+          # Full local-dev shell: compiler toolchain plus editor/workflow tooling.
+          default = mkShell (
+            {
+              packages = [
+                cargo-audit
+                cargo-nextest
+                cargo-watch
+                clang
+                lefthook
+                rust-analyzer
+                rustToolchain
+              ];
+            }
+            // envVars
+          );
+
+          # Lean CI shell: compiler toolchain only, no editor/dev-workflow tools,
+          # so CI jobs realize a smaller, unambiguous closure.
+          ci = mkShell (
+            {
+              packages = [
+                clang
+                rustToolchain
+              ]
+              ++ lib.optionals stdenv.isDarwin [ libiconv ];
+            }
+            // envVars
+          );
+        };
 
         formatter = nixpkgs-fmt;
       }
