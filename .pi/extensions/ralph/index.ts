@@ -271,7 +271,21 @@ async function doExecute(
   ticket: Ticket,
 ): Promise<boolean> {
   setCurrentStep(ctx, state, `executing ${ticket.id}`);
-  const result = await runHeadless(pi, cwd, `/backlog-execute ${ticket.id}`, { timeout: EXECUTE_TIMEOUT_MS });
+  const executePrompt = [
+    `/backlog-execute ${ticket.id}`,
+    "",
+    "One override to the skill's step order, specific to this unattended loop: commit",
+    "the code changes FIRST, before marking the ticket Done — then mark it Done, then",
+    "fold that status change into the same commit (e.g. stage the updated ticket file",
+    "and `git commit --amend --no-edit`) so the final history has one clean commit.",
+    "This process can be killed mid-step by a timeout with no chance to finish; under",
+    "the skill's default order (mark Done, then commit) a kill between those two steps",
+    "leaves the ticket claiming Done work that was never committed, and a restarted",
+    "loop can't tell the difference from real completion. Committing the code before",
+    "flipping the status avoids that: if killed before the amend, the code is already",
+    "safely committed and only a trivial status-file fix-up remains.",
+  ].join("\n");
+  const result = await runHeadless(pi, cwd, executePrompt, { timeout: EXECUTE_TIMEOUT_MS });
   if (result.ok) state.executedSinceReview += 1;
   await recordHistory(cwd, state, {
     kind: "execute",
