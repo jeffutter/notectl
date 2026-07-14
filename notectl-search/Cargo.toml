@@ -10,6 +10,7 @@ repository.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 notectl-core.workspace = true
+notectl-outline.workspace = true
 rayon.workspace = true
 regex.workspace = true
 rmcp.workspace = true

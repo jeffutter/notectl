@@ -1,6 +1,7 @@
 pub mod bm25;
 pub mod chunker;
 pub mod storage;
+pub mod tokenize;
 
 #[cfg(feature = "embeddings")]
 pub mod embeddings;
@@ -8,8 +9,11 @@ pub mod embeddings;
 pub use chunker::Chunker;
 pub use storage::{SearchIndex, SearchManifest};
 
-use std::path::PathBuf;
+#[cfg(feature = "embeddings")]
+pub use embeddings::{Embedder, EmbeddingConfig, TaskType};
+
 use std::fmt;
+use std::path::PathBuf;
 
 /// Errors returned by search operations
 #[derive(Debug)]
@@ -47,11 +51,16 @@ impl From<SearchError> for rmcp::model::ErrorData {
                 "Dense search requires the 'embeddings' feature. \
                  Rebuild with: cargo build --features embeddings",
             ),
-            SearchError::IndexNotFound(path) => {
-                notectl_core::invalid_params(format!("Search index not found at: {}", path.display()))
+            SearchError::IndexNotFound(path) => notectl_core::invalid_params(format!(
+                "Search index not found at: {}",
+                path.display()
+            )),
+            SearchError::Storage(msg) => {
+                notectl_core::internal_error(format!("Storage error: {msg}"))
             }
-            SearchError::Storage(msg) => notectl_core::internal_error(format!("Storage error: {msg}")),
-            SearchError::Chunking(msg) => notectl_core::internal_error(format!("Chunking error: {msg}")),
+            SearchError::Chunking(msg) => {
+                notectl_core::internal_error(format!("Chunking error: {msg}"))
+            }
             SearchError::Bm25(msg) => notectl_core::internal_error(format!("BM25 error: {msg}")),
             SearchError::Other(msg) => notectl_core::internal_error(msg),
         }
@@ -178,10 +187,7 @@ mod tests {
     #[cfg(not(feature = "embeddings"))]
     #[tokio::test]
     async fn test_search_without_embeddings_returns_clear_error() {
-        let cap = SearchCapability::new(
-            PathBuf::from("/tmp"),
-            SearchConfig::default(),
-        );
+        let cap = SearchCapability::new(PathBuf::from("/tmp"), SearchConfig::default());
         let result = cap.search("test query").await;
         assert!(result.is_err());
         match result.unwrap_err() {

@@ -1,0 +1,211 @@
+//! Weight downloading via hf-hub with offline caching.
+//!
+//! Handles:
+//! - First-run download from Hugging Face
+//! - Offline mode after initial download
+//! - Clear error messages for 401/403 (gated model + HF_TOKEN)
+
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// Model repository identifier
+pub const MODEL_REPO: &str = "google/embeddinggemma-300m";
+
+/// Tokenizer config file
+const TOKENIZER_FILE: &str = "tokenizer.json";
+
+/// Model weights file (safetensors)
+const WEIGHTS_FILE: &str = "model.safetensors";
+
+/// Config file
+const CONFIG_FILE: &str = "config.json";
+
+/// Pooling config directory
+const POOLING_DIR: &str = "1_Pooling";
+const POOLING_CONFIG: &str = "config.json";
+
+/// Dense projection directories
+const DENSE_2_DIR: &str = "2_Dense";
+const DENSE_2_CONFIG: &str = "config.json";
+const DENSE_2_WEIGHTS: &str = "model.safetensors";
+
+const DENSE_3_DIR: &str = "3_Dense";
+const DENSE_3_CONFIG: &str = "config.json";
+const DENSE_3_WEIGHTS: &str = "model.safetensors";
+
+/// All files that need to be downloaded
+const REQUIRED_FILES: &[&str] = &[
+    TOKENIZER_FILE,
+    WEIGHTS_FILE,
+    CONFIG_FILE,
+    &format!("{POOLING_DIR}/{POOLING_CONFIG}"),
+    &format!("{DENSE_2_DIR}/{DENSE_2_CONFIG}"),
+    &format!("{DENSE_2_DIR}/{DENSE_2_WEIGHTS}"),
+    &format!("{DENSE_3_DIR}/{DENSE_3_CONFIG}"),
+    &format!("{DENSE_3_DIR}/{DENSE_3_WEIGHTS}"),
+];
+
+/// Error type for download operations
+#[derive(Debug)]
+pub enum DownloadError {
+    /// Network error during download
+    Network(String),
+    /// Authentication error (401/403) - likely missing HF_TOKEN or unaccepted license
+    Auth(String),
+    /// Model not found (404)
+    NotFound(String),
+    /// Failed to parse config/tokenizer JSON
+    ParseError(String),
+    /// IO error during file operations
+    IoError(std::io::Error),
+    /// Model download incomplete or corrupted
+    Incomplete(String),
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::Network(msg) => write!(f, "Network error: {msg}"),
+            DownloadError::Auth(msg) => {
+                write!(
+                    f,
+                    "Authentication error: {msg}\n\
+                     EmbeddingGemma requires a Hugging Face account with accepted license.\n\
+                     1. Visit https://huggingface.co/{MODEL_REPO}\n\
+                     2. Log in and acknowledge the license\n\
+                     3. Set HF_TOKEN environment variable or configure hf-hub\n\
+                     Error: {msg}"
+                )
+            }
+            DownloadError::NotFound(msg) => write!(f, "Model not found: {msg}"),
+            DownloadError::ParseError(msg) => write!(f, "Config parse error: {msg}"),
+            DownloadError::IoError(err) => write!(f, "IO error: {err}"),
+            DownloadError::Incomplete(msg) => write!(f, "Download incomplete: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+impl From<std::io::Error> for DownloadError {
+    fn from(err: std::io::Error) -> Self {
+        DownloadError::IoError(err)
+    }
+}
+
+/// Download model weights and configs to the specified cache directory.
+///
+/// Uses hf-hub to download required files. On success, returns the path to the
+/// downloaded model directory. Subsequent calls with the same cache_dir will
+/// be fast (files already present).
+pub async fn download_model(cache_dir: &Path) -> Result<PathBuf, DownloadError> {
+    // Create cache directory if it doesn't exist
+    std::fs::create_dir_all(cache_dir).map_err(DownloadError::IoError)?;
+
+    tracing::info!(
+        "Downloading EmbeddingGemma-300M model to {}",
+        cache_dir.display()
+    );
+
+    // Use hf-hub to download all required files
+    let client = hf_hub::api::sync::SyncBuilder::new()
+        .repo(hf_hub::Repo::with_revision(
+            MODEL_REPO.to_string(),
+            hf_hub::RepoType::Model,
+            "main".to_string(),
+        ))
+        .build()
+        .map_err(|e| DownloadError::Network(format!("Failed to create HF client: {e}")))?;
+
+    let mut downloaded_files = Vec::new();
+
+    for file_pattern in REQUIRED_FILES {
+        match client.get(file_pattern) {
+            Ok(local_path) => {
+                tracing::debug!("Downloaded: {file_pattern}");
+                downloaded_files.push(local_path);
+            }
+            Err(hf_hub::api::Error::Auth(HttpError { status, .. }))
+                if status == 401 || status == 403 =>
+            {
+                return Err(DownloadError::Auth(format!(
+                    "HTTP {status}: You may need to accept the EmbeddingGemma license and provide a valid HF_TOKEN"
+                )));
+            }
+            Err(hf_hub::api::Error::Http(HttpError {
+                status, message, ..
+            })) => {
+                return Err(match status {
+                    401 | 403 => DownloadError::Auth(format!("HTTP {status}: {message}")),
+                    404 => DownloadError::NotFound(format!("HTTP {status}: {message}")),
+                    _ => DownloadError::Network(format!("HTTP {status}: {message}")),
+                });
+            }
+            Err(e) => {
+                return Err(DownloadError::Network(format!(
+                    "Failed to download {file_pattern}: {e}"
+                )));
+            }
+        }
+    }
+
+    // Verify all required files are present
+    for file in REQUIRED_FILES {
+        let expected = cache_dir.join(file);
+        if !expected.exists() {
+            return Err(DownloadError::Incomplete(format!(
+                "Missing required file: {}",
+                file
+            )));
+        }
+    }
+
+    tracing::info!(
+        "Successfully downloaded {} files to {}",
+        downloaded_files.len(),
+        cache_dir.display()
+    );
+
+    Ok(cache_dir.to_path_buf())
+}
+
+/// Check if the model is already downloaded and valid.
+pub fn is_model_ready(cache_dir: &Path) -> bool {
+    REQUIRED_FILES
+        .iter()
+        .all(|file| cache_dir.join(file).exists())
+}
+
+/// Get the default model cache directory (~/.cache/notectl/search/models/)
+pub fn default_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from(".cache"))
+        .join("notectl")
+        .join("search")
+        .join("models")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_cache_dir() {
+        let cache = default_cache_dir();
+        assert!(cache.to_string_lossy().contains("notectl/search/models"));
+    }
+
+    #[test]
+    fn test_error_display_auth() {
+        let err = DownloadError::Auth("invalid token".to_string());
+        let msg = format!("{err}");
+        assert!(msg.contains("HF_TOKEN"));
+        assert!(msg.contains(MODEL_REPO));
+    }
+
+    #[test]
+    fn test_required_files_not_empty() {
+        assert!(!REQUIRED_FILES.is_empty());
+        assert!(REQUIRED_FILES.len() >= 8);
+    }
+}

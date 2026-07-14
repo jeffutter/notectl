@@ -619,6 +619,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -673,6 +674,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -709,6 +711,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -747,6 +750,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -786,6 +790,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -816,6 +821,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),
@@ -844,6 +850,7 @@ mod tests {
         let config = Arc::new(Config {
             exclude_paths: vec![],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let file_cap = Arc::new(FileCapability::new(
             base_path.to_path_buf(),

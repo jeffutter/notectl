@@ -703,6 +703,7 @@ tags:
         let config = Arc::new(Config {
             exclude_paths: vec!["excluded".to_string()],
             daily_note_patterns: notectl_core::config::default_daily_note_patterns(),
+            search: notectl_core::config::SearchConfig::default(),
         });
         let extractor = TagExtractor::new(config);
 

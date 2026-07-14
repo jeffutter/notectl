@@ -1,6 +1,6 @@
 project_name: "notectl"
 default_status: "To Do"
-statuses: ["Backlog", "To Do", "Dev Ready", "In Progress", "Done"]
+statuses: ["Backlog", "To Do", "Needs Plan", "Dev Ready", "In Progress", "Done"]
 labels: []
 date_format: yyyy-mm-dd
 max_column_width: 20

@@ -4,8 +4,23 @@ title: Semantic search over full notes (notectl-search)
 status: To Do
 assignee: []
 created_date: '2026-07-14 02:21'
+updated_date: '2026-07-14 02:58'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-1.1
+  - TASK-1.2
+  - TASK-1.3
+  - TASK-1.4
+  - TASK-1.5
+  - TASK-1.6
+  - TASK-1.7
+  - TASK-1.8
+  - TASK-1.9
+  - TASK-1.10
+  - TASK-1.11
+  - TASK-1.12
+  - TASK-1.13
+  - TASK-1.14
 priority: high
 type: feature
 ordinal: 1000

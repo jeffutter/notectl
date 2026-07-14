@@ -178,14 +178,16 @@ impl Config {
         }
 
         if let Ok(dim) = std::env::var("NOTECTL_SEARCH_EMBEDDING_DIM")
-            && let Ok(dim_val) = dim.parse::<u32>() {
-                self.search.embedding_dim = dim_val;
-            }
+            && let Ok(dim_val) = dim.parse::<u32>()
+        {
+            self.search.embedding_dim = dim_val;
+        }
 
         if let Ok(tokens) = std::env::var("NOTECTL_SEARCH_MAX_SEQ_TOKENS")
-            && let Ok(tokens_val) = tokens.parse::<usize>() {
-                self.search.max_seq_tokens = tokens_val;
-            }
+            && let Ok(tokens_val) = tokens.parse::<usize>()
+        {
+            self.search.max_seq_tokens = tokens_val;
+        }
     }
 
     /// Merge configuration from a specific environment variable

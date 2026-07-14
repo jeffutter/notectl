@@ -260,6 +260,7 @@ mod tests {
                 line_start: 0,
                 line_end: 5,
                 heading: Some("Intro".to_string()),
+                heading_path: vec!["Intro".to_string()],
                 text: "Hello world. This is a test chunk.".to_string(),
             },
             Chunk {
@@ -268,6 +269,7 @@ mod tests {
                 line_start: 5,
                 line_end: 10,
                 heading: Some("Section 1".to_string()),
+                heading_path: vec!["Section 1".to_string()],
                 text: "More content here for testing.".to_string(),
             },
         ];

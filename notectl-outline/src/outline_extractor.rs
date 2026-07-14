@@ -186,7 +186,81 @@ impl OutlineExtractor {
         }
     }
 
-    /// Extract section content under a specific heading
+    /// Extract all sections from a markdown file at once.
+    /// This is a generalization of `get_section` that returns every section in the file
+    /// with their spans (start_line, end_line) and full heading paths.
+    pub fn extract_sections(
+        &self,
+        file_path: &Path,
+    ) -> Result<Vec<Section>, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(file_path)
+            .map_err(|e| format!("Failed to read file {:?}: {}", file_path, e))?;
+
+        self.extract_sections_from_content(&content)
+    }
+
+    /// Extract all sections from markdown content (in-memory variant).
+    pub fn extract_sections_from_content(
+        &self,
+        content: &str,
+    ) -> Result<Vec<Section>, Box<dyn std::error::Error>> {
+        let lines: Vec<&str> = content.lines().collect();
+        let headings = self.extract_headings(content);
+
+        if headings.is_empty() {
+            // No headings - treat the entire file as one section with no heading
+            return Ok(vec![Section {
+                heading: Heading {
+                    title: String::new(),
+                    level: 0,
+                    line_number: 1,
+                    children: Vec::new(),
+                },
+                content: content.trim().to_string(),
+                start_line: 1,
+                end_line: lines.len().max(1),
+            }]);
+        }
+
+        let mut sections = Vec::new();
+
+        for (idx, heading) in headings.iter().enumerate() {
+            let start_line = heading.line_number;
+
+            // Determine end line: next heading of same or higher level (smaller number)
+            let end_line = headings
+                .iter()
+                .skip(idx + 1)
+                .find(|h| h.level <= heading.level)
+                .map(|h| h.line_number - 1)
+                .unwrap_or(lines.len());
+
+            // Extract content (skip the heading line itself, include up to end_line)
+            let section_content = if start_line < lines.len() && end_line <= lines.len() {
+                lines[start_line..end_line].join("\n")
+            } else if start_line < lines.len() {
+                lines[start_line..].join("\n")
+            } else {
+                String::new()
+            };
+
+            sections.push(Section {
+                heading: Heading {
+                    title: heading.title.clone(),
+                    level: heading.level,
+                    line_number: heading.line_number,
+                    children: Vec::new(),
+                },
+                content: section_content.trim().to_string(),
+                start_line,
+                end_line,
+            });
+        }
+
+        Ok(sections)
+    }
+
+    /// Extract section content under a specific heading (kept for backward compatibility).
     pub fn get_section(
         &self,
         file_path: &Path,
@@ -212,10 +286,9 @@ impl OutlineExtractor {
             let heading = &headings[idx];
             let start_line = heading.line_number;
 
-            // Determine end line
+            // Determine end line based on include_subsections flag
             let end_line = if include_subsections {
-                // Include until next heading of same or higher level
-                // "Higher level" means smaller number (H1 > H2 > H3)
+                // Include until next heading of same or higher level (smaller number)
                 headings
                     .iter()
                     .skip(idx + 1)
@@ -224,7 +297,6 @@ impl OutlineExtractor {
                     .unwrap_or(lines.len())
             } else {
                 // Exclude subsections - stop at the next heading of any level
-                // This cuts off at the subsection heading itself
                 headings
                     .get(idx + 1)
                     .map(|h| h.line_number - 1)

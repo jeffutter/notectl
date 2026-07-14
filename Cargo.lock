@@ -2088,6 +2088,7 @@ dependencies = [
  "clap",
  "hf-hub",
  "notectl-core",
+ "notectl-outline",
  "rayon",
  "regex",
  "rmcp",
