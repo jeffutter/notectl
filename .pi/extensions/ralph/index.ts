@@ -134,17 +134,17 @@ async function recordHistory(
 
 /**
  * Grace period added on top of a caller's `timeout` before our own watchdog
- * gives up on `pi.exec()` and forces a result. `pi.exec` almost certainly
- * wraps Node's exec-style child_process API, which resolves when the
- * child's stdout/stderr pipes close — not merely when the child process
- * exits. If the nested `pi -p` process spawns anything that inherits those
- * pipes and outlives it (e.g. an MCP server it starts), the exec promise
- * can hang indefinitely even after the real work is done, and `pi.exec`'s
- * own `timeout` may not save us either (it likely only kills the direct
- * child, not an orphaned grandchild still holding the pipe open). Racing an
- * independent watchdog means a stuck exec call can never block the loop's
- * forward progress; the orphaned promise is left to resolve on its own,
- * harmlessly ignored.
+ * gives up on `pi.exec()` and forces a result. Confirmed live (via `ps`):
+ * `pi.exec`'s own `timeout` option does not reliably kill the underlying
+ * process — two `pi -p` subprocesses from timed-out steps were found still
+ * running, fully alive, hours after we'd recorded them as failed and moved
+ * on. So alongside `timeout`, we also pass our own AbortSignal and abort it
+ * ourselves at the same deadline, giving `pi.exec`'s documented cancellation
+ * path ("respects Esc cancellation") an independent chance to actually kill
+ * the process. Even with that, the watchdog below still races an outright
+ * timer so a stuck exec call can never block the loop's forward progress —
+ * if the process survives both kill attempts, the orphaned promise (and
+ * process) is left running and simply ignored.
  */
 const WATCHDOG_GRACE_MS = 30_000;
 
@@ -154,14 +154,20 @@ async function execCapture(
   args: string[],
   opts: { cwd: string; timeout?: number },
 ): Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }> {
-  const execPromise = pi.exec(cmd, args, opts).then((result) => ({
-    ok: result.code === 0 && !result.killed,
-    killed: !!result.killed,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-  }));
+  const controller = opts.timeout ? new AbortController() : undefined;
+  const execPromise = pi.exec(cmd, args, { cwd: opts.cwd, timeout: opts.timeout, signal: controller?.signal }).then(
+    (result) => ({
+      ok: result.code === 0 && !result.killed,
+      killed: !!result.killed,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    }),
+  );
 
-  if (!opts.timeout) return execPromise;
+  if (!opts.timeout || !controller) return execPromise;
+
+  const abortTimer = setTimeout(() => controller.abort(), opts.timeout);
+  abortTimer.unref?.();
 
   const watchdog = new Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }>((resolve) => {
     const timer = setTimeout(
@@ -170,7 +176,7 @@ async function execCapture(
           ok: false,
           killed: true,
           stdout: "",
-          stderr: `(watchdog: "${cmd}" exec call never returned ${opts.timeout! + WATCHDOG_GRACE_MS}ms after start — likely an orphaned child process holding stdout/stderr open)`,
+          stderr: `(watchdog: "${cmd}" exec call never returned ${opts.timeout! + WATCHDOG_GRACE_MS}ms after start — pi.exec's timeout and our own abort signal both failed to kill it; the process may still be running orphaned)`,
         }),
       opts.timeout + WATCHDOG_GRACE_MS,
     );
