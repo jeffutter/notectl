@@ -2,7 +2,7 @@
 id: TASK-1.2
 title: Scaffold notectl-search crate + workspace wiring
 status: Done
-assignee: @ralph
+assignee: '@ralph'
 created_date: '2026-07-14 02:21'
 updated_date: '2026-07-14 03:15'
 labels: []

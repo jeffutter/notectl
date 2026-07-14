@@ -4,9 +4,12 @@ title: 'Sparse index (BM25) + fusion (cosine top-k, RRF)'
 status: To Do
 assignee: []
 created_date: '2026-07-14 02:22'
+updated_date: '2026-07-14 11:12'
 labels: []
 dependencies:
   - TASK-1.2
+  - TASK-1.21
+  - TASK-1.22
 parent_task_id: TASK-1
 priority: medium
 type: task
