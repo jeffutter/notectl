@@ -51,7 +51,8 @@
       "Bash(cargo update:*)",
       "Bash(rtk cargo *)",
       "Bash(cargo audit *)",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(git -C /home/jeffutter/src/markdown-todo-extractor tag v0.9.0)"
     ],
     "deny": [],
     "ask": []
