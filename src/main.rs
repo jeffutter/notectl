@@ -107,13 +107,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let ct = CancellationToken::new();
                 let base_path_clone = base_path.clone();
+                let config =
+                    StreamableHttpServerConfig::default().with_cancellation_token(ct.clone());
                 let service = StreamableHttpService::new(
                     move || Ok(TaskSearchService::new(base_path_clone.clone())),
                     Arc::new(LocalSessionManager::default()),
-                    StreamableHttpServerConfig {
-                        cancellation_token: ct.clone(),
-                        ..Default::default()
-                    },
+                    config,
                 );
 
                 // Load configuration from base path

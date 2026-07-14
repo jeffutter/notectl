@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 /// MCP Service for task searching and tag extraction
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TaskSearchService {
     tool_router: ToolRouter<TaskSearchService>,
     capability_registry: Arc<CapabilityRegistry>,
@@ -189,7 +190,7 @@ impl TaskSearchService {
 impl ServerHandler for TaskSearchService {
     fn get_info(&self) -> ServerInfo {
         // Build instructions from capability metadata
-        let instructions = format!(
+        let _instructions = format!(
             "A Markdown task extraction service. Available operations:\n\
              - {}\n\
              - {}\n\
@@ -209,11 +210,6 @@ impl ServerHandler for TaskSearchService {
             notectl_daily_notes::search_daily_notes::DESCRIPTION
         );
 
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(instructions),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
