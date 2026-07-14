@@ -190,7 +190,7 @@ impl TaskSearchService {
 impl ServerHandler for TaskSearchService {
     fn get_info(&self) -> ServerInfo {
         // Build instructions from capability metadata
-        let _instructions = format!(
+        let instructions = format!(
             "A Markdown task extraction service. Available operations:\n\
              - {}\n\
              - {}\n\
@@ -211,5 +211,6 @@ impl ServerHandler for TaskSearchService {
         );
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(instructions)
     }
 }
