@@ -118,13 +118,13 @@ impl SearchIndex {
 
         // Write count first (as u64)
         let count = vectors.len() as u64;
-        file.write_all(&count.to_le_bytes())
+        std::io::Write::write_all(&mut file, &count.to_le_bytes())
             .map_err(|e| SearchError::Storage(format!("Failed to write vector count: {e}")))?;
 
         // Write each vector as flat f32 array
         for vec in vectors {
             let bytes: Vec<u8> = vec.iter().flat_map(|v| v.to_le_bytes()).collect();
-            file.write_all(&bytes)
+            std::io::Write::write_all(&mut file, &bytes)
                 .map_err(|e| SearchError::Storage(format!("Failed to write vector data: {e}")))?;
         }
 
@@ -144,13 +144,13 @@ impl SearchIndex {
 
         // Read count
         let mut count_bytes = [0u8; 8];
-        file.read_exact(&mut count_bytes)
+        std::io::Read::read_exact(&mut file, &mut count_bytes)
             .map_err(|e| SearchError::Storage(format!("Failed to read vector count: {e}")))?;
         let count = u64::from_le_bytes(count_bytes) as usize;
 
         // Determine embedding dimension by reading the first vector
         let mut first_vec_bytes = [0u8; 4];
-        file.read_exact(&mut first_vec_bytes)
+        std::io::Read::read_exact(&mut file, &mut first_vec_bytes)
             .map_err(|e| SearchError::Storage(format!("Failed to read first vector: {e}")))?;
         let dim = u32::from_le_bytes(first_vec_bytes) as usize;
 
@@ -158,7 +158,7 @@ impl SearchIndex {
         let mut vectors = Vec::with_capacity(count);
         for _ in 0..count {
             let mut buf = vec![0u8; dim * 4];
-            file.read_exact(&mut buf)
+            std::io::Read::read_exact(&mut file, &mut buf)
                 .map_err(|e| SearchError::Storage(format!("Failed to read vector data: {e}")))?;
             let floats: Vec<f32> = buf
                 .chunks(4)

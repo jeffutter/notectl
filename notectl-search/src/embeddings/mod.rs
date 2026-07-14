@@ -13,4 +13,4 @@ pub mod model;
 
 pub use download::{DownloadError, download_model};
 pub use embed::{Embedder, EmbeddingConfig};
-pub use model::ModelLoader;
+pub use model::LoadedModel;

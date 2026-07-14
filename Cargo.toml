@@ -50,6 +50,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 candle-core = "0.8"
 candle-transformers = "0.8"
 candle-nn = "0.8"
+dirs = "6"
 hf-hub = "0.4"
 tokenizers = "0.21"
 bm25 = "2.3"

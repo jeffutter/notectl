@@ -10,7 +10,7 @@ pub use chunker::Chunker;
 pub use storage::{SearchIndex, SearchManifest};
 
 #[cfg(feature = "embeddings")]
-pub use embeddings::{Embedder, EmbeddingConfig, TaskType};
+pub use embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
 
 use std::fmt;
 use std::path::PathBuf;

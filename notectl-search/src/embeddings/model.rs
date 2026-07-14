@@ -5,13 +5,13 @@
 //! - Applies mean pooling to hidden states
 //! - Loads and applies two sequential Dense projection layers
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use candle_core::{DType, Device, Result as CandleResult, Tensor};
 use candle_nn::{Linear, Module, VarBuilder};
 use candle_transformers::models::gemma3::{Config as Gemma3Config, Model as Gemma3Model};
 
-use super::download::{self, DownloadError};
+use super::download::DownloadError;
 
 /// Configuration for the embedding model
 #[derive(Debug, Clone)]
@@ -35,7 +35,7 @@ impl Default for EmbeddingModelConfig {
 }
 
 /// Mean pooling layer (just a utility function, no parameters)
-fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> CandleResult<Tensor> {
+pub fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> CandleResult<Tensor> {
     // attention_mask: (batch, seq_len) - 1 for real tokens, 0 for padding
     // hidden_states: (batch, seq_len, hidden_dim)
 
@@ -48,8 +48,9 @@ fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> CandleResult
     // Sum along sequence dimension
     let sum = masked.sum(1)?; // (batch, hidden_dim)
 
-    // Count of real tokens per sequence
-    let mask_sum = mask.sum(1)?.clip_min(1.0)?; // Avoid division by zero
+    // Count of real tokens per sequence (add epsilon to avoid division by zero)
+    let mask_count = mask.sum(1)?;
+    let mask_sum = (mask_count.to_dtype(DType::F32)? + 1e-8)?;
 
     // Average
     sum.broadcast_div(&mask_sum)
@@ -200,7 +201,7 @@ pub fn load_model(
         VarBuilder::from_mmaped_safetensors(&[weights_path], embedding_config.dtype, device)?
     };
 
-    let model = Gemma3Model::new(gemma_config.clone(), vb)?;
+    let model = Gemma3Model::new(false, &gemma_config, vb)?;
     tracing::info!("Loaded Gemma-3 backbone");
 
     // Load pooling config and verify mean pooling
@@ -224,14 +225,16 @@ pub fn load_model(
     tracing::info!("Verified mean pooling configuration");
 
     // Load Dense projection head
-    let projection_vb = VarBuilder::from_mmaped_safetensors(
-        &[
-            cache_dir.join("2_Dense/model.safetensors"),
-            cache_dir.join("3_Dense/model.safetensors"),
-        ],
-        DType::F32,
-        device,
-    )?;
+    let projection_vb = unsafe {
+        VarBuilder::from_mmaped_safetensors(
+            &[
+                cache_dir.join("2_Dense/model.safetensors"),
+                cache_dir.join("3_Dense/model.safetensors"),
+            ],
+            DType::F32,
+            device,
+        )?
+    };
 
     let projection_head = DenseProjectionHead::new(projection_vb)?;
     tracing::info!("Loaded Dense projection head (768 -> 3072 -> 768)");

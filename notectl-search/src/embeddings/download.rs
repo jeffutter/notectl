@@ -6,7 +6,6 @@
 //! - Clear error messages for 401/403 (gated model + HF_TOKEN)
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 /// Model repository identifier
 pub const MODEL_REPO: &str = "google/embeddinggemma-300m";
@@ -20,29 +19,16 @@ const WEIGHTS_FILE: &str = "model.safetensors";
 /// Config file
 const CONFIG_FILE: &str = "config.json";
 
-/// Pooling config directory
-const POOLING_DIR: &str = "1_Pooling";
-const POOLING_CONFIG: &str = "config.json";
-
-/// Dense projection directories
-const DENSE_2_DIR: &str = "2_Dense";
-const DENSE_2_CONFIG: &str = "config.json";
-const DENSE_2_WEIGHTS: &str = "model.safetensors";
-
-const DENSE_3_DIR: &str = "3_Dense";
-const DENSE_3_CONFIG: &str = "config.json";
-const DENSE_3_WEIGHTS: &str = "model.safetensors";
-
 /// All files that need to be downloaded
 const REQUIRED_FILES: &[&str] = &[
     TOKENIZER_FILE,
     WEIGHTS_FILE,
     CONFIG_FILE,
-    &format!("{POOLING_DIR}/{POOLING_CONFIG}"),
-    &format!("{DENSE_2_DIR}/{DENSE_2_CONFIG}"),
-    &format!("{DENSE_2_DIR}/{DENSE_2_WEIGHTS}"),
-    &format!("{DENSE_3_DIR}/{DENSE_3_CONFIG}"),
-    &format!("{DENSE_3_DIR}/{DENSE_3_WEIGHTS}"),
+    "1_Pooling/config.json",
+    "2_Dense/config.json",
+    "2_Dense/model.safetensors",
+    "3_Dense/config.json",
+    "3_Dense/model.safetensors",
 ];
 
 /// Error type for download operations
@@ -108,38 +94,34 @@ pub async fn download_model(cache_dir: &Path) -> Result<PathBuf, DownloadError> 
     );
 
     // Use hf-hub to download all required files
-    let client = hf_hub::api::sync::SyncBuilder::new()
-        .repo(hf_hub::Repo::with_revision(
-            MODEL_REPO.to_string(),
-            hf_hub::RepoType::Model,
-            "main".to_string(),
-        ))
-        .build()
+    let api = hf_hub::api::sync::Api::new()
         .map_err(|e| DownloadError::Network(format!("Failed to create HF client: {e}")))?;
+    let api_repo = api.model(MODEL_REPO.to_string());
 
     let mut downloaded_files = Vec::new();
 
     for file_pattern in REQUIRED_FILES {
-        match client.get(file_pattern) {
+        match api_repo.download(file_pattern) {
             Ok(local_path) => {
                 tracing::debug!("Downloaded: {file_pattern}");
                 downloaded_files.push(local_path);
             }
-            Err(hf_hub::api::Error::Auth(HttpError { status, .. }))
-                if status == 401 || status == 403 =>
-            {
-                return Err(DownloadError::Auth(format!(
-                    "HTTP {status}: You may need to accept the EmbeddingGemma license and provide a valid HF_TOKEN"
+            Err(hf_hub::api::sync::ApiError::RequestError(ureq_err)) => {
+                // ureq encodes HTTP status codes in Error::Status variant
+                let msg = format!("{ureq_err}");
+                if msg.contains("401") || msg.contains("403") {
+                    return Err(DownloadError::Auth(format!(
+                        "Authentication error: You may need to accept the EmbeddingGemma license and provide a valid HF_TOKEN. {msg}"
+                    )));
+                }
+                if msg.contains("404") {
+                    return Err(DownloadError::NotFound(format!(
+                        "Model or file not found: {msg}"
+                    )));
+                }
+                return Err(DownloadError::Network(format!(
+                    "Failed to download {file_pattern}: {msg}"
                 )));
-            }
-            Err(hf_hub::api::Error::Http(HttpError {
-                status, message, ..
-            })) => {
-                return Err(match status {
-                    401 | 403 => DownloadError::Auth(format!("HTTP {status}: {message}")),
-                    404 => DownloadError::NotFound(format!("HTTP {status}: {message}")),
-                    _ => DownloadError::Network(format!("HTTP {status}: {message}")),
-                });
             }
             Err(e) => {
                 return Err(DownloadError::Network(format!(

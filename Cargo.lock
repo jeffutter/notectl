@@ -2086,6 +2086,7 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "clap",
+ "dirs",
  "hf-hub",
  "notectl-core",
  "notectl-outline",

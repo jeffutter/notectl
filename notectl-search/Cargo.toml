@@ -24,6 +24,7 @@ tracing.workspace = true
 candle-core = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 candle-nn = { workspace = true, optional = true }
+dirs = { workspace = true, optional = true }
 hf-hub = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 bm25 = { workspace = true, optional = true }
@@ -33,6 +34,7 @@ embeddings = [
   "candle-core",
   "candle-transformers",
   "candle-nn",
+  "dirs",
   "hf-hub",
   "tokenizers",
   "bm25",

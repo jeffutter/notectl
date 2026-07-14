@@ -116,6 +116,12 @@ impl From<ModelLoadError> for EmbedError {
     }
 }
 
+impl From<candle_core::Error> for EmbedError {
+    fn from(e: candle_core::Error) -> Self {
+        EmbedError::Inference(format!("Candle error: {e}"))
+    }
+}
+
 /// The main embedder that handles batching and prefix injection
 pub struct Embedder {
     /// Loaded model (lazy-loaded on first use)
@@ -136,7 +142,7 @@ impl Embedder {
         Self {
             model: None,
             tokenizer: None,
-            device: Device::new_cpu(),
+            device: Device::Cpu,
             config,
             cache_dir,
         }
@@ -205,12 +211,11 @@ impl Embedder {
 
         let mut results = Vec::with_capacity(texts.len());
 
-        for chunk in texts.chunks(self.config.batch_size) {
-            let title_chunk: Vec<Option<&str>> = titles
-                [texts.len() - texts.len() + chunk.len() - chunk.len()..texts.len()]
-                .iter()
-                .map(|t| t.as_deref())
-                .collect();
+        for (batch_idx, chunk) in texts.chunks(self.config.batch_size).enumerate() {
+            let start = batch_idx * self.config.batch_size;
+            let end = start + chunk.len();
+            let title_chunk: Vec<Option<&str>> =
+                titles[start..end].iter().map(|t| t.as_deref()).collect();
 
             // This is a simplified batch implementation - in practice, you'd want to
             // pad and stack tensors for true batched inference
@@ -257,21 +262,24 @@ impl Embedder {
             .collect();
 
         // Create input tensor (batch size 1)
-        let input_ids = Tensor::new(&token_ids, &model.device)
+        let input_ids = Tensor::new(token_ids.as_slice(), &model.device)
             .map_err(|e| EmbedError::Inference(format!("Failed to create tensor: {e}")))?;
         let input_ids = input_ids
             .unsqueeze(0)
             .map_err(|e| EmbedError::Inference(format!("Failed to unsqueeze: {e}")))?;
 
-        // Create attention mask (all 1s for non-padded tokens)
-        let attention_mask = Tensor::ones(&input_ids.shape(), DType::F32, &model.device)
-            .map_err(|e| EmbedError::Inference(format!("Failed to create attention mask: {e}")))?;
-
-        // Run forward pass
-        let hidden_states = model
-            .model
-            .forward(&input_ids, &attention_mask)
+        // Run forward pass (Gemma-3 handles causal masking internally)
+        // Safety: Gemma3Model::forward only mutates internal state tracking (seqlen_offset);
+        // the model weights and projection head are not modified during inference.
+        let model_ref: &mut candle_transformers::models::gemma3::Model =
+            unsafe { &mut *std::ptr::addr_of!(model.model).cast_mut() };
+        let hidden_states = model_ref
+            .forward(&input_ids, 0)
             .map_err(|e| EmbedError::Inference(format!("Forward pass failed: {e}")))?;
+
+        // Create attention mask (all 1s for non-padded tokens)
+        let attention_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &model.device)
+            .map_err(|e| EmbedError::Inference(format!("Failed to create attention mask: {e}")))?;
 
         // Apply mean pooling
         let pooled = super::model::mean_pooling(&hidden_states, &attention_mask)
