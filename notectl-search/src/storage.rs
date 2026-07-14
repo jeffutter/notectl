@@ -109,17 +109,33 @@ impl SearchIndex {
             .map_err(|e| SearchError::Storage(format!("Failed to read chunk {}: {e}", chunk_id)))
     }
 
-    /// Write dense embedding vectors to disk (flat f32 binary format)
+    /// Write dense embedding vectors to disk (flat f32 binary format).
+    ///
+    /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
     #[cfg(feature = "embeddings")]
     pub fn write_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), SearchError> {
         let vectors_path = self.base_dir.join("vectors.bin");
         let mut file = fs::File::create(&vectors_path)
             .map_err(|e| SearchError::Storage(format!("Failed to create vectors file: {e}")))?;
 
-        // Write count first (as u64)
+        // Write count first (as u64 LE)
         let count = vectors.len() as u64;
         std::io::Write::write_all(&mut file, &count.to_le_bytes())
             .map_err(|e| SearchError::Storage(format!("Failed to write vector count: {e}")))?;
+
+        // Write embedding dimension (u32 LE). Use 0 if there are no vectors or all are empty.
+        let dim = vectors
+            .iter()
+            .find_map(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.len() as u32)
+                }
+            })
+            .unwrap_or(0);
+        std::io::Write::write_all(&mut file, &dim.to_le_bytes())
+            .map_err(|e| SearchError::Storage(format!("Failed to write vector dimension: {e}")))?;
 
         // Write each vector as flat f32 array
         for vec in vectors {
@@ -131,7 +147,9 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// Read dense embedding vectors from disk
+    /// Read dense embedding vectors from disk.
+    ///
+    /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
     #[cfg(feature = "embeddings")]
     pub fn read_vectors(&self) -> Result<Vec<Vec<f32>>, SearchError> {
         let vectors_path = self.base_dir.join("vectors.bin");
@@ -148,11 +166,16 @@ impl SearchIndex {
             .map_err(|e| SearchError::Storage(format!("Failed to read vector count: {e}")))?;
         let count = u64::from_le_bytes(count_bytes) as usize;
 
-        // Determine embedding dimension by reading the first vector
-        let mut first_vec_bytes = [0u8; 4];
-        std::io::Read::read_exact(&mut file, &mut first_vec_bytes)
-            .map_err(|e| SearchError::Storage(format!("Failed to read first vector: {e}")))?;
-        let dim = u32::from_le_bytes(first_vec_bytes) as usize;
+        // Read dimension (u32 LE)
+        let mut dim_bytes = [0u8; 4];
+        std::io::Read::read_exact(&mut file, &mut dim_bytes)
+            .map_err(|e| SearchError::Storage(format!("Failed to read vector dimension: {e}")))?;
+        let dim = u32::from_le_bytes(dim_bytes) as usize;
+
+        // If count is 0, return empty regardless of dim value
+        if count == 0 {
+            return Ok(Vec::new());
+        }
 
         // Read all vectors
         let mut vectors = Vec::with_capacity(count);
@@ -296,5 +319,65 @@ mod tests {
 
         let hash2 = SearchIndex::compute_content_hash(&base).unwrap();
         assert_ne!(hash1, hash2);
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn test_write_and_read_vectors_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let index = SearchIndex::open_or_create(tmp.path()).unwrap();
+
+        // N=5 vectors, dim=768 with a deterministic pattern
+        let vectors: Vec<Vec<f32>> = (0..5)
+            .map(|i| {
+                (0..768)
+                    .map(|j| i as f32 * 100.0 + j as f32 * 0.5)
+                    .collect()
+            })
+            .collect();
+
+        index.write_vectors(&vectors).unwrap();
+        let read_back = index.read_vectors().unwrap();
+
+        assert_eq!(read_back.len(), 5);
+        for (i, (orig, read)) in vectors.iter().zip(read_back.iter()).enumerate() {
+            assert_eq!(orig.len(), read.len(), "dim mismatch at vector {i}");
+            for (j, (oa, ra)) in orig.iter().zip(read.iter()).enumerate() {
+                assert_eq!(
+                    *oa, *ra,
+                    "value mismatch at vector {i} element {j}: expected {oa}, got {ra}"
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn test_write_and_read_vectors_empty() {
+        let tmp = TempDir::new().unwrap();
+        let index = SearchIndex::open_or_create(tmp.path()).unwrap();
+
+        index.write_vectors(&[]).unwrap();
+        let read_back = index.read_vectors().unwrap();
+
+        assert!(read_back.is_empty());
+    }
+
+    #[cfg(feature = "embeddings")]
+    #[test]
+    fn test_write_and_read_vectors_single() {
+        let tmp = TempDir::new().unwrap();
+        let index = SearchIndex::open_or_create(tmp.path()).unwrap();
+
+        let vectors = vec![vec![1.0f32, 2.5, -0.75, std::f32::consts::PI]];
+        index.write_vectors(&vectors).unwrap();
+        let read_back = index.read_vectors().unwrap();
+
+        assert_eq!(read_back.len(), 1);
+        assert_eq!(read_back[0].len(), 4);
+        assert_eq!(read_back[0][0], 1.0);
+        assert_eq!(read_back[0][1], 2.5);
+        assert_eq!(read_back[0][2], -0.75);
+        assert!((read_back[0][3] - std::f32::consts::PI).abs() < f32::EPSILON);
     }
 }

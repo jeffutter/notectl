@@ -17,9 +17,21 @@
  * / "planning" model aliases configured in pi's settings — see the design
  * doc for details. Requires HERDR_ENV=1 (the review step drives a herdr
  * pane) and the `backlog` CLI.
+ *
+ * Headless worker calls run with `--no-extensions`: confirmed live that
+ * `pi -p` intermittently hangs after printing its response and never exits,
+ * and every one of this user's ~15 globally-loaded extensions reproduces it
+ * in isolation (roughly 1-in-2 to 1-in-3 runs each) — pointing at something
+ * systemic in extension load/teardown rather than one buggy package, with
+ * risk compounding across however many are loaded. None of our worker steps
+ * need any of them except the research step's web search, which explicitly
+ * re-enables just `pi-web-access` via `-e` (`--no-extensions` only disables
+ * auto-discovery; explicit `-e` paths still load). Skills are unaffected —
+ * that's a separate `--no-skills` flag we don't touch.
  */
 
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
@@ -28,6 +40,10 @@ import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 const STATE_DIR = ".pi/ralph";
 const MAX_HISTORY = 50;
+
+/** Path assumption: wherever this user's `pi-web-access` package currently
+ * resolves. May need updating if `pi update` changes the install layout. */
+const PI_WEB_ACCESS_EXTENSION = join(homedir(), ".pi/agent/npm/node_modules/pi-web-access/index.ts");
 
 const DEFAULT_ITERATIONS = 16;
 const DEFAULT_REVIEW_EVERY = 8;
@@ -237,9 +253,10 @@ async function runHeadless(
   pi: ExtensionAPI,
   cwd: string,
   prompt: string,
-  opts: { timeout: number; model?: string },
+  opts: { timeout: number; model?: string; extensions?: string[] },
 ): Promise<{ ok: boolean; killed: boolean; output: string }> {
-  const args = ["-p", "--no-session"];
+  const args = ["-p", "--no-session", "--no-extensions"];
+  for (const ext of opts.extensions ?? []) args.push("-e", ext);
   if (opts.model) args.push("--model", opts.model);
   args.push(prompt);
   const { ok, killed, stdout, stderr } = await execCapture(pi, "pi", args, { cwd, timeout: opts.timeout });
@@ -302,7 +319,11 @@ async function doPlan(
     "relevant prior art, library documentation, or best practices that would help write a thorough",
     "implementation plan. Return a concise research summary (bullet points), not a plan.",
   ].join(" ");
-  const research = await runHeadless(pi, cwd, researchPrompt, { timeout: RESEARCH_TIMEOUT_MS, model: "research" });
+  const research = await runHeadless(pi, cwd, researchPrompt, {
+    timeout: RESEARCH_TIMEOUT_MS,
+    model: "research",
+    extensions: [PI_WEB_ACCESS_EXTENSION],
+  });
   await recordHistory(cwd, state, {
     kind: "plan",
     ticket: ticket.id,
