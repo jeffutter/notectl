@@ -336,7 +336,7 @@ Content here too.
         for chunk in &chunks {
             if !chunk.heading_path.is_empty() {
                 // Should have at least the main title
-                assert!(chunk.heading_path[0] == "Main Title" || chunk.heading_path.len() >= 1);
+                assert!(chunk.heading_path[0] == "Main Title" || !chunk.heading_path.is_empty());
             }
         }
     }

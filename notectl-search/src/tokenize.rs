@@ -1,8 +1,8 @@
-/// Simple word-based tokenizer for estimating chunk sizes in tokens.
-///
-/// This is a lightweight approximation suitable for the chunker's token budget logic.
-/// It counts whitespace-separated words as tokens, which is a reasonable approximation
-/// for embedding models that use subword tokenization (typically 1-2 tokens per word).
+//! Simple word-based tokenizer for estimating chunk sizes in tokens.
+//!
+//! This is a lightweight approximation suitable for the chunker's token budget logic.
+//! It counts whitespace-separated words as tokens, which is a reasonable approximation
+//! for embedding models that use subword tokenization (typically 1-2 tokens per word).
 
 /// Count approximate tokens in text by counting whitespace-separated words.
 /// This is an approximation - actual tokenizers may produce different counts.

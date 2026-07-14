@@ -360,11 +360,6 @@ cache_dir = "/tmp/search-cache"
 
     #[test]
     fn test_search_config_merge_from_env() {
-        // Use unique env var names to avoid conflicts with actual env vars
-        const CACHE_VAR: &str = "NOTECTL_TEST_UNIQUE_SEARCH_CACHE_DIR";
-        const DIM_VAR: &str = "NOTECTL_TEST_UNIQUE_SEARCH_EMBEDDING_DIM";
-        const TOKENS_VAR: &str = "NOTECTL_TEST_UNIQUE_SEARCH_MAX_SEQ_TOKENS";
-
         // Set the test env vars (we'll read them via the actual config env var names)
         unsafe {
             std::env::set_var("NOTECTL_SEARCH_CACHE_DIR", "/custom/cache");
