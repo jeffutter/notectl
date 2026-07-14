@@ -815,7 +815,7 @@ fn recent_files_blocking(
         })
         .collect();
 
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries.sort_by_key(|a| std::cmp::Reverse(a.0));
     let total_found = entries.len();
     let files = entries.into_iter().take(limit).map(|(_, e)| e).collect();
     Ok((files, total_found))
