@@ -132,19 +132,52 @@ async function recordHistory(
 
 // --- Deterministic backlog queries (no LLM involved) ------------------------
 
+/**
+ * Grace period added on top of a caller's `timeout` before our own watchdog
+ * gives up on `pi.exec()` and forces a result. `pi.exec` almost certainly
+ * wraps Node's exec-style child_process API, which resolves when the
+ * child's stdout/stderr pipes close — not merely when the child process
+ * exits. If the nested `pi -p` process spawns anything that inherits those
+ * pipes and outlives it (e.g. an MCP server it starts), the exec promise
+ * can hang indefinitely even after the real work is done, and `pi.exec`'s
+ * own `timeout` may not save us either (it likely only kills the direct
+ * child, not an orphaned grandchild still holding the pipe open). Racing an
+ * independent watchdog means a stuck exec call can never block the loop's
+ * forward progress; the orphaned promise is left to resolve on its own,
+ * harmlessly ignored.
+ */
+const WATCHDOG_GRACE_MS = 30_000;
+
 async function execCapture(
   pi: ExtensionAPI,
   cmd: string,
   args: string[],
   opts: { cwd: string; timeout?: number },
 ): Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }> {
-  const result = await pi.exec(cmd, args, opts);
-  return {
+  const execPromise = pi.exec(cmd, args, opts).then((result) => ({
     ok: result.code === 0 && !result.killed,
     killed: !!result.killed,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
-  };
+  }));
+
+  if (!opts.timeout) return execPromise;
+
+  const watchdog = new Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }>((resolve) => {
+    const timer = setTimeout(
+      () =>
+        resolve({
+          ok: false,
+          killed: true,
+          stdout: "",
+          stderr: `(watchdog: "${cmd}" exec call never returned ${opts.timeout! + WATCHDOG_GRACE_MS}ms after start — likely an orphaned child process holding stdout/stderr open)`,
+        }),
+      opts.timeout + WATCHDOG_GRACE_MS,
+    );
+    timer.unref?.();
+  });
+
+  return Promise.race([execPromise, watchdog]);
 }
 
 function parsePlainTaskList(output: string): Ticket[] {
