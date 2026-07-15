@@ -29,8 +29,6 @@ candle-nn = { workspace = true, optional = true }
 dirs = { workspace = true, optional = true }
 hf-hub = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
-bm25 = { workspace = true, optional = true }
-
 [features]
 embeddings = [
   "candle-core",
@@ -39,7 +37,6 @@ embeddings = [
   "dirs",
   "hf-hub",
   "tokenizers",
-  "bm25",
 ]
 # Integration tests that download and run the actual model.
 # Requires HF_TOKEN with accepted license for google/embeddinggemma-300m.

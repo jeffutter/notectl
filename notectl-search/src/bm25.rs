@@ -24,15 +24,17 @@ pub struct Bm25Result {
 
 /// In-memory BM25 indexer and scorer.
 ///
-/// This is a lightweight implementation that stores term frequencies
-/// and document lengths for scoring. It does not require external crates.
+/// This is a lightweight implementation that stores an inverted index
+/// (term → postings) for efficient query-time scoring. It does not require external crates.
 pub struct Bm25Indexer {
     params: Bm25Params,
-    /// Term frequency per document: doc_index -> term -> count
-    tf: HashMap<usize, HashMap<String, u32>>,
+    /// Inverted index: term → [(doc_index, term_frequency)]
+    postings: HashMap<String, Vec<(usize, u32)>>,
     /// Document lengths (number of tokens)
     doc_lengths: Vec<usize>,
-    /// Average document length
+    /// Running total of all token counts across documents
+    total_tokens: usize,
+    /// Average document length (recomputed after each add_document)
     avg_doc_length: f64,
     /// Number of documents
     doc_count: usize,
@@ -44,8 +46,9 @@ impl Bm25Indexer {
     pub fn new(params: Bm25Params) -> Self {
         Self {
             params,
-            tf: HashMap::new(),
+            postings: HashMap::new(),
             doc_lengths: Vec::new(),
+            total_tokens: 0,
             avg_doc_length: 0.0,
             doc_count: 0,
             idf: HashMap::new(),
@@ -56,45 +59,51 @@ impl Bm25Indexer {
         Self::new(Bm25Params::default())
     }
 
-    /// Add a document to the index
+    /// Add a document to the index.
+    ///
+    /// Builds the inverted index in-place: each unique term in the document
+    /// is pushed onto its postings list with (doc_index, term_frequency).
     pub fn add_document(&mut self, tokens: &[String]) {
         let doc_index = self.doc_count;
         let length = tokens.len();
 
-        // Count term frequencies
+        // Count term frequencies for this document
         let mut term_counts: HashMap<String, u32> = HashMap::new();
         for token in tokens {
             *term_counts.entry(token.clone()).or_insert(0) += 1;
         }
 
-        self.tf.insert(doc_index, term_counts);
-        self.doc_lengths.push(length);
-        self.doc_count += 1;
-
-        // Update average document length
-        let total_length: usize = self.doc_lengths.iter().sum();
-        self.avg_doc_length = total_length as f64 / self.doc_count as f64;
-    }
-
-    /// Compute IDF for all terms after all documents have been added
-    pub fn finalize(&mut self) {
-        // Count document frequency for each term
-        let mut df: HashMap<String, usize> = HashMap::new();
-        for term_counts in self.tf.values() {
-            for term in term_counts.keys() {
-                *df.entry(term.clone()).or_insert(0) += 1;
-            }
+        // Insert into inverted index (term → postings)
+        for (term, count) in &term_counts {
+            self.postings
+                .entry(term.clone())
+                .or_default()
+                .push((doc_index, *count));
         }
 
+        self.doc_lengths.push(length);
+        self.total_tokens += length;
+        self.doc_count += 1;
+        self.avg_doc_length = self.total_tokens as f64 / self.doc_count as f64;
+    }
+
+    /// Compute IDF for all terms after all documents have been added.
+    ///
+    /// Document frequency (DF) is derived from the inverted index: each term's
+    /// postings list length equals the number of distinct documents containing it.
+    pub fn finalize(&mut self) {
         // Compute IDF: log((N - df + 0.5) / (df + 0.5) + 1)
-        for (term, count) in &df {
-            let idf =
-                ((self.doc_count as f64 - *count as f64 + 0.5) / (*count as f64 + 0.5) + 1.0).ln();
+        for (term, postings) in &self.postings {
+            let df = postings.len();
+            let idf = ((self.doc_count as f64 - df as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
             self.idf.insert(term.clone(), idf);
         }
     }
 
-    /// Score a query against all indexed documents
+    /// Score a query against all indexed documents.
+    ///
+    /// Uses the inverted index: for each query token, only the documents in its
+    /// postings list are scored — no full corpus scan.
     pub fn score_query(&self, query_tokens: &[String]) -> Vec<Bm25Result> {
         let mut scores: HashMap<usize, f64> = HashMap::new();
 
@@ -104,22 +113,21 @@ impl Bm25Indexer {
                 None => continue, // Term not in index, skip
             };
 
-            for (&doc_index, term_counts) in &self.tf {
-                let tf = match term_counts.get(token) {
-                    Some(&count) => count as f64,
-                    None => 0.0,
-                };
+            // Iterate only over documents that contain this term
+            if let Some(postings) = self.postings.get(token.as_str()) {
+                for &(doc_index, tf_raw) in postings {
+                    let tf = tf_raw as f64;
+                    let doc_len = self.doc_lengths[doc_index] as f64;
+                    let k1 = self.params.k1;
+                    let b = self.params.b;
 
-                let doc_len = self.doc_lengths[doc_index] as f64;
-                let k1 = self.params.k1;
-                let b = self.params.b;
+                    // BM25 formula: IDF * (TF * (k1 + 1)) / (TF + k1 * (1 - b + b * doc_len / avg_dl))
+                    let numerator = tf * (k1 + 1.0);
+                    let denominator = tf + k1 * (1.0 - b + b * doc_len / self.avg_doc_length);
+                    let score = idf * numerator / denominator;
 
-                // BM25 formula: IDF * (TF * (k1 + 1)) / (TF + k1 * (1 - b + b * doc_len / avg_dl))
-                let numerator = tf * (k1 + 1.0);
-                let denominator = tf + k1 * (1.0 - b + b * doc_len / self.avg_doc_length);
-                let score = idf * numerator / denominator;
-
-                *scores.entry(doc_index).or_insert(0.0) += score;
+                    *scores.entry(doc_index).or_insert(0.0) += score;
+                }
             }
         }
 
