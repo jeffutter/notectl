@@ -41,6 +41,11 @@ embeddings = [
   "tokenizers",
   "bm25",
 ]
+# Integration tests that download and run the actual model.
+# Requires HF_TOKEN with accepted license for google/embeddinggemma-300m.
+# Not enabled by default — these tests are slow and require network access.
+integration = ["embeddings"]
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio.workspace = true

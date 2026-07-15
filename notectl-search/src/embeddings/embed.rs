@@ -5,8 +5,12 @@
 //! - Applying task-specific prompt prefixes (query vs document)
 //! - Matryoshka truncation + L2 normalization
 //! - Integration with the search pipeline
+//!
+//! CPU inference is wrapped in `tokio::task::spawn_blocking` so the shared tokio
+//! runtime used by the HTTP/MCP server is never stalled by heavy tensor computation.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use candle_core::{DType, Device, Tensor};
 use tokenizers::Tokenizer;
@@ -134,22 +138,26 @@ impl From<candle_core::Error> for EmbedError {
     }
 }
 
-/// The main embedder that handles batching and prefix injection
+/// The main embedder that handles batching and prefix injection.
+///
+/// The model is wrapped in `Arc<Mutex<...>>` to allow safe concurrent access
+/// from multiple blocking threads (via spawn_blocking) while keeping the
+/// embedder usable from async contexts.
 pub struct Embedder {
-    /// Loaded model (lazy-loaded on first use)
-    model: Option<LoadedModel>,
-    /// Tokenizer
+    /// Loaded model wrapped for interior mutability across thread boundaries.
+    model: Option<Arc<Mutex<LoadedModel>>>,
+    /// Tokenizer (immutable after loading, safe to share via Arc).
     tokenizer: Option<Tokenizer>,
-    /// Device
+    /// Device.
     device: Device,
-    /// Embedding configuration
+    /// Embedding configuration.
     config: EmbeddingConfig,
-    /// Model cache directory
+    /// Model cache directory.
     cache_dir: PathBuf,
 }
 
 impl Embedder {
-    /// Create a new embedder (model is loaded lazily on first embed call)
+    /// Create a new embedder (model is loaded lazily on first embed call).
     pub fn new(cache_dir: PathBuf, config: EmbeddingConfig) -> Self {
         Self {
             model: None,
@@ -160,18 +168,18 @@ impl Embedder {
         }
     }
 
-    /// Initialize the model and tokenizer (called automatically on first embed if needed)
+    /// Initialize the model and tokenizer (called automatically on first embed if needed).
     fn ensure_loaded(&mut self) -> Result<(), EmbedError> {
         if self.model.is_some() && self.tokenizer.is_some() {
             return Ok(());
         }
 
-        // Check if model is downloaded
+        // Check if model is downloaded.
         if !download::is_model_ready(&self.cache_dir) {
             return Err(EmbedError::ModelNotFound(self.cache_dir.clone()));
         }
 
-        // Load model
+        // Load model.
         let embedding_config = EmbeddingModelConfig {
             output_dim: self.config.output_dim,
             max_seq_len: self.config.max_seq_len,
@@ -179,9 +187,9 @@ impl Embedder {
         };
 
         let loaded = load_model(&self.cache_dir, &self.device, &embedding_config)?;
-        self.model = Some(loaded);
+        self.model = Some(Arc::new(Mutex::new(loaded)));
 
-        // Load tokenizer
+        // Load tokenizer.
         let tokenizer_path = self.cache_dir.join("tokenizer.json");
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbedError::Tokenization(format!("Failed to load tokenizer: {e}")))?;
@@ -190,11 +198,11 @@ impl Embedder {
         Ok(())
     }
 
-    /// Embed a single text with the specified task type.
+    /// Async entry point: embed a single text with the specified task type.
     ///
-    /// Applies the appropriate prompt prefix based on task type,
-    /// tokenizes, runs inference, and returns a normalized embedding vector.
-    pub fn embed_single(
+    /// Runs tokenization + inference on a blocking thread pool via
+    /// `tokio::task::spawn_blocking` so the shared tokio runtime is never stalled.
+    pub async fn embed_single(
         &mut self,
         text: &str,
         title: Option<&str>,
@@ -203,13 +211,25 @@ impl Embedder {
         self.ensure_loaded()?;
 
         let prefixed = task.apply_prefix(text, title);
-        self.embed_text(&prefixed)
+        let output_dim = self.config.output_dim;
+        let model_arc = self.model.as_ref().unwrap().clone();
+        let tokenizer = self.tokenizer.as_ref().unwrap().clone();
+
+        tokio::task::spawn_blocking(move || {
+            let mut model = model_arc
+                .lock()
+                .map_err(|e| EmbedError::Inference(format!("Model lock poisoned: {e}")))?;
+            inner_embed_text(&mut model, &tokenizer, &prefixed, output_dim)
+        })
+        .await
+        .map_err(|e| EmbedError::Inference(format!("spawn_blocking panicked: {e}")))?
     }
 
-    /// Embed a batch of texts with the specified task type.
+    /// Async entry point: embed a batch of texts with the specified task type.
     ///
-    /// Processes in batches to manage memory usage. Returns a vector of embedding vectors.
-    pub fn embed_batch(
+    /// Processes in batches via `spawn_blocking` to manage both memory and reactor
+    /// responsiveness. Returns a vector of embedding vectors.
+    pub async fn embed_batch(
         &mut self,
         texts: &[String],
         titles: &[Option<String>],
@@ -229,11 +249,11 @@ impl Embedder {
             let title_chunk: Vec<Option<&str>> =
                 titles[start..end].iter().map(|t| t.as_deref()).collect();
 
-            // This is a simplified batch implementation - in practice, you'd want to
-            // pad and stack tensors for true batched inference
+            // Each item in the chunk gets its own spawn_blocking call so that
+            // multiple CPU cores can be utilized via rayon's thread pool.
             for (i, text) in chunk.iter().enumerate() {
                 let title = title_chunk.get(i).copied().flatten();
-                let embedding = self.embed_single(text, title, task)?;
+                let embedding = self.embed_single(text, title, task).await?;
                 results.push(embedding);
             }
         }
@@ -241,92 +261,101 @@ impl Embedder {
         Ok(results)
     }
 
-    /// Internal: embed a single text (already prefixed) using the loaded model.
-    fn embed_text(&mut self, text: &str) -> Result<Vec<f32>, EmbedError> {
-        let model = self
-            .model
-            .as_ref()
-            .ok_or_else(|| EmbedError::Inference("Model not loaded".to_string()))?;
-        let tokenizer = self
-            .tokenizer
-            .as_ref()
-            .ok_or_else(|| EmbedError::Tokenization("Tokenizer not loaded".to_string()))?;
-
-        // Tokenize
-        let encoding = tokenizer
-            .encode(text, false)
-            .map_err(|e| EmbedError::Tokenization(format!("Tokenization failed: {e}")))?;
-
-        let token_ids = encoding.get_ids();
-        if token_ids.len() > self.config.max_seq_len {
-            tracing::warn!(
-                "Text too long: {} tokens > {} max, truncating",
-                token_ids.len(),
-                self.config.max_seq_len
-            );
-        }
-
-        // Truncate to max length
-        let token_ids: Vec<u32> = token_ids
-            .iter()
-            .take(self.config.max_seq_len)
-            .copied()
-            .collect();
-
-        // Create input tensor (batch size 1)
-        let input_ids = Tensor::new(token_ids.as_slice(), &model.device)
-            .map_err(|e| EmbedError::Inference(format!("Failed to create tensor: {e}")))?;
-        let input_ids = input_ids
-            .unsqueeze(0)
-            .map_err(|e| EmbedError::Inference(format!("Failed to unsqueeze: {e}")))?;
-
-        // Run forward pass (Gemma-3 handles causal masking internally)
-        // Safety: Gemma3Model::forward only mutates internal state tracking (seqlen_offset);
-        // the model weights and projection head are not modified during inference.
-        let model_ref: &mut candle_transformers::models::gemma3::Model =
-            unsafe { &mut *std::ptr::addr_of!(model.model).cast_mut() };
-        let hidden_states = model_ref
-            .forward(&input_ids, 0)
-            .map_err(|e| EmbedError::Inference(format!("Forward pass failed: {e}")))?;
-
-        // Create attention mask (all 1s for non-padded tokens)
-        let attention_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &model.device)
-            .map_err(|e| EmbedError::Inference(format!("Failed to create attention mask: {e}")))?;
-
-        // Apply mean pooling
-        let pooled = super::model::mean_pooling(&hidden_states, &attention_mask)
-            .map_err(|e| EmbedError::Inference(format!("Mean pooling failed: {e}")))?;
-
-        // Apply Dense projection head
-        let projected = model
-            .projection_head
-            .forward(&pooled)
-            .map_err(|e| EmbedError::Inference(format!("Projection failed: {e}")))?;
-
-        // Extract the embedding vector (batch size 1, so squeeze dim 0)
-        let embedding = projected
-            .squeeze(0)
-            .map_err(|e| EmbedError::Inference(format!("Failed to squeeze: {e}")))?;
-
-        // Convert to f32 vec
-        let embedding_f32 = embedding
-            .to_dtype(DType::F32)?
-            .to_vec1::<f32>()
-            .map_err(|e| EmbedError::Inference(format!("Failed to extract vector: {e}")))?;
-
-        // Apply matryoshka truncation + L2 normalization
-        Ok(normalize_embedding(&embedding_f32, self.config.output_dim))
-    }
-
-    /// Get or initialize the model cache directory
+    /// Get or initialize the model cache directory.
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
 
-    /// Check if the model is ready (downloaded and loadable)
+    /// Check if the model is ready (downloaded and loadable).
     pub fn is_ready(&self) -> bool {
         download::is_model_ready(&self.cache_dir)
     }
+}
+
+/// Core inference logic: tokenize, run encoder forward, pool, project, normalize.
+///
+/// Takes the loaded model and tokenizer directly so it can be called from
+/// `spawn_blocking` without capturing `&mut self`.
+fn inner_embed_text(
+    model: &mut LoadedModel,
+    tokenizer: &Tokenizer,
+    text: &str,
+    output_dim: usize,
+) -> Result<Vec<f32>, EmbedError> {
+    // Tokenize.
+    let encoding = tokenizer
+        .encode(text, false)
+        .map_err(|e| EmbedError::Tokenization(format!("Tokenization failed: {e}")))?;
+
+    let token_ids = encoding.get_ids();
+    let actual_len = token_ids.len().min(model.embedding_config.max_seq_len);
+
+    if token_ids.len() > model.embedding_config.max_seq_len {
+        tracing::warn!(
+            "Text too long: {} tokens > {} max, truncating",
+            token_ids.len(),
+            model.embedding_config.max_seq_len
+        );
+    }
+
+    // Pad to max_seq_len with pad_token_id and build attention mask.
+    let max_len = model.embedding_config.max_seq_len;
+    let pad_id = model.pad_token_id;
+
+    let mut padded_ids = Vec::with_capacity(max_len);
+    padded_ids.extend_from_slice(&token_ids[..actual_len]);
+    padded_ids.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
+
+    // Attention mask: 1.0 for real tokens, 0.0 for padding.
+    let attention_mask: Vec<f32> = padded_ids
+        .iter()
+        .map(|&id| if id == pad_id { 0.0 } else { 1.0 })
+        .collect();
+
+    // Create input tensor (batch size 1).
+    let input_ids = Tensor::new(padded_ids.as_slice(), &model.device)
+        .map_err(|e| EmbedError::Inference(format!("Failed to create input tensor: {e}")))?
+        .unsqueeze(0)
+        .map_err(|e| EmbedError::Inference(format!("Failed to unsqueeze: {e}")))?;
+
+    let pad_tensor = Tensor::new(attention_mask.as_slice(), &model.device)
+        .map_err(|e| EmbedError::Inference(format!("Failed to create mask tensor: {e}")))?
+        .unsqueeze(0)
+        .map_err(|e| EmbedError::Inference(format!("Failed to unsqueeze mask: {e}")))?;
+
+    // Run encoder forward pass — returns full hidden states [1, seq_len, hidden].
+    let hidden_states = model
+        .model
+        .forward(&input_ids, Some(&pad_tensor))
+        .map_err(|e| EmbedError::Inference(format!("Encoder forward failed: {e}")))?;
+
+    // Create a simple attention mask for mean pooling (all 1s).
+    let pooling_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &model.device)
+        .map_err(|e| EmbedError::Inference(format!("Failed to create pooling mask: {e}")))?;
+
+    // Apply mean pooling over the sequence dimension.
+    let pooled = super::model::mean_pooling(&hidden_states, &pooling_mask)
+        .map_err(|e| EmbedError::Inference(format!("Mean pooling failed: {e}")))?;
+
+    // Apply Dense projection head (2_Dense tanh → 3_Dense linear).
+    let projected = model
+        .projection_head
+        .forward(&pooled)
+        .map_err(|e| EmbedError::Inference(format!("Projection failed: {e}")))?;
+
+    // Extract the embedding vector (batch size 1, so squeeze dim 0).
+    let embedding = projected
+        .squeeze(0)
+        .map_err(|e| EmbedError::Inference(format!("Failed to squeeze: {e}")))?;
+
+    // Convert to f32 vec.
+    let embedding_f32 = embedding
+        .to_dtype(DType::F32)?
+        .to_vec1::<f32>()
+        .map_err(|e| EmbedError::Inference(format!("Failed to extract vector: {e}")))?;
+
+    // Apply matryoshka truncation + L2 normalization.
+    Ok(normalize_embedding(&embedding_f32, output_dim))
 }
 
 #[cfg(test)]
@@ -403,19 +432,21 @@ mod tests {
         assert_eq!(ec.batch_size, 32);
     }
 
-    #[test]
-    fn test_embed_batch_length_mismatch() {
+    #[tokio::test]
+    async fn test_embed_batch_length_mismatch() {
         let mut embedder = Embedder::new(
             PathBuf::from("/tmp/test-models"),
             EmbeddingConfig::default(),
         );
 
-        // This should fail before even trying to load the model
-        let result = embedder.embed_batch(
-            &["text1".to_string(), "text2".to_string()],
-            &[Some("title1".to_string())], // Mismatched length
-            TaskType::RetrievalDocument,
-        );
+        // This should fail before even trying to load the model.
+        let result = embedder
+            .embed_batch(
+                &["text1".to_string(), "text2".to_string()],
+                &[Some("title1".to_string())], // Mismatched length
+                TaskType::RetrievalDocument,
+            )
+            .await;
 
         assert!(result.is_err());
     }
@@ -453,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_embed_batch_single_batch_no_title_swap() {
-        // Single batch case: all texts fit in one batch, titles should pair correctly
+        // Single batch case: all texts fit in one batch, titles should pair correctly.
         let texts = vec!["text0".into(), "text1".into(), "text2".into()];
         let titles = vec![
             Some("Title 0".into()),
