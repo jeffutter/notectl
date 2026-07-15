@@ -30,6 +30,11 @@ pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usiz
         return vec![String::new()];
     }
 
+    // Clamp overlap so that each chunk advances by at least one word.
+    // Without this guard, `end - overlap_tokens` underflows and panics in debug builds
+    // when a caller configures overlap_tokens >= max_tokens (e.g. via misconfigured SearchConfig).
+    let overlap = overlap_tokens.min(max_tokens.saturating_sub(1));
+
     let mut chunks = Vec::new();
     let mut start = 0;
 
@@ -42,7 +47,7 @@ pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usiz
         let advance = if end >= words.len() {
             words.len()
         } else {
-            end - overlap_tokens
+            end - overlap
         };
 
         start = if advance <= start { end } else { advance };
@@ -142,5 +147,28 @@ mod tests {
     fn test_tokenize_zero_max() {
         assert_eq!(tokenize_fixed("hello", 0), vec![String::new()]);
         assert_eq!(tokenize_with_overlap("hello", 0, 0), vec![String::new()]);
+    }
+
+    #[test]
+    fn test_overlap_ge_max_tokens() {
+        // overlap_tokens (10) > max_tokens (4): should clamp to 3 and produce chunks without panicking.
+        // With overlap clamped to 3, each chunk advances by 1 word.
+        let text = "a b c d e f g h i j";
+        let chunks = tokenize_with_overlap(text, 4, 10);
+        assert_eq!(chunks.len(), 7);
+        assert_eq!(chunks[0], "a b c d");
+        assert_eq!(chunks[1], "b c d e");
+        assert_eq!(chunks[6], "g h i j");
+    }
+
+    #[test]
+    fn test_overlap_max_one() {
+        // max_tokens=1, overlap_tokens=5: should produce one-word chunks without panicking.
+        let text = "a b c";
+        let chunks = tokenize_with_overlap(text, 1, 5);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], "a");
+        assert_eq!(chunks[1], "b");
+        assert_eq!(chunks[2], "c");
     }
 }
