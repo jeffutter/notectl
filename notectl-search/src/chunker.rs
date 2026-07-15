@@ -46,6 +46,18 @@ impl Default for ChunkerConfig {
     }
 }
 
+impl ChunkerConfig {
+    /// Build a ChunkerConfig from the authoritative SearchConfig.
+    pub fn from_search_config(sc: &notectl_core::config::SearchConfig) -> Self {
+        Self {
+            max_tokens: sc.max_seq_tokens,
+            overlap_tokens: sc.chunk_overlap_tokens,
+            min_chunk_size: sc.min_chunk_tokens,
+            merge_threshold: sc.merge_threshold,
+        }
+    }
+}
+
 /// Chunker that splits markdown files into searchable chunks using outline sections.
 pub struct Chunker {
     config: ChunkerConfig,
@@ -361,5 +373,24 @@ Content here too.
         let chunker = Chunker::new(config);
         let chunks = chunker.chunk_file(Path::new("empty.md"), "");
         assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn test_chunker_config_from_search_config() {
+        use notectl_core::config::SearchConfig;
+
+        let sc = SearchConfig {
+            max_seq_tokens: 1024,
+            chunk_overlap_tokens: 128,
+            min_chunk_tokens: 64,
+            merge_threshold: 50,
+            ..Default::default()
+        };
+
+        let cc = ChunkerConfig::from_search_config(&sc);
+        assert_eq!(cc.max_tokens, 1024);
+        assert_eq!(cc.overlap_tokens, 128);
+        assert_eq!(cc.min_chunk_size, 64);
+        assert_eq!(cc.merge_threshold, 50);
     }
 }

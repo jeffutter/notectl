@@ -85,40 +85,8 @@ pub struct RankedChunk {
     pub preview: String,
 }
 
-/// Configuration for the search capability
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SearchConfig {
-    /// Path to the search index cache directory (default: .notectl/search/)
-    pub index_dir: PathBuf,
-    /// Maximum number of results to return
-    pub max_results: usize,
-    /// Weight for BM25 scores in RRF fusion (default: 60.0)
-    pub bm25_k1: f32,
-    /// Weight for cosine similarity scores in RRF fusion (default: 1.0)
-    pub cosine_weight: f32,
-}
-
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            index_dir: PathBuf::from(".notectl/search"),
-            max_results: 50,
-            bm25_k1: 60.0,
-            cosine_weight: 1.0,
-        }
-    }
-}
-
-impl SearchConfig {
-    /// Returns the resolved index directory path relative to a base path
-    pub fn resolve_index_dir(&self, base_path: &std::path::Path) -> PathBuf {
-        if self.index_dir.is_absolute() {
-            self.index_dir.clone()
-        } else {
-            base_path.join(&self.index_dir)
-        }
-    }
-}
+/// Re-export the authoritative SearchConfig from notectl-core.
+pub use notectl_core::config::SearchConfig;
 
 /// Capability struct that holds state for search operations
 pub struct SearchCapability {
@@ -160,14 +128,14 @@ mod tests {
     fn test_config_default() {
         let config = SearchConfig::default();
         assert_eq!(config.max_results, 50);
-        assert_eq!(config.bm25_k1, 60.0);
-        assert_eq!(config.cosine_weight, 1.0);
+        assert!((config.rrf_bm25_weight - 1.0).abs() < f64::EPSILON);
+        assert!((config.rrf_cosine_weight - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn test_config_resolve_absolute() {
         let config = SearchConfig {
-            index_dir: PathBuf::from("/tmp/search"),
+            cache_dir: "/tmp/search".to_string(),
             ..Default::default()
         };
         let resolved = config.resolve_index_dir(std::path::Path::new("/base"));
@@ -177,7 +145,7 @@ mod tests {
     #[test]
     fn test_config_resolve_relative() {
         let config = SearchConfig {
-            index_dir: PathBuf::from(".notectl/search"),
+            cache_dir: ".notectl/search".to_string(),
             ..Default::default()
         };
         let resolved = config.resolve_index_dir(std::path::Path::new("/base"));

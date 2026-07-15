@@ -64,6 +64,18 @@ impl Default for EmbeddingConfig {
     }
 }
 
+impl EmbeddingConfig {
+    /// Build an EmbeddingConfig from the authoritative SearchConfig.
+    pub fn from_search_config(sc: &notectl_core::config::SearchConfig) -> Self {
+        Self {
+            output_dim: sc.embedding_dim as usize,
+            max_seq_len: sc.max_seq_tokens,
+            dtype: DType::F32,
+            batch_size: 32,
+        }
+    }
+}
+
 /// Error type for embedding operations
 #[derive(Debug)]
 pub enum EmbedError {
@@ -372,6 +384,23 @@ mod tests {
         let vec = vec![0.0, 0.0, 0.0];
         let result = normalize_embedding(&vec, 3);
         assert_eq!(result, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_embedding_config_from_search_config() {
+        use notectl_core::config::SearchConfig;
+
+        let sc = SearchConfig {
+            embedding_dim: 512,
+            max_seq_tokens: 1024,
+            ..Default::default()
+        };
+
+        let ec = EmbeddingConfig::from_search_config(&sc);
+        assert_eq!(ec.output_dim, 512);
+        assert_eq!(ec.max_seq_len, 1024);
+        assert_eq!(ec.dtype, DType::F32);
+        assert_eq!(ec.batch_size, 32);
     }
 
     #[test]
