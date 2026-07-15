@@ -419,4 +419,120 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    /// Test helper: simulate the batching loop and return prefixed strings.
+    /// This lets us verify title-to-text pairing without loading the model.
+    fn embed_batch_prefixed(
+        texts: &[String],
+        titles: &[Option<String>],
+        task: TaskType,
+        batch_size: usize,
+    ) -> Vec<String> {
+        assert_eq!(
+            texts.len(),
+            titles.len(),
+            "texts and titles must have the same length"
+        );
+
+        let mut results = Vec::with_capacity(texts.len());
+
+        for (batch_idx, chunk) in texts.chunks(batch_size).enumerate() {
+            let start = batch_idx * batch_size;
+            let end = start + chunk.len();
+            let title_chunk: Vec<Option<&str>> =
+                titles[start..end].iter().map(|t| t.as_deref()).collect();
+
+            for (i, text) in chunk.iter().enumerate() {
+                let title = title_chunk.get(i).copied().flatten();
+                results.push(task.apply_prefix(text, title));
+            }
+        }
+
+        results
+    }
+
+    #[test]
+    fn test_embed_batch_single_batch_no_title_swap() {
+        // Single batch case: all texts fit in one batch, titles should pair correctly
+        let texts = vec!["text0".into(), "text1".into(), "text2".into()];
+        let titles = vec![
+            Some("Title 0".into()),
+            Some("Title 1".into()),
+            Some("Title 2".into()),
+        ];
+
+        let prefixed = embed_batch_prefixed(&texts, &titles, TaskType::RetrievalDocument, 32);
+
+        assert_eq!(prefixed.len(), 3);
+        assert_eq!(prefixed[0], "title: Title 0 | text: text0");
+        assert_eq!(prefixed[1], "title: Title 1 | text: text1");
+        assert_eq!(prefixed[2], "title: Title 2 | text: text2");
+    }
+
+    #[test]
+    fn test_embed_batch_multi_batch_title_pairing() {
+        // Multi-batch case: force multiple batches with batch_size=2 and 5 texts.
+        // Each text must be paired with its own corresponding title, not the first batch's titles.
+        let texts = vec![
+            "text0".into(),
+            "text1".into(),
+            "text2".into(),
+            "text3".into(),
+            "text4".into(),
+        ];
+        let titles = vec![
+            Some("T0".into()),
+            Some("T1".into()),
+            Some("T2".into()),
+            Some("T3".into()),
+            Some("T4".into()),
+        ];
+
+        let prefixed = embed_batch_prefixed(&texts, &titles, TaskType::RetrievalDocument, 2);
+
+        assert_eq!(prefixed.len(), 5);
+        // Batch 0: texts[0..2] with titles[0..2]
+        assert_eq!(prefixed[0], "title: T0 | text: text0");
+        assert_eq!(prefixed[1], "title: T1 | text: text1");
+        // Batch 1: texts[2..4] with titles[2..4]
+        assert_eq!(prefixed[2], "title: T2 | text: text2");
+        assert_eq!(prefixed[3], "title: T3 | text: text3");
+        // Batch 2: texts[4..5] with titles[4..5]
+        assert_eq!(prefixed[4], "title: T4 | text: text4");
+    }
+
+    #[test]
+    fn test_embed_batch_multi_batch_exact_boundary() {
+        // Exact batch boundary: 4 texts with batch_size=2 => exactly 2 batches, no partial last batch.
+        let texts = vec!["a".into(), "b".into(), "c".into(), "d".into()];
+        let titles = vec![
+            Some("A".into()),
+            Some("B".into()),
+            Some("C".into()),
+            Some("D".into()),
+        ];
+
+        let prefixed = embed_batch_prefixed(&texts, &titles, TaskType::RetrievalDocument, 2);
+
+        assert_eq!(prefixed.len(), 4);
+        assert_eq!(prefixed[0], "title: A | text: a");
+        assert_eq!(prefixed[1], "title: B | text: b");
+        assert_eq!(prefixed[2], "title: C | text: c");
+        assert_eq!(prefixed[3], "title: D | text: d");
+    }
+
+    #[test]
+    fn test_embed_batch_multi_batch_with_none_titles() {
+        // Some titles are None; verify they get "none" and pairing is still correct.
+        let texts = vec!["x0".into(), "x1".into(), "x2".into(), "x3".into()];
+        let titles = vec![Some("X0".into()), None, Some("X2".into()), None];
+
+        let prefixed = embed_batch_prefixed(&texts, &titles, TaskType::RetrievalDocument, 2);
+
+        assert_eq!(prefixed.len(), 4);
+        assert_eq!(prefixed[0], "title: X0 | text: x0");
+        assert_eq!(prefixed[1], "title: none | text: x1");
+        assert_eq!(prefixed[2], "title: X2 | text: x2");
+        assert_eq!(prefixed[3], "title: none | text: x3");
+    }
 }
