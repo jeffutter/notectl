@@ -87,6 +87,11 @@ impl Chunker {
             }
         };
 
+        // If no real headings were found, fall back to size-based chunking.
+        if sections.iter().all(|s| s.heading.title.is_empty()) {
+            return self.chunk_by_size(content, path.to_string_lossy().to_string());
+        }
+
         let mut chunks = Vec::new();
         let mut i = 0;
         // Stack of (level, title) tracking current ancestor headings.
@@ -128,13 +133,61 @@ impl Chunker {
 
                 if merged_tokens <= self.config.max_tokens * 2 {
                     // Merge successful, skip to next section after this one
-                    let chunk_text = if merged_tokens > self.config.max_tokens {
+                    // Count words in each original section to map merged-word indices back
+                    // to the correct file-line offset.
+                    let first_section_words: usize = section.content.split_whitespace().count();
+
+                    // Build word-span map for merged_content before potentially moving it.
+                    let merged_word_spans = Self::word_spans(&merged_content);
+
+                    let chunk_text: Vec<String> = if merged_tokens > self.config.max_tokens {
                         self.split_long_text(&merged_content)
                     } else {
-                        vec![merged_content]
+                        vec![merged_content.clone()]
                     };
+                    let mut word_cursor = 0;
 
                     for (j, part) in chunk_text.iter().enumerate() {
+                        let part_words: Vec<&str> = part.split_whitespace().collect();
+                        let part_word_count = part_words.len();
+
+                        let (line_start, line_end) = if !merged_word_spans.is_empty()
+                            && word_cursor < merged_word_spans.len()
+                        {
+                            let first_span = &merged_word_spans[word_cursor];
+                            let last_idx = (word_cursor + part_word_count - 1)
+                                .min(merged_word_spans.len() - 1);
+                            let last_span = &merged_word_spans[last_idx];
+
+                            // Determine which original section each end falls in.
+                            let first_in_first_section = word_cursor < first_section_words;
+                            let last_in_first_section = last_idx < first_section_words;
+
+                            // start_line is 1-indexed heading line; content starts one line after
+                            // the heading, so start_line equals the 0-indexed file line of the
+                            // first content line.
+                            let ls = if first_in_first_section {
+                                section.start_line
+                                    + Self::line_at(&section.content, first_span.start)
+                            } else {
+                                next_section.start_line
+                                    + Self::line_at(&next_section.content, first_span.start)
+                            };
+
+                            let le = if last_in_first_section {
+                                section.start_line + Self::line_at(&section.content, last_span.end)
+                            } else {
+                                next_section.start_line
+                                    + Self::line_at(&next_section.content, last_span.end)
+                            };
+
+                            (ls, le)
+                        } else {
+                            (section.start_line, next_section.end_line)
+                        };
+
+                        word_cursor += part_word_count;
+
                         chunks.push(Chunk {
                             id: format!(
                                 "{}:{}:{}",
@@ -143,8 +196,8 @@ impl Chunker {
                                 heading_path.last().map(|s| s.as_str()).unwrap_or("merged")
                             ),
                             source_file: path.to_string_lossy().to_string(),
-                            line_start: section.start_line,
-                            line_end: next_section.end_line,
+                            line_start,
+                            line_end,
                             heading: Some(section.heading.title.clone()),
                             heading_path: heading_path.clone(),
                             text: part.clone(),
@@ -162,6 +215,11 @@ impl Chunker {
                 vec![section.content.clone()]
             };
 
+            // Build word-span map for the section content so we can compute accurate
+            // line numbers from character positions in the original file.
+            let section_word_spans = Self::word_spans(&section.content);
+            let mut word_cursor = 0;
+
             for (j, part) in chunk_texts.iter().enumerate() {
                 // Skip chunks that are too small
                 if tokenize::count_tokens(part) < self.config.min_chunk_size
@@ -169,6 +227,28 @@ impl Chunker {
                 {
                     continue;
                 }
+
+                let part_words: Vec<&str> = part.split_whitespace().collect();
+                let part_word_count = part_words.len();
+
+                // start_line is 1-indexed heading line; content starts one line after
+                // the heading, so start_line equals the 0-indexed file line of the first
+                // content line.
+                let (line_start, line_end) =
+                    if word_cursor < section_word_spans.len() && part_word_count > 0 {
+                        let first_span = &section_word_spans[word_cursor];
+                        let last_idx =
+                            (word_cursor + part_word_count - 1).min(section_word_spans.len() - 1);
+                        let last_span = &section_word_spans[last_idx];
+                        (
+                            section.start_line + Self::line_at(&section.content, first_span.start),
+                            section.start_line + Self::line_at(&section.content, last_span.end),
+                        )
+                    } else {
+                        (section.start_line, section.end_line)
+                    };
+
+                word_cursor += part_word_count;
 
                 chunks.push(Chunk {
                     id: format!(
@@ -178,10 +258,8 @@ impl Chunker {
                         heading_path.last().map(|s| s.as_str()).unwrap_or("section")
                     ),
                     source_file: path.to_string_lossy().to_string(),
-                    line_start: section.start_line + j * part.lines().count() / 2,
-                    line_end: section.start_line
-                        + j * part.lines().count() / 2
-                        + part.lines().count(),
+                    line_start,
+                    line_end,
                     heading: Some(section.heading.title.clone()),
                     heading_path: heading_path.clone(),
                     text: part.clone(),
@@ -194,22 +272,60 @@ impl Chunker {
         chunks
     }
 
+    /// Compute the 0-indexed line number at a given character position in `content`.
+    /// Returns the total number of lines if `pos >= content.len()`.
+    fn line_at(content: &str, pos: usize) -> usize {
+        if pos >= content.len() {
+            content.lines().count()
+        } else {
+            content[..pos].lines().count()
+        }
+    }
+
+    /// Collect byte-span ranges for each whitespace-delimited word in `content`.
+    fn word_spans(content: &str) -> Vec<std::ops::Range<usize>> {
+        let bytes = content.as_bytes();
+        let mut spans = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            // Skip whitespace.
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                break;
+            }
+            let start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            spans.push(start..i);
+        }
+        spans
+    }
+
     /// Split text into fixed-size word chunks without overlap.
     fn chunk_by_size(&self, content: &str, file_name: String) -> Vec<Chunk> {
-        let words: Vec<&str> = content.split_whitespace().collect();
+        // Pre-compute character spans of each whitespace-delimited word in the original content.
+        let word_spans = Self::word_spans(content);
         let mut chunks = Vec::new();
 
-        for chunk_words in words.chunks(self.config.max_tokens) {
-            let text = chunk_words.join(" ");
+        for chunk_words in word_spans.chunks(self.config.max_tokens) {
+            let text: String = chunk_words
+                .iter()
+                .map(|s| &content[s.start..s.end])
+                .collect::<Vec<_>>()
+                .join(" ");
             if tokenize::count_tokens(&text) >= self.config.min_chunk_size {
-                let line_start = content
-                    .find(&text)
-                    .map_or(0, |pos| content[..pos].lines().count());
+                let first_pos = chunk_words.first().unwrap().start;
+                let last_pos = chunk_words.last().unwrap().end;
+                let line_start = Self::line_at(content, first_pos);
+                let line_end = Self::line_at(content, last_pos);
                 chunks.push(Chunk {
                     id: format!("{file_name}:{line_start}"),
                     source_file: file_name.clone(),
                     line_start,
-                    line_end: line_start + text.lines().count(),
+                    line_end,
                     heading: None,
                     heading_path: Vec::new(),
                     text,
@@ -444,5 +560,136 @@ Charlie content goes here for testing.
         assert_eq!(cc.overlap_tokens, 128);
         assert_eq!(cc.min_chunk_size, 64);
         assert_eq!(cc.merge_threshold, 50);
+    }
+
+    // --- Acceptance criterion #3: multi-line content with no headings (chunk_by_size fallback) ---
+    #[test]
+    fn test_chunk_by_size_fallback_multi_line_line_numbers() {
+        let config = ChunkerConfig {
+            max_tokens: 4,
+            min_chunk_size: 3,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+
+        // Build multi-line content with no headings so it hits the size-fallback path.
+        // Each line has exactly 2 words; max_tokens=4 means each chunk spans ~2 lines,
+        // guaranteeing distinct line numbers across chunks.
+        let mut lines: Vec<String> = Vec::new();
+        for i in 0..20 {
+            lines.push(format!("wordA{} wordB{}", i, i));
+        }
+        let content = lines.join("\n");
+
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+        assert!(
+            chunks.len() > 1,
+            "Expected multiple chunks from multi-line fallback content"
+        );
+
+        // Verify line_start values are monotonically non-decreasing.
+        for w in chunks.windows(2) {
+            assert!(
+                w[1].line_start >= w[0].line_start,
+                "line_start must be non-decreasing: {:?} then {:?}",
+                w[0].line_start,
+                w[1].line_start
+            );
+        }
+
+        // Verify line_end > line_start for every chunk (valid span).
+        for chunk in &chunks {
+            assert!(
+                chunk.line_end > chunk.line_start,
+                "line_end must be > line_start: chunk {:?}",
+                chunk.id
+            );
+        }
+
+        // Verify the first chunk starts at line 0.
+        assert_eq!(
+            chunks[0].line_start, 0,
+            "First chunk should start at line 0"
+        );
+
+        // Verify the last chunk's line_end covers the end of content.
+        let expected_last_line = content.lines().count();
+        assert_eq!(
+            chunks.last().unwrap().line_end,
+            expected_last_line,
+            "Last chunk should extend to end of content"
+        );
+    }
+
+    // --- Acceptance criterion #4: long section split into 3+ parts with distinct line spans ---
+    #[test]
+    fn test_long_section_split_distinct_line_spans() {
+        let config = ChunkerConfig {
+            max_tokens: 10,
+            overlap_tokens: 0, // no overlap so each chunk has a unique line span
+            min_chunk_size: 5,
+            merge_threshold: 0, // disable merging
+        };
+        let chunker = Chunker::new(config);
+
+        // Build a multi-line section with enough content to split into 3+ parts.
+        // Each line has 3 words; max_tokens=10 means ~3-4 lines per chunk.
+        let mut section_lines: Vec<String> = Vec::new();
+        for i in 0..30 {
+            section_lines.push(format!("wordA{} wordB{} wordC{}", i, i, i));
+        }
+        let section_content = section_lines.join("\n");
+        let content = format!("# Big Section\n{}", section_content);
+
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+
+        // Filter to only the chunks from the "Big Section".
+        let section_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.heading.as_deref() == Some("Big Section"))
+            .collect();
+
+        // Should produce 3+ chunks from splitting.
+        assert!(
+            section_chunks.len() >= 3,
+            "Expected at least 3 split chunks, got {} (total chunks: {})",
+            section_chunks.len(),
+            chunks.len()
+        );
+
+        // All line_start values must be distinct (no collapsed/repeated values).
+        let line_starts: Vec<usize> = section_chunks.iter().map(|c| c.line_start).collect();
+        let unique_starts: std::collections::HashSet<usize> = line_starts.iter().copied().collect();
+        assert_eq!(
+            unique_starts.len(),
+            line_starts.len(),
+            "All chunks must have distinct line_start values"
+        );
+
+        // All line_end values must be distinct.
+        let line_ends: Vec<usize> = section_chunks.iter().map(|c| c.line_end).collect();
+        let unique_ends: std::collections::HashSet<usize> = line_ends.iter().copied().collect();
+        assert_eq!(
+            unique_ends.len(),
+            line_ends.len(),
+            "All chunks must have distinct line_end values"
+        );
+
+        // Line spans must be correctly ordered (non-decreasing).
+        for w in section_chunks.windows(2) {
+            assert!(
+                w[1].line_start >= w[0].line_start,
+                "Chunks must be in file order: chunk 0 starts at line {}, chunk 1 starts at line {}",
+                w[0].line_start,
+                w[1].line_start
+            );
+        }
+
+        // First split chunk should start on file line 1 (0-indexed), which is the
+        // second line of the file (the heading is on line 0).
+        assert_eq!(
+            section_chunks[0].line_start, 1,
+            "First chunk of section should start at file line 1 (0-indexed)"
+        );
     }
 }
