@@ -42,6 +42,7 @@ tokio = { version = "1", features = [
   "sync",
 ] }
 tokio-util = { version = "0.7" }
+blake3 = "1"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -57,12 +58,12 @@ bm25 = "2.3"
 
 # Workspace members
 notectl-core = { path = "notectl-core" }
+notectl-search = { path = "notectl-search" }
 notectl-tasks = { path = "notectl-tasks" }
 notectl-tags = { path = "notectl-tags" }
 notectl-files = { path = "notectl-files" }
 notectl-daily-notes = { path = "notectl-daily-notes" }
 notectl-outline = { path = "notectl-outline" }
-notectl-search = { path = "notectl-search" }
 
 [package]
 name = "notectl"

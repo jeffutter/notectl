@@ -53,7 +53,8 @@
       "Bash(cargo audit *)",
       "Skill(update-config)",
       "Bash(git -C /home/jeffutter/src/markdown-todo-extractor tag v0.9.0)",
-      "Bash(nix develop *)"
+      "Bash(nix develop *)",
+      "Bash(backlog task *)"
     ],
     "deny": [],
     "ask": []

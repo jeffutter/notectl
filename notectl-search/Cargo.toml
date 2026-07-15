@@ -8,7 +8,9 @@ repository.workspace = true
 [dependencies]
 # Always available: chunker, BM25, storage
 async-trait.workspace = true
+blake3.workspace = true
 clap.workspace = true
+tempfile.workspace = true
 notectl-core.workspace = true
 notectl-outline.workspace = true
 rayon.workspace = true
