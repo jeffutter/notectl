@@ -89,13 +89,35 @@ impl Chunker {
 
         let mut chunks = Vec::new();
         let mut i = 0;
+        // Stack of (level, title) tracking current ancestor headings.
+        // For each section we pop entries with level >= current to find
+        // the true ancestors, then snapshot the remaining stack as the path.
+        let mut ancestor_stack: Vec<(usize, String)> = Vec::new();
 
         while i < sections.len() {
             let section = &sections[i];
             let section_tokens = tokenize::count_tokens(&section.content);
 
-            // Build heading path from this section's hierarchy
-            let heading_path = self.build_heading_path(&sections, i);
+            // Compute heading path via forward stack pass
+            // Pop all ancestors at same or deeper level than current section
+            while ancestor_stack
+                .last()
+                .is_some_and(|&(lvl, _)| lvl >= section.heading.level as usize)
+            {
+                ancestor_stack.pop();
+            }
+            let heading_path: Vec<String> = ancestor_stack
+                .iter()
+                .filter(|(_, title)| !title.is_empty())
+                .map(|(_, title)| title.clone())
+                .collect();
+            // Push current section onto the stack for future sections' use
+            if !section.heading.title.is_empty() {
+                ancestor_stack.push((
+                    section.heading.level as usize,
+                    section.heading.title.clone(),
+                ));
+            }
 
             // Check if this is a tiny section that should be merged
             if section_tokens < self.config.merge_threshold && i + 1 < sections.len() {
@@ -170,27 +192,6 @@ impl Chunker {
         }
 
         chunks
-    }
-
-    /// Build a hierarchical heading path for a section at the given index.
-    /// Returns ancestors from root to the section's parent.
-    fn build_heading_path(&self, sections: &[notectl_outline::Section], idx: usize) -> Vec<String> {
-        let mut path = Vec::new();
-
-        // Look backwards to find ancestor headings (same or higher level)
-        for j in (0..idx).rev() {
-            if sections[j].heading.level < sections[idx].heading.level {
-                path.push(sections[j].heading.title.clone());
-            } else if sections[j].heading.level == 0 && sections[j].heading.title.is_empty() {
-                // Skip the "no heading" root section
-                continue;
-            } else {
-                break;
-            }
-        }
-
-        path.reverse();
-        path
     }
 
     /// Split text into fixed-size word chunks without overlap.
@@ -329,28 +330,79 @@ x y z a b c d e f g h i j k l m n o p q r s t u v w x y z
 
     #[test]
     fn test_heading_path_tracking() {
+        // Disable merging so each section produces its own chunk for path testing.
         let config = ChunkerConfig {
-            min_chunk_size: 5,
+            merge_threshold: 0,
+            min_chunk_size: 1,
             ..Default::default()
         };
         let chunker = Chunker::new(config);
         let content = r#"# Main Title
 ## Chapter 1
 ### Section 1.1
-Content here.
+Some content for section 1.1 to make it non-trivial.
 
 ## Chapter 2
-Content here too.
+Some content for chapter 2 as well.
 "#;
         let chunks = chunker.chunk_file(Path::new("test.md"), content);
 
-        // Check that heading paths are populated
+        // Build a map of heading -> path from the chunks for inspection
+        let mut heading_to_path: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
         for chunk in &chunks {
-            if !chunk.heading_path.is_empty() {
-                // Should have at least the main title
-                assert!(chunk.heading_path[0] == "Main Title" || !chunk.heading_path.is_empty());
+            if let Some(ref h) = chunk.heading {
+                heading_to_path.insert(h.as_str(), chunk.heading_path.clone());
             }
         }
+
+        // Section 1.1 (H3) should have path ["Main Title", "Chapter 1"]
+        let s11_path = heading_to_path.get("Section 1.1").unwrap();
+        assert_eq!(
+            s11_path,
+            &["Main Title".to_string(), "Chapter 1".to_string()]
+        );
+
+        // Chapter 2 (H2) should have path ["Main Title"] — this is the bug fix.
+        // The old backward-walk algorithm failed here because it hit ### Section 1.1
+        // (level 3 >= level 2) and stopped before reaching Main Title.
+        let ch2_path = heading_to_path.get("Chapter 2").unwrap();
+        assert_eq!(ch2_path, &["Main Title".to_string()]);
+    }
+
+    #[test]
+    fn test_heading_path_sibling_sections() {
+        // H1(A), H2(B), H1(C): C's path should NOT include A or B.
+        let config = ChunkerConfig {
+            merge_threshold: 0,
+            min_chunk_size: 1,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+        let content = r#"# Alpha
+## Beta
+Some beta content here for testing.
+
+# Charlie
+Charlie content goes here for testing.
+"#;
+        let chunks = chunker.chunk_file(Path::new("test.md"), content);
+
+        let mut heading_to_path: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        for chunk in &chunks {
+            if let Some(ref h) = chunk.heading {
+                heading_to_path.insert(h.as_str(), chunk.heading_path.clone());
+            }
+        }
+
+        // Charlie (H1) is its own root — no ancestors.
+        let charlie_path = heading_to_path.get("Charlie").unwrap();
+        assert_eq!(charlie_path, &Vec::<String>::new());
+
+        // Beta (H2 under Alpha) should have ["Alpha"]
+        let beta_path = heading_to_path.get("Beta").unwrap();
+        assert_eq!(beta_path, &["Alpha".to_string()]);
     }
 
     #[test]
