@@ -40,6 +40,7 @@ use crate::embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
     schemars::JsonSchema,
     clap::ValueEnum,
 )]
+#[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum SearchMode {
     /// Run dense (cosine) + sparse (BM25) and fuse via RRF.
@@ -473,6 +474,40 @@ mod tests {
     #[test]
     fn test_search_mode_default() {
         assert_eq!(SearchMode::default(), SearchMode::Hybrid);
+    }
+
+    /// SearchMode JSON (de)serialization must use lowercase variant names.
+    /// Regression test for TASK-12: HTTP/MCP clients send {"mode":"hybrid"}
+    /// per the documented schema, so serde must accept lowercase.
+    #[test]
+    fn test_search_mode_json_uses_lowercase() {
+        // Serialize produces lowercase
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Hybrid).unwrap(),
+            "\"hybrid\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Dense).unwrap(),
+            "\"dense\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SearchMode::Sparse).unwrap(),
+            "\"sparse\""
+        );
+
+        // Deserialize accepts lowercase
+        assert_eq!(
+            serde_json::from_str::<SearchMode>("\"hybrid\"").unwrap(),
+            SearchMode::Hybrid
+        );
+        assert_eq!(
+            serde_json::from_str::<SearchMode>("\"dense\"").unwrap(),
+            SearchMode::Dense
+        );
+        assert_eq!(
+            serde_json::from_str::<SearchMode>("\"sparse\"").unwrap(),
+            SearchMode::Sparse
+        );
     }
 
     // ---- SearchOptions tests ----
