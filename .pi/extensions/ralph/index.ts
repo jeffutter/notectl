@@ -33,7 +33,10 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 
 // --- Types & constants ---------------------------------------------------
@@ -43,16 +46,20 @@ const MAX_HISTORY = 50;
 
 /** Path assumption: wherever this user's `pi-web-access` package currently
  * resolves. May need updating if `pi update` changes the install layout. */
-const PI_WEB_ACCESS_EXTENSION = join(homedir(), ".pi/agent/npm/node_modules/pi-web-access/index.ts");
+const PI_WEB_ACCESS_EXTENSION = join(
+  homedir(),
+  ".pi/agent/npm/node_modules/pi-web-access/index.ts",
+);
 
 const DEFAULT_ITERATIONS = 16;
-const DEFAULT_REVIEW_EVERY = 8;
+const DEFAULT_REVIEW_EVERY = 3;
 
-const RESEARCH_TIMEOUT_MS = 20 * 60_000;
-const PLAN_TIMEOUT_MS = 50 * 60_000;
-const EXECUTE_TIMEOUT_MS = 60 * 60_000;
+const RESEARCH_TIMEOUT_MS = 15 * 60_000;
+const PLAN_TIMEOUT_MS = 20 * 60_000;
+const EXECUTE_TIMEOUT_MS = 30 * 60_000;
 const CHOOSE_TIMEOUT_MS = 10 * 60_000;
-const REVIEW_TIMEOUT_MS = 50 * 60_000;
+const REVIEW_TIMEOUT_MIN = 50;
+const REVIEW_TIMEOUT_MS = REVIEW_TIMEOUT_MIN * 60_000;
 
 /**
  * A step that fails this many times in a row (same kind + ticket) stops the
@@ -79,10 +86,18 @@ type RalphState = {
   iterations: number;
   reviewEvery: number;
   loopCount: number;
-  reviewCount: number;
+  /** Completed executes (ok outcomes) since the last review; also the review trigger — a
+   * review runs once this reaches `reviewEvery`, and once more at the very end if it's
+   * still nonzero when the loop exits for any other reason. */
   executedSinceReview: number;
   stopRequested: boolean;
   currentStep?: string;
+  /** When the current step started, for the live elapsed/remaining display. Cleared once
+   * the loop settles on a final status so the widget doesn't show a stale countdown. */
+  currentStepStartedAt?: string;
+  /** The timeout backing the current step's subprocess call, if it has one (bookkeeping
+   * steps like a single-candidate `choose` don't spawn a headless call and leave this unset). */
+  currentStepTimeoutMs?: number;
   startedAt: string;
   history: RalphHistoryEntry[];
   /** Consecutive failures of the same (kind, ticket) step — see MAX_CONSECUTIVE_FAILURES. */
@@ -90,7 +105,11 @@ type RalphState = {
 };
 
 /** Records outcome `ok` under `key`; returns true once the streak hits the cap. */
-function trackFailureStreak(state: RalphState, key: string, ok: boolean): boolean {
+function trackFailureStreak(
+  state: RalphState,
+  key: string,
+  ok: boolean,
+): boolean {
   if (ok) {
     state.failureStreak = undefined;
     return false;
@@ -115,10 +134,11 @@ function createState(iterations: number, reviewEvery: number): RalphState {
     iterations,
     reviewEvery,
     loopCount: 0,
-    reviewCount: 0,
     executedSinceReview: 0,
     stopRequested: false,
     currentStep: undefined,
+    currentStepStartedAt: undefined,
+    currentStepTimeoutMs: undefined,
     startedAt: new Date().toISOString(),
     history: [],
     failureStreak: undefined,
@@ -131,7 +151,11 @@ async function ensureStateDir(cwd: string): Promise<void> {
 
 async function persist(cwd: string, state: RalphState): Promise<void> {
   await ensureStateDir(cwd);
-  await writeFile(join(cwd, STATE_DIR, "state.json"), JSON.stringify(state, null, 2), "utf8");
+  await writeFile(
+    join(cwd, STATE_DIR, "state.json"),
+    JSON.stringify(state, null, 2),
+    "utf8",
+  );
 }
 
 async function recordHistory(
@@ -143,7 +167,11 @@ async function recordHistory(
   state.history.push(full);
   if (state.history.length > MAX_HISTORY) state.history.shift();
   await ensureStateDir(cwd);
-  await appendFile(join(cwd, STATE_DIR, "history.jsonl"), `${JSON.stringify(full)}\n`, "utf8");
+  await appendFile(
+    join(cwd, STATE_DIR, "history.jsonl"),
+    `${JSON.stringify(full)}\n`,
+    "utf8",
+  );
 }
 
 // --- Deterministic backlog queries (no LLM involved) ------------------------
@@ -171,21 +199,30 @@ async function execCapture(
   opts: { cwd: string; timeout?: number },
 ): Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }> {
   const controller = opts.timeout ? new AbortController() : undefined;
-  const execPromise = pi.exec(cmd, args, { cwd: opts.cwd, timeout: opts.timeout, signal: controller?.signal }).then(
-    (result) => ({
+  const execPromise = pi
+    .exec(cmd, args, {
+      cwd: opts.cwd,
+      timeout: opts.timeout,
+      signal: controller?.signal,
+    })
+    .then((result) => ({
       ok: result.code === 0 && !result.killed,
       killed: !!result.killed,
       stdout: result.stdout ?? "",
       stderr: result.stderr ?? "",
-    }),
-  );
+    }));
 
   if (!opts.timeout || !controller) return execPromise;
 
   const abortTimer = setTimeout(() => controller.abort(), opts.timeout);
   abortTimer.unref?.();
 
-  const watchdog = new Promise<{ ok: boolean; killed: boolean; stdout: string; stderr: string }>((resolve) => {
+  const watchdog = new Promise<{
+    ok: boolean;
+    killed: boolean;
+    stdout: string;
+    stderr: string;
+  }>((resolve) => {
     const timer = setTimeout(
       () =>
         resolve({
@@ -205,7 +242,9 @@ async function execCapture(
 function parsePlainTaskList(output: string): Ticket[] {
   const tasks: Ticket[] = [];
   for (const line of output.split("\n")) {
-    const match = line.match(/^\s*\[[^\]]+\]\s*\[[^\]]+\]\s+(\S+)\s+-\s+(.+?)\s*$/);
+    const match = line.match(
+      /^\s*\[[^\]]+\]\s*\[[^\]]+\]\s+(\S+)\s+-\s+(.+?)\s*$/,
+    );
     if (match) tasks.push({ id: match[1], title: match[2] });
   }
   return tasks;
@@ -220,28 +259,86 @@ function parseUnblockedList(output: string): Ticket[] {
   return tasks;
 }
 
-async function findFirstByStatus(pi: ExtensionAPI, cwd: string, status: string): Promise<Ticket | undefined> {
-  const { stdout } = await execCapture(pi, "backlog", ["task", "list", "-s", status, "--plain"], {
-    cwd,
-    timeout: 15_000,
-  });
+async function findFirstByStatus(
+  pi: ExtensionAPI,
+  cwd: string,
+  status: string,
+): Promise<Ticket | undefined> {
+  const { stdout } = await execCapture(
+    pi,
+    "backlog",
+    ["task", "list", "-s", status, "--plain"],
+    {
+      cwd,
+      timeout: 15_000,
+    },
+  );
   return parsePlainTaskList(stdout)[0];
 }
 
 async function listUnblocked(pi: ExtensionAPI, cwd: string): Promise<Ticket[]> {
-  const { stdout } = await execCapture(pi, "./backlog/unblocked-todo.sh", [], { cwd, timeout: 30_000 });
+  const { stdout } = await execCapture(pi, "./backlog/unblocked-todo.sh", [], {
+    cwd,
+    timeout: 30_000,
+  });
   return parseUnblockedList(stdout);
 }
 
-async function markNeedsPlan(pi: ExtensionAPI, cwd: string, ticketId: string): Promise<boolean> {
-  const { ok } = await execCapture(pi, "backlog", ["task", "edit", ticketId, "-s", "Needs Plan"], {
-    cwd,
-    timeout: 15_000,
-  });
+async function markNeedsPlan(
+  pi: ExtensionAPI,
+  cwd: string,
+  ticketId: string,
+): Promise<boolean> {
+  const { ok } = await execCapture(
+    pi,
+    "backlog",
+    ["task", "edit", ticketId, "-s", "Needs Plan"],
+    {
+      cwd,
+      timeout: 15_000,
+    },
+  );
   return ok;
 }
 
 // --- Headless pi worker calls -----------------------------------------------
+
+/**
+ * Tagged template for multi-line prompts: strips the template's common leading indentation
+ * (so the surrounding code's indentation doesn't leak into the string) and drops a leading/
+ * trailing blank line, so a prompt can be written as an ordinary indented template literal
+ * instead of an array of lines joined with `.join("\n")`.
+ *
+ * The indentation is measured from the template's own literal text only, not from any
+ * interpolated `${...}` values — several of this file's prompts interpolate multi-line,
+ * unindented content (subprocess output, a generated ticket list), and letting those lines
+ * pull the common indentation down to zero would defeat the whole point.
+ */
+function dedent(strings: TemplateStringsArray, ...values: unknown[]): string {
+  const indentCandidates: string[] = [];
+  strings.forEach((part, i) => {
+    const lines = part.split("\n");
+    const start = i === 0 ? 0 : 1; // line 0 of parts after the first continues an interpolation
+    for (let j = start; j < lines.length; j++) indentCandidates.push(lines[j]);
+  });
+  const indents = indentCandidates
+    .filter((line) => line.trim() !== "")
+    .map((line) => line.match(/^ */)![0].length);
+  const minIndent = indents.length ? Math.min(...indents) : 0;
+  const prefix = " ".repeat(minIndent);
+
+  let raw = strings[0];
+  for (let i = 0; i < values.length; i++)
+    raw += String(values[i]) + strings[i + 1];
+
+  const lines = raw
+    .split("\n")
+    .map((line) => (line.startsWith(prefix) ? line.slice(minIndent) : line));
+  if (lines[0].trim() === "") lines.shift();
+  if (lines.length && lines[lines.length - 1].trim() === "") lines.pop();
+
+  return lines.join("\n");
+}
 
 function tailSummary(output: string, maxLen = 240): string {
   const collapsed = output.trim().replace(/\s+/g, " ");
@@ -259,18 +356,27 @@ async function runHeadless(
   for (const ext of opts.extensions ?? []) args.push("-e", ext);
   if (opts.model) args.push("--model", opts.model);
   args.push(prompt);
-  const { ok, killed, stdout, stderr } = await execCapture(pi, "pi", args, { cwd, timeout: opts.timeout });
+  const { ok, killed, stdout, stderr } = await execCapture(pi, "pi", args, {
+    cwd,
+    timeout: opts.timeout,
+  });
   return { ok, killed, output: (stdout || stderr || "").trim() };
 }
 
 /** Prefixes a summary with a timeout marker when the subprocess was killed, so
  * .pi/ralph/history.jsonl distinguishes "hung until we killed it" from other failures. */
-function summarize(result: { killed: boolean; output: string }, maxLen?: number): string {
+function summarize(
+  result: { killed: boolean; output: string },
+  maxLen?: number,
+): string {
   const prefix = result.killed ? "[timed out] " : "";
   return prefix + tailSummary(result.output, maxLen);
 }
 
-function extractTicketId(output: string, knownIds: string[]): string | undefined {
+function extractTicketId(
+  output: string,
+  knownIds: string[],
+): string | undefined {
   const lines = output.trim().split("\n").reverse();
   for (const line of lines) {
     const trimmed = line.trim();
@@ -281,8 +387,15 @@ function extractTicketId(output: string, knownIds: string[]): string | undefined
 
 // --- Step implementations ---------------------------------------------------
 
-function setCurrentStep(ctx: ExtensionCommandContext, state: RalphState, text: string): void {
+function setCurrentStep(
+  ctx: ExtensionCommandContext,
+  state: RalphState,
+  text: string,
+  timeoutMs?: number,
+): void {
   state.currentStep = text;
+  state.currentStepStartedAt = new Date().toISOString();
+  state.currentStepTimeoutMs = timeoutMs;
   renderWidget(ctx, state);
 }
 
@@ -293,8 +406,10 @@ async function doExecute(
   state: RalphState,
   ticket: Ticket,
 ): Promise<boolean> {
-  setCurrentStep(ctx, state, `executing ${ticket.id}`);
-  const result = await runHeadless(pi, cwd, `/backlog-execute ${ticket.id}`, { timeout: EXECUTE_TIMEOUT_MS });
+  setCurrentStep(ctx, state, `executing ${ticket.id}`, EXECUTE_TIMEOUT_MS);
+  const result = await runHeadless(pi, cwd, `/backlog-execute ${ticket.id}`, {
+    timeout: EXECUTE_TIMEOUT_MS,
+  });
   if (result.ok) state.executedSinceReview += 1;
   await recordHistory(cwd, state, {
     kind: "execute",
@@ -312,13 +427,13 @@ async function doPlan(
   state: RalphState,
   ticket: Ticket,
 ): Promise<boolean> {
-  setCurrentStep(ctx, state, `researching ${ticket.id}`);
-  const researchPrompt = [
-    `Research context to inform planning ticket ${ticket.id} ("${ticket.title}") in this repo.`,
-    `Run \`backlog task ${ticket.id} --plain\` first to see the full ticket, then search the web for`,
-    "relevant prior art, library documentation, or best practices that would help write a thorough",
-    "implementation plan. Return a concise research summary (bullet points), not a plan.",
-  ].join(" ");
+  setCurrentStep(ctx, state, `researching ${ticket.id}`, RESEARCH_TIMEOUT_MS);
+  const researchPrompt = dedent`
+    Research context to inform planning ticket ${ticket.id} ("${ticket.title}") in this repo.
+    Run \`backlog task ${ticket.id} --plain\` first to see the full ticket, then search the web for
+    relevant prior art, library documentation, or best practices that would help write a thorough
+    implementation plan. Return a concise research summary (bullet points), not a plan.
+  `;
   const research = await runHeadless(pi, cwd, researchPrompt, {
     timeout: RESEARCH_TIMEOUT_MS,
     model: "research",
@@ -331,21 +446,24 @@ async function doPlan(
     summary: `research: ${summarize(research, 120)}`,
   });
 
-  setCurrentStep(ctx, state, `planning ${ticket.id}`);
-  const planPrompt = [
-    `/backlog-planner ${ticket.id}`,
-    "",
-    "Research gathered before planning (best-effort — the research step may have been cut short by a",
-    "timeout partway through, or its output may just be an unrelated startup warning with no real",
-    "content; use it if it's useful, ignore it and rely on repo context otherwise):",
-    research.output.trim() || "(no output was produced)",
-    "",
-    `After planning completes (the ticket has a plan and, if applicable, is labeled planned), set its`,
-    `status to Dev Ready: \`backlog task edit ${ticket.id} -s "Dev Ready"\`. If /backlog-planner instead`,
-    "exited early because it found unplanned child tickets, leave the status as-is and explain why in",
-    "your final message.",
-  ].join("\n");
-  const plan = await runHeadless(pi, cwd, planPrompt, { timeout: PLAN_TIMEOUT_MS, model: "planning" });
+  setCurrentStep(ctx, state, `planning ${ticket.id}`, PLAN_TIMEOUT_MS);
+  const planPrompt = dedent`
+    /backlog-planner ${ticket.id}
+
+    Research gathered before planning (best-effort — the research step may have been cut short by a
+    timeout partway through, or its output may just be an unrelated startup warning with no real
+    content; use it if it's useful, ignore it and rely on repo context otherwise):
+    ${research.output.trim() || "(no output was produced)"}
+
+    After planning completes (the ticket has a plan and, if applicable, is labeled planned), set its
+    status to Dev Ready: \`backlog task edit ${ticket.id} -s "Dev Ready"\`. If /backlog-planner instead
+    exited early because it found unplanned child tickets, leave the status as-is and explain why in
+    your final message.
+  `;
+  const plan = await runHeadless(pi, cwd, planPrompt, {
+    timeout: PLAN_TIMEOUT_MS,
+    model: "planning",
+  });
   await recordHistory(cwd, state, {
     kind: "plan",
     ticket: ticket.id,
@@ -375,19 +493,24 @@ async function doChoose(
     return ok;
   }
 
-  setCurrentStep(ctx, state, "choosing next ticket");
+  setCurrentStep(ctx, state, "choosing next ticket", CHOOSE_TIMEOUT_MS);
   const list = candidates.map((c) => `${c.id} - ${c.title}`).join("\n");
-  const prompt = [
-    "The following backlog tickets are unblocked (all dependencies Done) and waiting to be picked up:",
-    "",
-    list,
-    "",
-    "Pick exactly one to queue for planning next, using your judgment about priority, what unblocks the",
-    'most future work, and risk. Then run: backlog task edit <chosen-id> -s "Needs Plan". End your final',
-    "message with a line containing only the chosen ticket ID.",
-  ].join("\n");
-  const result = await runHeadless(pi, cwd, prompt, { timeout: CHOOSE_TIMEOUT_MS });
-  const chosenId = extractTicketId(result.output, candidates.map((c) => c.id));
+  const prompt = dedent`
+    The following backlog tickets are unblocked (all dependencies Done) and waiting to be picked up:
+
+    ${list}
+
+    Pick exactly one to queue for planning next, using your judgment about priority, what unblocks the
+    most future work, and risk. Then run: backlog task edit <chosen-id> -s "Needs Plan". End your final
+    message with a line containing only the chosen ticket ID.
+  `;
+  const result = await runHeadless(pi, cwd, prompt, {
+    timeout: CHOOSE_TIMEOUT_MS,
+  });
+  const chosenId = extractTicketId(
+    result.output,
+    candidates.map((c) => c.id),
+  );
   const ok = result.ok && !!chosenId;
   await recordHistory(cwd, state, {
     kind: "choose",
@@ -405,26 +528,34 @@ async function doReview(
   state: RalphState,
 ): Promise<boolean> {
   const n = Math.max(state.executedSinceReview, 1);
-  setCurrentStep(ctx, state, `reviewing last ${n} ticket(s)`);
-  const prompt = [
-    "You are the review checkpoint for pi's autonomous backlog loop. Use the herdr CLI (you are already",
-    `running inside a herdr-managed pane) to have a fresh claude subagent audit the last ${n} completed`,
-    "ticket(s):",
-    "",
-    "1. Split the current pane to open a new one for the review agent (e.g. `herdr pane split <this-pane-id>",
-    "   --direction right --no-focus`); find <this-pane-id> via `herdr pane list`.",
-    "2. Run the review in the new pane with auto-approved permissions. Quote the whole `claude` invocation as",
-    "   a single argument to `pane run` so its double-quoted prompt survives intact — e.g.:",
-    `   herdr pane run <new-pane-id> 'claude --permission-mode auto "Run the review-pi-work skill for the last ${n} tickets"'`,
-    "3. Wait until that pane's agent finishes (poll `herdr pane list` for the pane's `agent_status` field",
-    "   becoming `done`; give it up to 20 minutes).",
-    "4. Read its final output (`herdr pane read <new-pane-id> --source recent --lines 400`) and summarize",
-    "   what it found, including any new follow-up ticket IDs it filed.",
-    "5. Close the review pane (`herdr pane close <new-pane-id>`).",
-    "",
-    "Report back a concise summary of the review findings and any follow-up ticket IDs filed.",
-  ].join("\n");
-  const result = await runHeadless(pi, cwd, prompt, { timeout: REVIEW_TIMEOUT_MS });
+  setCurrentStep(
+    ctx,
+    state,
+    `reviewing last ${n} ticket(s)`,
+    REVIEW_TIMEOUT_MS,
+  );
+  const prompt = dedent`
+    You are the review checkpoint for pi's autonomous backlog loop. Use the herdr CLI (you are already
+    running inside a herdr-managed pane) to have a fresh claude subagent audit the last ${n} completed
+    ticket(s):
+
+    1. Split the current pane to open a new one for the review agent
+       (e.g. \`herdr pane split <this-pane-id> --direction right --no-focus\`);
+       find <this-pane-id> via \`herdr pane list\`.
+    2. Run the review in the new pane with auto-approved permissions. Quote the whole \`claude\` invocation as
+       a single argument to \`pane run\` so its double-quoted prompt survives intact — e.g.:
+       \`herdr pane run <new-pane-id> 'claude --permission-mode auto "Run the review-pi-work skill for the last ${n} tickets"'\`
+    3. Wait until that pane's agent finishes (poll \`herdr pane list\` for the pane's \`agent_status\` field
+       becoming \`done\`; give it up to ${REVIEW_TIMEOUT_MIN} minutes).
+    4. Read its final output (\`herdr pane read <new-pane-id> --source recent --lines 400\`) and summarize
+       what it found, including any new follow-up ticket IDs it filed.
+    5. Close the review pane (\`herdr pane close <new-pane-id>\`).
+
+    Report back a concise summary of the review findings and any follow-up ticket IDs filed.
+  `;
+  const result = await runHeadless(pi, cwd, prompt, {
+    timeout: REVIEW_TIMEOUT_MS,
+  });
   await recordHistory(cwd, state, {
     kind: "review",
     outcome: result.ok ? "ok" : "failed",
@@ -439,10 +570,16 @@ async function doReview(
 function finish(state: RalphState, status: RalphStatus, reason: string): void {
   state.status = status;
   state.currentStep = reason;
+  state.currentStepStartedAt = undefined;
+  state.currentStepTimeoutMs = undefined;
 }
 
 /** True if this step's failure streak just hit the cap; `finish()`s the state with an explanatory reason. */
-function stoppedByFailureStreak(state: RalphState, key: string, ok: boolean): boolean {
+function stoppedByFailureStreak(
+  state: RalphState,
+  key: string,
+  ok: boolean,
+): boolean {
   if (!trackFailureStreak(state, key, ok)) return false;
   finish(
     state,
@@ -454,7 +591,40 @@ function stoppedByFailureStreak(state: RalphState, key: string, ok: boolean): bo
   return true;
 }
 
-async function runLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: string, state: RalphState): Promise<void> {
+/**
+ * Runs one courtesy review after the loop has already decided to exit, if any executed
+ * tickets since the last review haven't been covered by one yet. Skipped when the loop is
+ * exiting *because* review itself just hit the failure streak cap — a broken review
+ * pipeline isn't fixed by immediately trying it again. Leaves `state.status`/`currentStep`
+ * (and the timing fields `finish()` cleared) as the loop's exit reason set them; this is a
+ * best-effort extra step, not a status change.
+ */
+async function runFinalReviewIfNeeded(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  cwd: string,
+  state: RalphState,
+): Promise<void> {
+  if (state.executedSinceReview <= 0) return;
+  if (state.failureStreak?.key === "review") return;
+
+  const exitStatus = state.status;
+  const exitStep = state.currentStep;
+  const exitStepStartedAt = state.currentStepStartedAt;
+  const exitStepTimeoutMs = state.currentStepTimeoutMs;
+  await doReview(pi, ctx, cwd, state);
+  state.status = exitStatus;
+  state.currentStep = exitStep;
+  state.currentStepStartedAt = exitStepStartedAt;
+  state.currentStepTimeoutMs = exitStepTimeoutMs;
+}
+
+async function runLoop(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  cwd: string,
+  state: RalphState,
+): Promise<void> {
   try {
     while (true) {
       if (state.stopRequested) {
@@ -466,9 +636,8 @@ async function runLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: stri
         break;
       }
 
-      if (state.reviewCount >= state.reviewEvery) {
+      if (state.executedSinceReview >= state.reviewEvery) {
         const ok = await doReview(pi, ctx, cwd, state);
-        state.reviewCount = 0;
         state.loopCount += 1;
         await persist(cwd, state);
         renderWidget(ctx, state);
@@ -477,9 +646,10 @@ async function runLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: stri
       }
 
       state.loopCount += 1;
-      state.reviewCount += 1;
 
-      const active = (await findFirstByStatus(pi, cwd, "In Progress")) ?? (await findFirstByStatus(pi, cwd, "Dev Ready"));
+      const active =
+        (await findFirstByStatus(pi, cwd, "In Progress")) ??
+        (await findFirstByStatus(pi, cwd, "Dev Ready"));
       if (active) {
         const ok = await doExecute(pi, ctx, cwd, state, active);
         await persist(cwd, state);
@@ -507,12 +677,15 @@ async function runLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: stri
       renderWidget(ctx, state);
       if (stoppedByFailureStreak(state, "choose", ok)) break;
     }
+
+    await runFinalReviewIfNeeded(pi, ctx, cwd, state);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     finish(state, "stopped", `unexpected error: ${message}`);
   } finally {
     await persist(cwd, state);
     renderWidget(ctx, state);
+    stopWidgetTicker();
     ctx.ui.notify(
       `ralph ${state.status}: ${state.currentStep ?? ""} (${state.loopCount}/${state.iterations} iterations)`,
       state.status === "done" ? "info" : "warn",
@@ -522,26 +695,80 @@ async function runLoop(pi: ExtensionAPI, ctx: ExtensionCommandContext, cwd: stri
 
 // --- Progress UI ---------------------------------------------------------
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) return `${h}h${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m${String(s).padStart(2, "0")}s`;
+  return `${s}s`;
+}
+
+/** ` (Nm left of timeout Mm)` for the current step, or "" if it has no tracked timeout
+ * (bookkeeping steps like a single-candidate `choose` don't spawn a headless call). */
+function stepTimingSuffix(state: RalphState): string {
+  if (!state.currentStepStartedAt || !state.currentStepTimeoutMs) return "";
+  const elapsedMs = Date.now() - Date.parse(state.currentStepStartedAt);
+  const remainingMs = state.currentStepTimeoutMs - elapsedMs;
+  const remaining = formatDuration(remainingMs);
+  return ` (${remaining} left of ${formatDuration(state.currentStepTimeoutMs)} timeout)`;
+}
+
 function widgetLines(state: RalphState): string[] {
   const step = state.currentStep ? ` · ${state.currentStep}` : "";
-  return [`ralph: ${state.status} · iter ${state.loopCount}/${state.iterations} · review ${state.reviewCount}/${state.reviewEvery}${step}`];
+  const timing = stepTimingSuffix(state);
+  return [
+    `ralph: ${state.status} · iter ${state.loopCount}/${state.iterations} · executed ${state.executedSinceReview}/${state.reviewEvery} since review${step}${timing}`,
+  ];
 }
 
 function renderWidget(ctx: ExtensionCommandContext, state: RalphState): void {
   ctx.ui.setWidget("ralph", widgetLines(state));
 }
 
-type DashboardTheme = { bold: (s: string) => string; fg: (color: string, s: string) => string };
+/** Ticks the persistent `ralph` widget every second while a run is active, so the
+ * timeout/remaining-time display in `widgetLines` counts down live instead of only
+ * updating at step transitions. */
+let widgetTicker: ReturnType<typeof setInterval> | null = null;
+
+function startWidgetTicker(
+  ctx: ExtensionCommandContext,
+  state: RalphState,
+): void {
+  stopWidgetTicker();
+  widgetTicker = setInterval(() => renderWidget(ctx, state), 1000);
+  widgetTicker.unref?.();
+}
+
+function stopWidgetTicker(): void {
+  if (widgetTicker) {
+    clearInterval(widgetTicker);
+    widgetTicker = null;
+  }
+}
+
+type DashboardTheme = {
+  bold: (s: string) => string;
+  fg: (color: string, s: string) => string;
+};
 
 const plainTheme: DashboardTheme = { bold: (s) => s, fg: (_c, s) => s };
 
-function renderDashboardLines(state: RalphState, theme: DashboardTheme): string[] {
+function renderDashboardLines(
+  state: RalphState,
+  theme: DashboardTheme,
+): string[] {
   const lines: string[] = [];
   lines.push(theme.bold(theme.fg("accent", "Ralph Loop")));
   lines.push(`status: ${state.status}`);
   lines.push(`iteration: ${state.loopCount} / ${state.iterations}`);
-  lines.push(`since last review: ${state.reviewCount} / ${state.reviewEvery}`);
-  if (state.currentStep) lines.push(`current: ${state.currentStep}`);
+  lines.push(
+    `executed since last review: ${state.executedSinceReview} / ${state.reviewEvery}`,
+  );
+  if (state.currentStep) {
+    lines.push(`current: ${state.currentStep}${stepTimingSuffix(state)}`);
+  }
   lines.push("");
   lines.push(theme.bold("recent history"));
   const recent = state.history.slice(-10).reverse();
@@ -559,7 +786,10 @@ function renderDashboardLines(state: RalphState, theme: DashboardTheme): string[
   return lines;
 }
 
-async function showProgressDashboard(ctx: ExtensionCommandContext, state: RalphState): Promise<void> {
+async function showProgressDashboard(
+  ctx: ExtensionCommandContext,
+  state: RalphState,
+): Promise<void> {
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
     let cachedWidth: number | undefined;
     let cachedLines: string[] | undefined;
@@ -578,7 +808,9 @@ async function showProgressDashboard(ctx: ExtensionCommandContext, state: RalphS
     return {
       render(width: number): string[] {
         if (cachedWidth === width && cachedLines) return cachedLines;
-        cachedLines = renderDashboardLines(state, theme).map((line) => truncateToWidth(line, width));
+        cachedLines = renderDashboardLines(state, theme).map((line) =>
+          truncateToWidth(line, width),
+        );
         cachedWidth = width;
         return cachedLines;
       },
@@ -602,9 +834,13 @@ function parsePositiveInt(token: string): number | undefined {
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("ralph", {
-    description: "Start the autonomous backlog loop (plan/execute/review tickets until done or iteration limit)",
+    description:
+      "Start the autonomous backlog loop (plan/execute/review tickets until done or iteration limit)",
     handler: async (args, ctx) => {
-      if (activeState && (activeState.status === "running" || activeState.status === "stopping")) {
+      if (
+        activeState &&
+        (activeState.status === "running" || activeState.status === "stopping")
+      ) {
         ctx.ui.notify(
           `ralph is already ${activeState.status} (iteration ${activeState.loopCount}/${activeState.iterations}). Use /ralph-stop first.`,
           "warn",
@@ -644,7 +880,11 @@ export default function (pi: ExtensionAPI) {
       activeState = createState(iterations, reviewEvery);
       await persist(cwd, activeState);
       renderWidget(ctx, activeState);
-      ctx.ui.notify(`ralph started: ${iterations} iteration(s), reviewing every ${reviewEvery}.`, "info");
+      startWidgetTicker(ctx, activeState);
+      ctx.ui.notify(
+        `ralph started: ${iterations} iteration(s), reviewing every ${reviewEvery} execute(s).`,
+        "info",
+      );
 
       void runLoop(pi, ctx, cwd, activeState);
     },
@@ -668,19 +908,29 @@ export default function (pi: ExtensionAPI) {
     description: "Show the ralph loop's current progress",
     handler: async (_args, ctx) => {
       if (!activeState) {
-        ctx.ui.notify("ralph has not been run yet in this session. Use /ralph to start it.", "info");
+        ctx.ui.notify(
+          "ralph has not been run yet in this session. Use /ralph to start it.",
+          "info",
+        );
         return;
       }
       if (ctx.mode === "tui") {
         await showProgressDashboard(ctx, activeState);
       } else {
-        ctx.ui.notify(renderDashboardLines(activeState, plainTheme).join("\n"), "info");
+        ctx.ui.notify(
+          renderDashboardLines(activeState, plainTheme).join("\n"),
+          "info",
+        );
       }
     },
   });
 
   pi.on("session_shutdown", async () => {
-    if (activeState && (activeState.status === "running" || activeState.status === "stopping")) {
+    stopWidgetTicker();
+    if (
+      activeState &&
+      (activeState.status === "running" || activeState.status === "stopping")
+    ) {
       activeState.status = "stopped";
       activeState.currentStep = "session ended";
     }

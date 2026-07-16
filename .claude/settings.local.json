@@ -54,7 +54,16 @@
       "Skill(update-config)",
       "Bash(git -C /home/jeffutter/src/markdown-todo-extractor tag v0.9.0)",
       "Bash(nix develop *)",
-      "Bash(backlog task *)"
+      "Bash(backlog task *)",
+      "Skill(run)",
+      "Bash(backlog sequence *)",
+      "Bash(backlog --help)",
+      "Bash(backlog overview *)",
+      "Bash(backlog milestone *)",
+      "Skill(rust-best-practices)",
+      "mcp__backlog__task_view",
+      "mcp__backlog__task_create",
+      "mcp__backlog__task_edit"
     ],
     "deny": [],
     "ask": []
