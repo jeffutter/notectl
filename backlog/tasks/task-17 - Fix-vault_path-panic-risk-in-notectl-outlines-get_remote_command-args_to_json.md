@@ -3,11 +3,14 @@ id: TASK-17
 title: >-
   Fix: vault_path panic risk in notectl-outline's
   get_remote_command/args_to_json
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 16:51'
+updated_date: '2026-07-16 20:36'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-14
@@ -34,17 +37,46 @@ Found while reviewing TASK-14 (notectl-search/src/capability.rs), which fixed th
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline, notectl-search, notectl-files, notectl-tags, notectl-tasks, notectl-daily-notes, plus the main notectl binary). ALL commands must run inside the Nix dev shell: either run 'direnv allow' once, or prefix every command with 'nix develop -c'. Work from the repository root unless told otherwise. Do not change pinned dependency versions.
+Single-file fix in notectl-outline/src/capability.rs. All three operations need Pattern B (manual rebuild + field-by-field JSON) because each has a required positional immediately after vault_path, making mut_arg impossible due to clap 4.6.x positional ordering debug_assert.
 
-1. Open notectl-outline/src/capability.rs. Locate the three Operation impls: GetOutlineOperation (~line 340-417), GetSectionOperation (~line 420-520), SearchHeadingsOperation (~line 522-620 approx -- exact line numbers may have shifted, search for 'impl notectl_core::operation::Operation for').
-2. For each, read the local get_command() (derived from the Request struct's #[derive(clap::Parser)]) and the current get_remote_command() (a manually rebuilt clap::Command that omits vault_path). Compare against notectl-tags/src/capability.rs's ExtractTagsOperation::get_remote_command (~line 300): 'self.get_command().mut_arg("path", |a| a.required(false).hide(true))'.
-3. Before changing anything, write a throwaway clap probe (a temporary #[test] or a scratch binary under /tmp, NOT committed) to confirm mut_arg works for each operation's specific positional layout: does the operation have any OTHER positional arg after vault_path (e.g. GetOutlineOperation's file_path, GetSectionOperation's file_path + heading, SearchHeadingsOperation's pattern)? Reproduce notectl-search's finding: 'clap panics with debug_assert 'Found non-required positional argument with a lower index than a required positional argument' if an optional/hidden positional precedes a required one.' Check each Request struct's #[arg(index = N, ...)] attributes in notectl-outline/src/capability.rs to determine each operation's positional ordering.
-4. For each operation where mut_arg is safe (no required positional follows vault_path, or the local grammar already has vault_path as the ONLY positional with everything else as --long options), replace get_remote_command()'s manual clap::Command rebuild with 'self.get_command().mut_arg("vault_path", |a| a.required(false).hide(true))'. Delete the now-redundant manual .arg(...) calls.
-5. Simplify each corresponding args_to_json() back to the simple two-line form already used elsewhere (e.g. notectl-tags/src/capability.rs's args_to_json): 'let mut request = XRequest::from_arg_matches(matches)?; request.vault_path = None; Ok(serde_json::to_value(request)?)'. This works once vault_path is a registered (if hidden/optional) arg id, since from_arg_matches will just find it as None rather than panicking on an unregistered id.
-6. For any operation where the probe in step 3 shows mut_arg is NOT safe (a required positional follows vault_path), keep the manual clap::Command rebuild but ensure it explicitly registers vault_path (e.g. as a hidden, non-required Arg at the correct index) so from_arg_matches does not panic, following notectl-search's SearchOperation::get_remote_command pattern in notectl-search/src/capability.rs (~line 397-427) as a reference, including its field-by-field args_to_json workaround if from_arg_matches would still panic for other reasons in that case.
-7. Add a  module (or extend an existing tests module) in notectl-outline/src/capability.rs mirroring notectl-search/src/capability.rs's remote_command_tests (~line 510-645, added in TASK-14): construct a dummy capability, call get_remote_command(), try_get_matches_from(...) without any vault_path argument present, call args_to_json(&matches), and assert it returns Ok(...) with the expected fields -- one test per operation (3 total), plus a bare-flag-vs-value test for any boolean args following notectl-search's grammar-consistency pattern if notectl-outline has any Option<bool> fields (hierarchical, include_subsections -- check these already use value_parser(bool) correctly per TASK-14's investigation notes, so this may already be fine and just needs a regression test).
-8. Run: nix develop -c cargo test -p notectl-outline --all-features
-9. Run: nix develop -c cargo clippy -p notectl-outline --all-features --all-targets -- -D warnings
-10. Run: nix develop -c cargo fmt -p notectl-outline -- --check (fix formatting if needed).
-11. Run: nix develop -c cargo build (workspace-wide) to confirm nothing else broke.
+## Root Cause
+Each get_remote_command() manually rebuilds clap::Command omitting vault_path, while args_to_json() calls Request::from_arg_matches(matches) whose derive-generated impl looks up vault_path by ID and panics with "Mismatch between definition and access of vault_path".
+
+## Changes per operation
+
+### 1. GetOutlineOperation (~line 340-420)
+- get_remote_command(): KEEP existing manual rebuild (already correct — no vault_path). No change needed.
+- args_to_json(): REPLACE from_arg_matches call with field-by-field serde_json::Map construction:
+  - file_path: matches.get_one::<String>("file_path") → String
+  - hierarchical: matches.get_one::<bool>("hierarchical") → bool
+  - Build serde_json::Map, return Ok(serde_json::Value::Object(obj))
+
+### 2. GetSectionOperation (~line 420-520)
+- get_remote_command(): KEEP existing manual rebuild. No change needed.
+- args_to_json(): REPLACE from_arg_matches with field-by-field:
+  - file_path: get_one::<String>("file_path")
+  - heading: get_one::<String>("heading")
+  - include_subsections: get_one::<bool>("include_subsections")
+
+### 3. SearchHeadingsOperation (~line 520-620)
+- get_remote_command(): KEEP existing manual rebuild. No change needed.
+- args_to_json(): REPLACE from_arg_matches with field-by-field:
+  - pattern: get_one::<String>("pattern")
+  - min_level: get_one::<u8>("min_level")
+  - max_level: get_one::<u8>("max_level")
+  - limit: get_one::<usize>("limit")
+
+### 4. Add remote_command_tests module (end of file)
+Mirror notectl-search/src/capability.rs test module (added in TASK-14):
+- dummy_outline_capability() helper
+- For each operation (3 ops × 2 tests = 6 tests minimum):
+  - args_to_json_no_vault_path_panic: parse via get_remote_command without vault_path, assert args_to_json returns Ok with expected fields
+  - boolean_flag_grammar_consistency: for hierarchical/include_subsections, verify --flag true and --flag false both succeed, bare --flag fails (value_parser(bool) not SetTrue)
+- Total: ~8 tests (3 panic tests + 3 full-options tests + 2 boolean grammar tests)
+
+### 5. Quality gates
+- cargo test -p notectl-outline --all-features
+- cargo clippy -p notectl-outline --all-features --all-targets -- -D warnings
+- cargo fmt -p notectl-outline -- --check
+- cargo build (workspace-wide sanity check)
 <!-- SECTION:PLAN:END -->

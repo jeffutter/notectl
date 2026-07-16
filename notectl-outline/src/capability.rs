@@ -406,13 +406,20 @@ impl notectl_core::operation::Operation for GetOutlineOperation {
         serde_json::to_value(schema_for!(GetOutlineRequest)).unwrap()
     }
 
+    // Build JSON field-by-field instead of routing through GetOutlineRequest::from_arg_matches,
+    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = GetOutlineRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = matches.get_one::<String>("file_path") {
+            obj.insert("file_path".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<bool>("hierarchical") {
+            obj.insert("hierarchical".into(), serde_json::Value::Bool(*v));
+        }
+        Ok(serde_json::Value::Object(obj))
     }
 }
 
@@ -493,13 +500,23 @@ impl notectl_core::operation::Operation for GetSectionOperation {
         serde_json::to_value(schema_for!(GetSectionRequest)).unwrap()
     }
 
+    // Build JSON field-by-field instead of routing through GetSectionRequest::from_arg_matches,
+    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = GetSectionRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = matches.get_one::<String>("file_path") {
+            obj.insert("file_path".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<String>("heading") {
+            obj.insert("heading".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<bool>("include_subsections") {
+            obj.insert("include_subsections".into(), serde_json::Value::Bool(*v));
+        }
+        Ok(serde_json::Value::Object(obj))
     }
 }
 
@@ -586,12 +603,224 @@ impl notectl_core::operation::Operation for SearchHeadingsOperation {
         serde_json::to_value(schema_for!(SearchHeadingsRequest)).unwrap()
     }
 
+    // Build JSON field-by-field instead of routing through SearchHeadingsRequest::from_arg_matches,
+    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = SearchHeadingsRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = matches.get_one::<String>("pattern") {
+            obj.insert("pattern".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<u8>("min_level") {
+            obj.insert("min_level".into(), serde_json::json!(v));
+        }
+        if let Some(v) = matches.get_one::<u8>("max_level") {
+            obj.insert("max_level".into(), serde_json::json!(v));
+        }
+        if let Some(v) = matches.get_one::<usize>("limit") {
+            obj.insert("limit".into(), serde_json::json!(v));
+        }
+        Ok(serde_json::Value::Object(obj))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for get_remote_command() grammar consistency (TASK-17)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod remote_command_tests {
+    use super::*;
+    use notectl_core::operation::Operation;
+
+    /// Create a dummy OutlineCapability for testing (base_path doesn't matter for these tests).
+    fn dummy_capability() -> Arc<OutlineCapability> {
+        Arc::new(OutlineCapability::new(
+            PathBuf::from("/tmp"),
+            Arc::new(Config::default()),
+        ))
+    }
+
+    // -- GetOutlineOperation tests --
+
+    #[test]
+    fn outline_remote_command_hierarchical_accepts_bool_value() {
+        let op = GetOutlineOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // --hierarchical true should succeed
+        let matches = cmd
+            .clone()
+            .try_get_matches_from(["outline", "file.md", "--hierarchical", "true"])
+            .unwrap();
+        assert_eq!(matches.get_one::<bool>("hierarchical").copied(), Some(true));
+
+        // --hierarchical false should also succeed
+        let matches = cmd
+            .try_get_matches_from(["outline", "file.md", "--hierarchical", "false"])
+            .unwrap();
+        assert_eq!(
+            matches.get_one::<bool>("hierarchical").copied(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn outline_remote_command_hierarchical_bare_flag_fails() {
+        let op = GetOutlineOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Bare --hierarchical without a value should fail (it's not SetTrue)
+        let result = cmd.try_get_matches_from(["outline", "file.md", "--hierarchical"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn outline_remote_command_args_to_json_no_vault_path_panic() {
+        let op = GetOutlineOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Parse without vault_path — this must NOT panic
+        let matches = cmd.try_get_matches_from(["outline", "file.md"]).unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        // Verify the JSON contains expected fields
+        assert!(json.get("file_path").is_some());
+        assert_eq!(json["file_path"], "file.md");
+    }
+
+    #[test]
+    fn outline_remote_command_with_all_options() {
+        let op = GetOutlineOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        let matches = cmd
+            .try_get_matches_from(["outline", "file.md", "--hierarchical", "true"])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        assert_eq!(json["file_path"], "file.md");
+        assert_eq!(json["hierarchical"], true);
+    }
+
+    // -- GetSectionOperation tests --
+
+    #[test]
+    fn section_remote_command_include_subsections_accepts_bool_value() {
+        let op = GetSectionOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // --include-subsections true should succeed
+        let matches = cmd
+            .clone()
+            .try_get_matches_from([
+                "section",
+                "file.md",
+                "My Heading",
+                "--include-subsections",
+                "true",
+            ])
+            .unwrap();
+        assert_eq!(
+            matches.get_one::<bool>("include_subsections").copied(),
+            Some(true)
+        );
+
+        // --include-subsections false should also succeed
+        let matches = cmd
+            .try_get_matches_from([
+                "section",
+                "file.md",
+                "My Heading",
+                "--include-subsections",
+                "false",
+            ])
+            .unwrap();
+        assert_eq!(
+            matches.get_one::<bool>("include_subsections").copied(),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn section_remote_command_include_subsections_bare_flag_fails() {
+        let op = GetSectionOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Bare --include-subsections without a value should fail
+        let result =
+            cmd.try_get_matches_from(["section", "file.md", "My Heading", "--include-subsections"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn section_remote_command_args_to_json_no_vault_path_panic() {
+        let op = GetSectionOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Parse without vault_path — this must NOT panic
+        let matches = cmd
+            .try_get_matches_from(["section", "file.md", "My Heading"])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        assert!(json.get("file_path").is_some());
+        assert!(json.get("heading").is_some());
+        assert_eq!(json["file_path"], "file.md");
+        assert_eq!(json["heading"], "My Heading");
+    }
+
+    // -- SearchHeadingsOperation tests --
+
+    #[test]
+    fn search_headings_remote_command_args_to_json_no_vault_path_panic() {
+        let op = SearchHeadingsOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Parse without vault_path — this must NOT panic
+        let matches = cmd
+            .try_get_matches_from(["search-headings", "my pattern"])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        assert!(json.get("pattern").is_some());
+        assert_eq!(json["pattern"], "my pattern");
+    }
+
+    #[test]
+    fn search_headings_remote_command_with_all_options() {
+        let op = SearchHeadingsOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        let matches = cmd
+            .try_get_matches_from([
+                "search-headings",
+                "test pattern",
+                "--min-level",
+                "1",
+                "--max-level",
+                "3",
+                "--limit",
+                "10",
+            ])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        assert_eq!(json["pattern"], "test pattern");
+        assert_eq!(json["min_level"], 1);
+        assert_eq!(json["max_level"], 3);
+        assert_eq!(json["limit"], 10);
     }
 }
