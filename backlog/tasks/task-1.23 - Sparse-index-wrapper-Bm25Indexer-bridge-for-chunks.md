@@ -1,11 +1,13 @@
 ---
 id: TASK-1.23
 title: 'Sparse index wrapper: Bm25Indexer bridge for chunks'
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 04:40'
-updated_date: '2026-07-16 04:40'
-labels: [planned]
+updated_date: '2026-07-16 04:57'
+labels:
+  - planned
 dependencies:
   - TASK-1.22
 parent_task_id: TASK-1.6
@@ -41,6 +43,7 @@ Leverages the inverted index improvements from TASK-1.22 (postings list, running
 
 ## Implementation Plan
 
+<!-- SECTION:PLAN:BEGIN -->
 <!-- SECTION:IMPLEMENTATION_PLAN:BEGIN -->
 
 ### Structure
@@ -79,3 +82,10 @@ impl SparseIndexer {
 
 ### No new Cargo.toml dependencies needed
 <!-- SECTION:IMPLEMENTATION_PLAN:END -->
+<!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Created notectl-search/src/sparse.rs with SparseIndexer struct wrapping Bm25Indexer. Two public methods: index_chunks(chunks) builds the BM25 index from Chunk text, and score_query(query) returns ranked (chunk_index, score) pairs sorted descending. Module registered in lib.rs. Three tests cover basic scoring, empty corpus, and multi-term ranking. All 55 tests in notectl-search pass; clippy and rustfmt clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
