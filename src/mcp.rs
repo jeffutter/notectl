@@ -12,6 +12,8 @@ use notectl_tags::{
     SearchByTagsRequest, SearchByTagsResponse,
 };
 use notectl_tasks::{SearchTasksRequest, TaskSearchResponse};
+#[cfg(feature = "search")]
+use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::{
     ServerHandler,
     handler::server::{
@@ -21,6 +23,8 @@ use rmcp::{
     model::*,
     tool, tool_handler, tool_router,
 };
+#[cfg(feature = "search")]
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -44,8 +48,17 @@ impl TaskSearchService {
             Arc::clone(&config),
         ));
 
+        // Build tool router starting with macro-generated routes
+        #[cfg(not(feature = "search"))]
+        let tool_router = Self::tool_router();
+
+        #[cfg(feature = "search")]
+        let tool_router = Self::tool_router()
+            .with_async_tool::<search_tools::SearchTool>()
+            .with_async_tool::<search_tools::IndexTool>();
+
         Self {
-            tool_router: Self::tool_router(),
+            tool_router,
             capability_registry,
         }
     }
@@ -186,29 +199,173 @@ impl TaskSearchService {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Trait-based search tools (conditionally compiled, added manually to router)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "search")]
+mod search_tools {
+    use super::*;
+    use notectl_search::{RankedChunk, SearchMode};
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    // --- search tool ---
+
+    #[derive(Debug, Deserialize, JsonSchema, Default)]
+    pub struct McpSearchParams {
+        /// The text to search for
+        pub query: Option<String>,
+        /// Maximum number of results to return (default 50)
+        pub limit: Option<usize>,
+        /// Scoring mode: hybrid (dense+sparse fused), dense only, or sparse only (default hybrid)
+        pub mode: Option<SearchMode>,
+        /// If true, skip the staleness check and use the existing index without rebuilding
+        pub no_reindex: Option<bool>,
+    }
+
+    #[derive(Debug, Serialize, JsonSchema)]
+    pub struct McpSearchResponse {
+        pub results: Vec<RankedChunk>,
+        pub total_count: usize,
+        pub mode_used: String,
+    }
+
+    pub struct SearchTool;
+
+    impl ToolBase for SearchTool {
+        type Parameter = McpSearchParams;
+        type Output = McpSearchResponse;
+        type Error = ErrorData;
+
+        fn name() -> Cow<'static, str> {
+            "search".into()
+        }
+
+        fn description() -> Option<Cow<'static, str>> {
+            Some(
+                "Search across all indexed notes using hybrid (dense + sparse), dense-only, or sparse-only scoring. Auto-degrades when vectors are unavailable.".into(),
+            )
+        }
+    }
+
+    impl AsyncTool<TaskSearchService> for SearchTool {
+        async fn invoke(
+            service: &TaskSearchService,
+            params: Self::Parameter,
+        ) -> Result<Self::Output, Self::Error> {
+            let query = params.query.unwrap_or_default();
+            let response = service
+                .capability_registry
+                .search()
+                .do_search(
+                    &query,
+                    params.limit.unwrap_or(50),
+                    params.mode.unwrap_or_default(),
+                    params.no_reindex.unwrap_or(false),
+                )
+                .await?;
+            Ok(McpSearchResponse {
+                results: response.results,
+                total_count: response.total_count,
+                mode_used: response.mode_used,
+            })
+        }
+    }
+
+    // --- build_search_index tool ---
+
+    #[derive(Debug, Deserialize, JsonSchema, Default)]
+    pub struct McpIndexParams {
+        /// If true, delete existing index artifacts and rebuild from scratch
+        pub reindex: Option<bool>,
+        /// Override the embedding model ID from config
+        pub model: Option<String>,
+        /// Override the embedding dimension from config
+        pub dim: Option<u32>,
+    }
+
+    #[derive(Debug, Serialize, JsonSchema)]
+    pub struct McpIndexResponse {
+        pub files_indexed: usize,
+        pub chunks_produced: usize,
+        pub has_embeddings: bool,
+        pub content_hash: String,
+        pub duration_ms: u128,
+    }
+
+    pub struct IndexTool;
+
+    impl ToolBase for IndexTool {
+        type Parameter = McpIndexParams;
+        type Output = McpIndexResponse;
+        type Error = ErrorData;
+
+        fn name() -> Cow<'static, str> {
+            "build_search_index".into()
+        }
+
+        fn description() -> Option<Cow<'static, str>> {
+            Some(
+                "Build or update the search index for all markdown files in the vault. Computes chunks, optional embeddings, and persists index artifacts.".into(),
+            )
+        }
+    }
+
+    impl AsyncTool<TaskSearchService> for IndexTool {
+        async fn invoke(
+            service: &TaskSearchService,
+            params: Self::Parameter,
+        ) -> Result<Self::Output, Self::Error> {
+            let response = service
+                .capability_registry
+                .search()
+                .build_index(params.reindex.unwrap_or(false), params.model, params.dim)
+                .await?;
+            Ok(McpIndexResponse {
+                files_indexed: response.files_indexed,
+                chunks_produced: response.chunks_produced,
+                has_embeddings: response.has_embeddings,
+                content_hash: response.content_hash,
+                duration_ms: response.duration_ms,
+            })
+        }
+    }
+}
+
 #[tool_handler]
 impl ServerHandler for TaskSearchService {
     fn get_info(&self) -> ServerInfo {
         // Build instructions from capability metadata
-        let instructions = format!(
-            "A Markdown task extraction service. Available operations:\n\
-             - {}\n\
-             - {}\n\
-             - {}\n\
-             - {}\n\
-             - {}\n\
-             - {}\n\
-             - {}\n\
-             - {}",
-            notectl_tasks::capability::search_tasks::DESCRIPTION,
-            notectl_tags::extract_tags::DESCRIPTION,
-            notectl_tags::list_tags::DESCRIPTION,
-            notectl_tags::search_by_tags::DESCRIPTION,
-            notectl_files::list_files::DESCRIPTION,
-            notectl_files::read_files::DESCRIPTION,
-            notectl_daily_notes::get_daily_note::DESCRIPTION,
-            notectl_daily_notes::search_daily_notes::DESCRIPTION
-        );
+        #[cfg(not(feature = "search"))]
+        let instructions: String = [
+            "A Markdown task extraction service. Available operations:",
+            &format!("- {}", notectl_tasks::capability::search_tasks::DESCRIPTION),
+            &format!("- {}", notectl_tags::extract_tags::DESCRIPTION),
+            &format!("- {}", notectl_tags::list_tags::DESCRIPTION),
+            &format!("- {}", notectl_tags::search_by_tags::DESCRIPTION),
+            &format!("- {}", notectl_files::list_files::DESCRIPTION),
+            &format!("- {}", notectl_files::read_files::DESCRIPTION),
+            &format!("- {}", notectl_daily_notes::get_daily_note::DESCRIPTION),
+            &format!("- {}", notectl_daily_notes::search_daily_notes::DESCRIPTION),
+        ]
+        .join("\n");
+
+        #[cfg(feature = "search")]
+        let instructions: String = [
+            "A Markdown task extraction service. Available operations:",
+            &format!("- {}", notectl_tasks::capability::search_tasks::DESCRIPTION),
+            &format!("- {}", notectl_tags::extract_tags::DESCRIPTION),
+            &format!("- {}", notectl_tags::list_tags::DESCRIPTION),
+            &format!("- {}", notectl_tags::search_by_tags::DESCRIPTION),
+            &format!("- {}", notectl_files::list_files::DESCRIPTION),
+            &format!("- {}", notectl_files::read_files::DESCRIPTION),
+            &format!("- {}", notectl_daily_notes::get_daily_note::DESCRIPTION),
+            &format!("- {}", notectl_daily_notes::search_daily_notes::DESCRIPTION),
+            &format!("- {}", notectl_search::capability::index::DESCRIPTION),
+            &format!("- {}", notectl_search::capability::search::DESCRIPTION),
+        ]
+        .join("\n");
 
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(instructions)
