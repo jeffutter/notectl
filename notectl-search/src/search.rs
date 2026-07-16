@@ -251,27 +251,6 @@ pub async fn search(
         (mode, _) => mode,
     };
 
-    // Build BM25 indexer when the mode needs sparse scoring.
-    let sparse_indexer: Option<SparseIndexer> = if effective_mode.needs_sparse() {
-        let chunks_for_bm25: Vec<Chunk> = manifest
-            .chunks
-            .iter()
-            .zip(chunk_texts.iter())
-            .map(|(entry, text)| Chunk {
-                id: entry.id.clone(),
-                source_file: entry.source_file.clone(),
-                line_start: entry.line_start,
-                line_end: entry.line_end,
-                heading: entry.heading.clone(),
-                heading_path: entry.heading_path.clone(),
-                text: text.clone(),
-            })
-            .collect();
-        Some(SparseIndexer::index_chunks(&chunks_for_bm25))
-    } else {
-        None
-    };
-
     // Embed query + read vectors when the mode needs dense scoring.
     let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense() {
         #[cfg(feature = "embeddings")]
@@ -321,6 +300,28 @@ pub async fn search(
             SearchMode::Sparse
         }
         (mode, _) => mode,
+    };
+
+    // Build BM25 indexer based on final_mode (not effective_mode), so degradation
+    // from Dense → Sparse at query time still gets a working sparse indexer.
+    let sparse_indexer: Option<SparseIndexer> = if final_mode.needs_sparse() {
+        let chunks_for_bm25: Vec<Chunk> = manifest
+            .chunks
+            .iter()
+            .zip(chunk_texts.iter())
+            .map(|(entry, text)| Chunk {
+                id: entry.id.clone(),
+                source_file: entry.source_file.clone(),
+                line_start: entry.line_start,
+                line_end: entry.line_end,
+                heading: entry.heading.clone(),
+                heading_path: entry.heading_path.clone(),
+                text: text.clone(),
+            })
+            .collect();
+        Some(SparseIndexer::index_chunks(&chunks_for_bm25))
+    } else {
+        None
     };
 
     // Capture debug info before moving values into the match.
@@ -812,5 +813,87 @@ mod tests {
         // May or may not find "greeting" depending on tokenization, but should not error.
         // The important thing is it doesn't panic or return an error.
         let _ = results;
+    }
+
+    /// Test that Dense mode degrades to Sparse when embedding is unavailable at query time.
+    ///
+    /// Reproduces TASK-10: vectors.bin exists on disk (simulating a previous indexing run),
+    /// but the model cache is missing so Embedder::is_ready() returns false.
+    /// search() with SearchMode::Dense should degrade to sparse-only and return Ok,
+    /// NOT Err(SearchError::Other("Inconsistent search state...")).
+    #[cfg(feature = "embeddings")]
+    #[tokio::test]
+    async fn test_dense_mode_degrades_to_sparse_when_embedding_unavailable() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Create files with enough content to produce chunks.
+        std::fs::write(
+            base.join("rust.md"),
+            "# Rust Programming\n\nRust is a systems programming language focused on safety and performance. It provides fine-grained control over memory management while guaranteeing thread safety through its ownership and borrowing system. Rust has excellent tooling including cargo for package management and rustfmt for code formatting.",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("python.md"),
+            "# Python Guide\n\nPython is great for data science and machine learning. It has a rich ecosystem of libraries including numpy, pandas, and scikit-learn for statistical analysis. Python's dynamic typing and interpreted nature make it ideal for rapid prototyping and scripting tasks.",
+        )
+        .unwrap();
+
+        let config = test_config();
+
+        // Build the index first (without a real model, no embeddings produced).
+        crate::index::build_index(&base, &config).await.unwrap();
+
+        // Re-open the index to get a fresh handle after build_index wrote artifacts.
+        let index_dir = config.search.resolve_index_dir(&base);
+        let chunk_config = crate::storage::ChunkConfigSnapshot {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+        };
+        let index = crate::storage::SearchIndex::open_or_create(
+            &index_dir,
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            chunk_config.clone(),
+        )
+        .unwrap();
+
+        // Write fake vectors to simulate "vectors exist from a previous indexing run".
+        let chunk_count = index.manifest().chunks.len();
+        assert!(chunk_count > 0, "Expected chunks in manifest");
+        let dim = config.search.embedding_dim as usize;
+        let fake_vectors: Vec<Vec<f32>> = vec![vec![0.1f32; dim]; chunk_count];
+        index.write_vectors(&fake_vectors).unwrap();
+
+        // Now search with Dense mode. The model cache dir doesn't have a downloaded model,
+        // so Embedder::is_ready() == false, but has_vectors == true (fake vectors.bin).
+        // This should degrade to sparse and return Ok, NOT hard-error.
+        let options = SearchOptions {
+            mode: SearchMode::Dense,
+            max_results: 10,
+            ..Default::default()
+        };
+
+        let result = search(&base, &config, "rust programming", options).await;
+
+        // Assert: should be Ok with sparse-scored results, NOT Err.
+        match result {
+            Ok(results) => {
+                assert!(
+                    !results.is_empty(),
+                    "Should have sparse-scored results after degradation"
+                );
+                assert!(
+                    results[0].score > 0.0,
+                    "Top result should have positive score"
+                );
+            }
+            Err(e) => {
+                panic!("search() should degrade to sparse, not error. Got: {:?}", e);
+            }
+        }
     }
 }
