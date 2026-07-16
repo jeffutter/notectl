@@ -3,10 +3,10 @@ id: TASK-8
 title: >-
   Fix: search() reads vectors.bin from disk twice per query, including when
   unused
-status: To Do
+status: Needs Plan
 assignee: []
 created_date: '2026-07-16 07:22'
-updated_date: '2026-07-16 07:23'
+updated_date: '2026-07-16 16:31'
 labels:
   - review-followup
 milestone: Active

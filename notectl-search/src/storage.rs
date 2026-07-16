@@ -567,6 +567,26 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Remove the manifest file from disk.
+    pub fn remove_manifest(&self) -> Result<(), SearchError> {
+        let manifest_path = self.base_dir.join("manifest.json");
+        if manifest_path.exists() {
+            fs::remove_file(&manifest_path)
+                .map_err(|e| SearchError::Storage(format!("Failed to remove manifest: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Remove the vectors binary file from disk.
+    pub fn remove_vectors(&self) -> Result<(), SearchError> {
+        let vectors_path = self.base_dir.join("vectors.bin");
+        if vectors_path.exists() {
+            fs::remove_file(&vectors_path)
+                .map_err(|e| SearchError::Storage(format!("Failed to remove vectors: {e}")))?;
+        }
+        Ok(())
+    }
+
     /// Reset the index (delete all data files).
     pub fn reset(&self) -> Result<(), SearchError> {
         fs::remove_dir_all(&self.base_dir)
@@ -581,7 +601,8 @@ impl SearchIndex {
     /// backward compatibility and testing.
     ///
     /// SearchIndex owns persistence: open_or_create, save_manifest, write_chunks,
-    /// write_vectors, read_vectors, read_chunk, clear_chunks, remove_chunks, reset.
+    /// write_vectors, read_vectors, read_chunk, clear_chunks, remove_chunks,
+    /// remove_manifest, remove_vectors, reset.
     pub fn build_index(
         &mut self,
         base_path: &Path,
@@ -600,12 +621,7 @@ impl SearchIndex {
             StalenessDiff::FullRebuild(ref reason) => {
                 tracing::info!("Full rebuild required: {:?}", reason);
                 self.clear_chunks()?;
-                let vectors_path = self.base_dir.join("vectors.bin");
-                if vectors_path.exists() {
-                    fs::remove_file(&vectors_path).map_err(|e| {
-                        SearchError::Storage(format!("Failed to remove vectors: {e}"))
-                    })?;
-                }
+                self.remove_vectors()?;
             }
             StalenessDiff::Incremental { ref removed, .. } => {
                 // Drop chunks for removed files.
@@ -1704,5 +1720,173 @@ mod tests {
             compute_overall_content_hash(&hashes1),
             compute_overall_content_hash(&hashes2)
         );
+    }
+
+    // ---- remove_manifest / remove_vectors tests ----
+
+    #[test]
+    fn test_remove_manifest_removes_existing_file() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        // Create an index and save manifest.
+        let mut index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+        index.save_manifest().unwrap();
+
+        let manifest_path = tmp.path().join("manifest.json");
+        assert!(manifest_path.exists());
+
+        // Remove the manifest.
+        index.remove_manifest().unwrap();
+        assert!(!manifest_path.exists());
+    }
+
+    #[test]
+    fn test_remove_manifest_noop_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        // No manifest written yet — should be a no-op.
+        index.remove_manifest().unwrap();
+    }
+
+    #[test]
+    fn test_remove_vectors_removes_existing_file() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a vectors.bin file manually.
+        let vectors_path = tmp.path().join("vectors.bin");
+        fs::write(&vectors_path, [0u8; 32]).unwrap();
+        assert!(vectors_path.exists());
+
+        let index = SearchIndex {
+            base_dir: tmp.path().to_path_buf(),
+            manifest: SearchManifest::new_empty(
+                "test".to_string(),
+                384,
+                ChunkConfigSnapshot {
+                    max_tokens: 512,
+                    overlap_tokens: 64,
+                    min_chunk_size: 32,
+                    merge_threshold: 5,
+                },
+            ),
+        };
+
+        index.remove_vectors().unwrap();
+        assert!(!vectors_path.exists());
+    }
+
+    #[test]
+    fn test_remove_vectors_noop_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        // No vectors.bin exists — should be a no-op.
+        index.remove_vectors().unwrap();
+    }
+
+    // ---- Reindex cleanup preserves models/ ----
+
+    #[test]
+    fn test_reindex_cleanup_preserves_models_dir() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        // Create an index with all artifacts present.
+        let mut index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        // Write a manifest.
+        index.save_manifest().unwrap();
+
+        // Write chunks.
+        let chunks = vec![Chunk {
+            id: "test.md:0:intro".to_string(),
+            source_file: "test.md".to_string(),
+            line_start: 0,
+            line_end: 5,
+            heading: None,
+            heading_path: Vec::new(),
+            text: "Hello world.".to_string(),
+        }];
+        index.write_chunks(&chunks).unwrap();
+
+        // Write a vectors.bin file.
+        let vectors_path = tmp.path().join("vectors.bin");
+        fs::write(&vectors_path, [0u8; 32]).unwrap();
+
+        // Create a models/ directory with a placeholder file.
+        let models_dir = tmp.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        fs::write(models_dir.join("model.bin"), b"model data").unwrap();
+
+        // Verify everything exists before cleanup.
+        assert!(tmp.path().join("manifest.json").exists());
+        assert!(tmp.path().join("chunks").is_dir());
+        assert!(vectors_path.exists());
+        assert!(models_dir.is_dir());
+        assert!(models_dir.join("model.bin").exists());
+
+        // Run the cleanup sequence (same as --reindex path).
+        index.remove_manifest().unwrap();
+        index.clear_chunks().unwrap();
+        index.remove_vectors().unwrap();
+
+        // Verify manifest, chunks, and vectors are removed.
+        assert!(!tmp.path().join("manifest.json").exists());
+        assert!(!tmp.path().join("chunks").exists());
+        assert!(!vectors_path.exists());
+
+        // Verify models/ directory is preserved.
+        assert!(models_dir.is_dir());
+        assert!(models_dir.join("model.bin").exists());
     }
 }

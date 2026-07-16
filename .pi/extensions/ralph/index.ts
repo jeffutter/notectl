@@ -542,8 +542,11 @@ async function doReview(
     1. Split the current pane to open a new one for the review agent
        (e.g. \`herdr pane split <this-pane-id> --direction right --no-focus\`);
        find <this-pane-id> via \`herdr pane list\`.
-    2. Run the review in the new pane with auto-approved permissions. Quote the whole \`claude\` invocation as
-       a single argument to \`pane run\` so its double-quoted prompt survives intact — e.g.:
+    2. Change to pi's working directory in the new pane, then launch the review agent there with
+       auto-approved permissions, so it sees the same repo checkout pi is running in. Quote the whole
+       \`claude\` invocation as a single argument to \`pane run\` so its double-quoted prompt survives
+       intact — e.g.:
+       \`herdr pane run <new-pane-id> "cd '${cwd}'"\`
        \`herdr pane run <new-pane-id> 'claude --permission-mode auto "Run the review-pi-work skill for the last ${n} tickets"'\`
     3. Wait until that pane's agent finishes (poll \`herdr pane list\` for the pane's \`agent_status\` field
        becoming \`done\`; give it up to ${REVIEW_TIMEOUT_MIN} minutes).

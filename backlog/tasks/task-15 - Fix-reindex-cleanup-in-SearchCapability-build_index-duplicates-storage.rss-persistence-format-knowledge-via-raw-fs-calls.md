@@ -3,10 +3,11 @@ id: TASK-15
 title: >-
   Fix: --reindex cleanup in SearchCapability::build_index duplicates
   storage.rs's persistence-format knowledge via raw fs calls
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 14:39'
-updated_date: '2026-07-16 14:40'
+updated_date: '2026-07-16 16:37'
 labels:
   - review-followup
 milestone: Active

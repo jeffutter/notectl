@@ -157,26 +157,28 @@ impl SearchCapability {
         if reindex {
             let index_dir = config.search.resolve_index_dir(&self.base_path);
             if index_dir.exists() {
-                // Remove manifest.json
-                let manifest = index_dir.join("manifest.json");
-                if manifest.exists() {
-                    std::fs::remove_file(&manifest)
-                        .map_err(|e| internal_error(format!("Failed to remove manifest: {e}")))?;
-                }
+                let index = crate::storage::SearchIndex::open_or_create(
+                    &index_dir,
+                    config.search.model_id.clone(),
+                    config.search.embedding_dim,
+                    crate::storage::ChunkConfigSnapshot {
+                        max_tokens: config.search.max_seq_tokens,
+                        overlap_tokens: config.search.chunk_overlap_tokens,
+                        min_chunk_size: config.search.min_chunk_tokens,
+                        merge_threshold: config.search.merge_threshold,
+                    },
+                )
+                .map_err(|e| internal_error(format!("Failed to open index for cleanup: {e}")))?;
 
-                // Remove chunks/ directory
-                let chunks_dir = index_dir.join("chunks");
-                if chunks_dir.is_dir() {
-                    std::fs::remove_dir_all(&chunks_dir)
-                        .map_err(|e| internal_error(format!("Failed to remove chunks dir: {e}")))?;
-                }
-
-                // Remove vectors.bin
-                let vectors = index_dir.join("vectors.bin");
-                if vectors.exists() {
-                    std::fs::remove_file(&vectors)
-                        .map_err(|e| internal_error(format!("Failed to remove vectors: {e}")))?;
-                }
+                index
+                    .remove_manifest()
+                    .map_err(|e| internal_error(format!("Failed to remove manifest: {e}")))?;
+                index
+                    .clear_chunks()
+                    .map_err(|e| internal_error(format!("Failed to clear chunks: {e}")))?;
+                index
+                    .remove_vectors()
+                    .map_err(|e| internal_error(format!("Failed to remove vectors: {e}")))?;
             }
         }
 

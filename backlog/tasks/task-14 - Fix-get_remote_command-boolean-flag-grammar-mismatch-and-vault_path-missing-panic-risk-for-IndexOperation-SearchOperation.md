@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-16 14:39'
-updated_date: '2026-07-16 16:28'
+updated_date: '2026-07-16 16:29'
 labels:
   - review-followup
 milestone: Active
@@ -48,3 +48,21 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 8. Run: nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings
 9. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed both bugs in notectl-search/src/capability.rs:
+
+1. Boolean flag grammar mismatch: Changed IndexOperation::get_remote_command's reindex arg and SearchOperation::get_remote_command's no_reindex arg from ArgAction::SetTrue to value_parser(value_parser!(bool)), matching the derived get_command() grammar for Option<bool> fields. This aligns with the established convention in other capability files (outline, tags, files).
+
+2. vault_path panic risk: Rewrote both args_to_json methods to build JSON field-by-field from matches directly instead of routing through Request::from_arg_matches, which panics when vault_path is absent from get_remote_command's hand-built Command. This avoids adding a hidden optional vault_path positional (which clap rejects before required positionals in the search case).
+
+Added 6 tests in a new remote_command_tests module exercising both operations end-to-end. Added code comments noting this systemic risk exists across all capability files.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed two defects in notectl-search/src/capability.rs: (1) Changed get_remote_command boolean args from ArgAction::SetTrue to value_parser(bool) for grammar consistency with derived get_command(), and (2) rewrote both args_to_json methods to build JSON field-by-field instead of panicking on missing vault_path via from_arg_matches. Added 6 tests covering both operations. All quality gates pass (tests, clippy, fmt).
+<!-- SECTION:FINAL_SUMMARY:END -->
