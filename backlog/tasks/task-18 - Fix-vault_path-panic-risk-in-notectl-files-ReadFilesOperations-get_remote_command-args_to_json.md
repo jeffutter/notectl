@@ -185,3 +185,9 @@ mod remote_command_tests {
 ## Note on Scope
 This ticket fixes ONLY ReadFilesOperation in notectl-files. ListFilesOperation and RecentFilesOperation in the same file already use the safe `mut_arg` pattern and are unaffected. Other capability crates (outline, search) have their own tickets (TASK-17, TASK-14 respectively).
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed ReadFilesOperation::args_to_json panic in notectl-files/src/capability.rs by replacing ReadFilesRequest::from_arg_matches() with field-by-field serde_json::Map construction. The derived from_arg_matches impl panics when vault_path is absent from get_remote_command's hand-built Command. Added num_args(1..) to the remote command's file_paths arg for correct multi-value parsing. Added 2 regression tests in a new remote_command_tests module exercising the remote command path end-to-end without vault_path. All quality gates pass (tests, clippy, fmt, pre-push hooks).
+<!-- SECTION:FINAL_SUMMARY:END -->

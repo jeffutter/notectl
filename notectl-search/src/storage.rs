@@ -10,8 +10,12 @@ use tempfile::NamedTempFile;
 use crate::SearchError;
 use crate::chunker::Chunk;
 
-/// Current manifest format version. Bumped from 1 → 2 for the richer schema.
-pub const INDEX_FORMAT_VERSION: u32 = 2;
+/// Current manifest format version. Bumped from 2 → 3 because
+/// IndexBuilder::build now writes vault-relative Chunk.source_file/id
+/// values instead of absolute paths (TASK-6); old v2 manifests may
+/// contain absolute-path chunk entries for files that haven't changed
+/// since upgrade, so they must be treated as stale and rebuilt.
+pub const INDEX_FORMAT_VERSION: u32 = 3;
 
 /// Old v1 manifest version — handled gracefully on open (treated as empty).
 #[allow(dead_code)]
@@ -764,6 +768,72 @@ mod tests {
         .unwrap();
 
         assert!(index2.manifest().has_embeddings);
+    }
+
+    /// Regression test: v2 manifests with absolute-path chunk IDs should be
+    /// treated as stale after the TASK-6 relative-path fix (version bumped to 3).
+    #[test]
+    fn test_open_or_create_v2_manifest_with_absolute_paths_is_rebuilt() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        // Write a v2-format manifest with absolute-path chunk entries
+        // (the kind left behind by pre-TASK-6 binaries).
+        let old_manifest = serde_json::json!({
+            "version": 2,
+            "model_id": "google/embedding-gemma-300m",
+            "embedding_dim": 256,
+            "chunk_config": {
+                "max_tokens": 512,
+                "overlap_tokens": 64,
+                "min_chunk_size": 32,
+                "merge_threshold": 30
+            },
+            "files": [
+                {
+                    "path": "note.md",
+                    "content_hash": "abc123",
+                    "mtime": 1700000000,
+                    "chunk_ids": ["/home/alice/vault/note.md:0:intro"]
+                }
+            ],
+            "chunks": [
+                {
+                    "id": "/home/alice/vault/note.md:0:intro",
+                    "source_file": "/home/alice/vault/note.md",
+                    "line_start": 0,
+                    "line_end": 5,
+                    "heading": "Intro",
+                    "heading_path": ["Intro"]
+                }
+            ],
+            "content_hash": "deadbeef",
+            "last_indexed": null,
+            "has_embeddings": false
+        });
+        fs::write(
+            tmp.path().join("manifest.json"),
+            serde_json::to_string_pretty(&old_manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Open with current version — should treat v2 as stale and start fresh.
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(index.manifest().version, INDEX_FORMAT_VERSION);
+        assert!(index.manifest().chunks.is_empty());
+        assert!(index.manifest().files.is_empty());
     }
 
     #[test]

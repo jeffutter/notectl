@@ -3,12 +3,13 @@ id: TASK-11
 title: >-
   Fix: TASK-6's relative-path chunk IDs are not backfilled for already-indexed
   files, leaving mixed absolute/relative paths after upgrade
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 13:39'
-updated_date: '2026-07-16 13:39'
+updated_date: '2026-07-16 21:33'
 labels:
-  - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-6
@@ -41,38 +42,41 @@ The project already has a mechanism for exactly this class of problem: notectl-s
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a
-TypeScript/React web app (web/). ALL commands must run inside the Nix dev
-shell: either run 'direnv allow' once, or prefix every command with
-'nix develop -c'. Work from the repository root unless told otherwise. Do not
-change pinned dependency versions.
+Scope: Only notectl-search/src/storage.rs. One constant bump + one new test.
 
-(This repo is notectl; the crate under test is notectl-search. The same Nix-shell rule applies.)
+**Step 1: Bump INDEX_FORMAT_VERSION (line 13)**
+Change `pub const INDEX_FORMAT_VERSION: u32 = 2;` to `= 3`. Update doc comment:
+```rust
+/// Current manifest format version. Bumped from 2 -> 3 because
+/// IndexBuilder::build now writes vault-relative Chunk.source_file/id
+/// values instead of absolute paths (TASK-6); old v2 manifests may
+/// contain absolute-path chunk entries for files that haven't changed
+/// since upgrade, so they must be treated as stale and rebuilt.
+pub const INDEX_FORMAT_VERSION: u32 = 3;
+```
 
-**Scope**: Only notectl-search/src/storage.rs.
+**Step 2: Confirm version-mismatch path needs no changes**
+Lines 359-370 already handle `parsed.version != INDEX_FORMAT_VERSION` by returning an empty manifest. No logic changes needed — bumping the constant alone routes old v2 manifests through this path automatically.
 
-1. Open notectl-search/src/storage.rs and locate the INDEX_FORMAT_VERSION constant (~line 13-14):
-   ```rust
-   /// Current manifest format version. Bumped from 1 -> 2 for the richer schema.
-   pub const INDEX_FORMAT_VERSION: u32 = 2;
-   ```
-   Bump it to 3 and update the doc comment to explain why:
-   ```rust
-   /// Current manifest format version. Bumped from 2 -> 3 because
-   /// IndexBuilder::build now writes vault-relative Chunk.source_file/id
-   /// values instead of absolute paths (see TASK-6); old v2 manifests may
-   /// contain absolute-path chunk entries for files that haven't changed
-   /// since the upgrade, so they must be treated as stale and rebuilt.
-   pub const INDEX_FORMAT_VERSION: u32 = 3;
-   ```
+**Step 3: Add regression test alongside test_open_or_create_version_mismatch (~line 770)**
+Name: `test_open_or_create_v2_manifest_with_absolute_paths_is_rebuilt`
+- Write a v2-format manifest JSON with `"version": 2` (now stale) and at least one chunk entry with an absolute-looking source_file (e.g. `"/home/alice/vault/note.md"`)
+- Call `SearchIndex::open_or_create`
+- Assert: `manifest.chunks.is_empty()` AND `manifest.version == INDEX_FORMAT_VERSION` (new value 3)
+- Follow the exact pattern of `test_open_or_create_version_mismatch` (same TempDir setup, same open_or_create call signature)
 
-2. Read the version-mismatch handling around storage.rs:376-389 (inside SearchIndex::open_or_create or wherever the manifest is parsed) to confirm the existing behavior: on version != INDEX_FORMAT_VERSION, the manifest is treated as empty (forcing IndexBuilder::build to do a full walk + rechunk of every file, since compute_staleness_diff will see no prior file_hashes). No logic changes are needed here — bumping the constant alone is sufficient to route old manifests through this existing path. Confirm this by reading, do not change this function.
+**Step 4: Verify no hardcoded literals**
+Grep confirmed: no hardcoded `2` used as manifest version anywhere outside storage.rs. All tests reference `INDEX_FORMAT_VERSION` constant, so they self-adjust.
 
-3. Find test_open_or_create_version_mismatch (~storage.rs:913-947) and add a new test alongside it, e.g. test_open_or_create_v2_manifest_with_absolute_paths_is_rebuilt: construct a manifest JSON literal with "version": 2 (the OLD value, now stale) and at least one chunk entry whose source_file is an absolute-looking path (e.g. "/home/alice/vault/note.md"), write it to the expected manifest.json location in a TempDir index dir, call SearchIndex::open_or_create with the same signature used elsewhere in this test module, and assert: (a) the returned manifest.chunks is empty, (b) manifest.version == INDEX_FORMAT_VERSION (the new value), matching the existing test_open_or_create_version_mismatch pattern but specifically naming the TASK-6 migration scenario in the test name/doc comment.
+**Step 5: Quality gates**
+- `nix develop -c cargo test -p notectl-search --all-features`
+- `nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings`
 
-4. Grep notectl-search/src for any other place that hardcodes the literal 2 where it means 'current manifest version' (as opposed to unrelated uses of the number 2) — there should be none outside storage.rs; all should reference INDEX_FORMAT_VERSION. Fix any that don't.
-
-5. Run: nix develop -c cargo test -p notectl-search --all-features and nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings. Fix any failures — existing tests asserting manifest.version == INDEX_FORMAT_VERSION should keep passing unmodified since they reference the constant.
-
-6. In the task's Implementation Notes, state the version bump (2 -> 3) and confirm no other code needed to change because open_or_create's existing version-mismatch path already does the right thing.
+**Why this works**: When a user upgrades to the binary containing both TASK-6 (rel_path fix) and this version bump, their on-disk v2 manifest has `version: 2`. On next `open_or_create`, the version check fails, the manifest is treated as empty, and `IndexBuilder::build` does a full walk/rechunk of every file using the corrected rel_path path from TASK-6. After rebuild completes, the saved manifest has `version: 3` with all relative-path chunk IDs.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bumped INDEX_FORMAT_VERSION from 2 to 3 in notectl-search/src/storage.rs, forcing any on-disk v2 manifest (with potentially absolute-path chunk IDs) to be treated as empty on open, triggering a full rebuild with correct relative-path chunk IDs. Added regression test test_open_or_create_v2_manifest_with_absolute_paths_is_rebuilt that writes a v2 manifest with absolute paths and verifies it is discarded for a fresh v3 manifest. All 138 tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
