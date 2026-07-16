@@ -4,7 +4,7 @@ title: 'Index pipeline: walk -> diff -> chunk -> embed -> persist'
 status: To Do
 assignee: []
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-14 11:12'
+updated_date: '2026-07-15 23:56'
 labels: []
 dependencies:
   - TASK-1.4
@@ -13,6 +13,7 @@ dependencies:
   - TASK-1.18
   - TASK-1.19
   - TASK-1.20
+  - TASK-4
 parent_task_id: TASK-1
 priority: high
 type: task
