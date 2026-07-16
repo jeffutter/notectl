@@ -10,29 +10,28 @@ pub fn count_tokens(text: &str) -> usize {
     text.split_whitespace().count()
 }
 
-/// Split text into chunks respecting a maximum token budget.
-/// Splits at word boundaries and produces overlapping windows when the text exceeds the budget.
+/// Split text into overlapping chunks, returning each chunk's text along with its
+/// start and end word indices (relative to the input's word array).
 ///
-/// # Arguments
-/// * `text` - The text to split
-/// * `max_tokens` - Maximum tokens per chunk
-/// * `overlap_tokens` - Number of tokens to overlap between consecutive chunks (for context)
-///
-/// # Returns
-/// A vector of text chunks, each within the token budget.
-pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<String> {
+/// Returns `Vec<(chunk_text, start_word_idx, end_word_idx_exclusive)>` where
+/// `start..end` covers exactly the words that produced the chunk.
+/// Unlike the plain variant, the indices reflect the actual windowing logic,
+/// so callers can map each chunk back to precise positions in the source.
+pub fn tokenize_with_overlap_indexed(
+    text: &str,
+    max_tokens: usize,
+    overlap_tokens: usize,
+) -> Vec<(String, usize, usize)> {
     if max_tokens == 0 {
-        return vec![String::new()];
+        return vec![(String::new(), 0, 0)];
     }
 
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.is_empty() {
-        return vec![String::new()];
+        return vec![(String::new(), 0, 0)];
     }
 
     // Clamp overlap so that each chunk advances by at least one word.
-    // Without this guard, `end - overlap_tokens` underflows and panics in debug builds
-    // when a caller configures overlap_tokens >= max_tokens (e.g. via misconfigured SearchConfig).
     let overlap = overlap_tokens.min(max_tokens.saturating_sub(1));
 
     let mut chunks = Vec::new();
@@ -41,7 +40,7 @@ pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usiz
     while start < words.len() {
         let end = std::cmp::min(start + max_tokens, words.len());
         let chunk: String = words[start..end].join(" ");
-        chunks.push(chunk);
+        chunks.push((chunk, start, end));
 
         // Move forward, but leave overlap for context
         let advance = if end >= words.len() {
@@ -54,6 +53,23 @@ pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usiz
     }
 
     chunks
+}
+
+/// Split text into chunks respecting a maximum token budget.
+/// Splits at word boundaries and produces overlapping windows when the text exceeds the budget.
+///
+/// # Arguments
+/// * `text` - The text to split
+/// * `max_tokens` - Maximum tokens per chunk
+/// * `overlap_tokens` - Number of tokens to overlap between consecutive chunks (for context)
+///
+/// # Returns
+/// A vector of text chunks, each within the token budget.
+pub fn tokenize_with_overlap(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<String> {
+    tokenize_with_overlap_indexed(text, max_tokens, overlap_tokens)
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect()
 }
 
 /// Split text into fixed-size word chunks without overlap.
@@ -170,5 +186,89 @@ mod tests {
         assert_eq!(chunks[0], "a");
         assert_eq!(chunks[1], "b");
         assert_eq!(chunks[2], "c");
+    }
+
+    // --- Indexed variant tests ---
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_basic() {
+        let text = "a b c d e f g h i j";
+        let chunks = tokenize_with_overlap_indexed(text, 4, 2);
+        assert_eq!(chunks.len(), 4);
+        // Chunk 0: words[0..4] = a b c d
+        assert_eq!(chunks[0], ("a b c d".to_string(), 0, 4));
+        // Chunk 1: words[2..6] = c d e f (starts at 4-2=2)
+        assert_eq!(chunks[1], ("c d e f".to_string(), 2, 6));
+        // Chunk 2: words[4..8] = e f g h (starts at 6-2=4)
+        assert_eq!(chunks[2], ("e f g h".to_string(), 4, 8));
+        // Chunk 3: words[6..10] = g h i j (starts at 8-2=6)
+        assert_eq!(chunks[3], ("g h i j".to_string(), 6, 10));
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_no_overlap() {
+        let text = "a b c d e f";
+        let chunks = tokenize_with_overlap_indexed(text, 3, 0);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], ("a b c".to_string(), 0, 3));
+        assert_eq!(chunks[1], ("d e f".to_string(), 3, 6));
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_remainder() {
+        let text = "a b c d e f";
+        let chunks = tokenize_with_overlap_indexed(text, 3, 1);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], ("a b c".to_string(), 0, 3));
+        assert_eq!(chunks[1], ("c d e".to_string(), 2, 5));
+        assert_eq!(chunks[2], ("e f".to_string(), 4, 6));
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_empty() {
+        let chunks = tokenize_with_overlap_indexed("", 4, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (String::new(), 0, 0));
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_zero_max() {
+        let chunks = tokenize_with_overlap_indexed("hello", 0, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (String::new(), 0, 0));
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_consistency() {
+        // The indexed and non-indexed variants must produce identical text output.
+        let cases = [
+            ("a b c d e f g h i j", 4, 2),
+            ("a b c d e f", 3, 1),
+            ("hello world", 10, 0),
+            ("", 4, 0),
+            ("single", 4, 0),
+            ("a b c", 1, 5),
+        ];
+        for (text, max, overlap) in cases {
+            let plain = tokenize_with_overlap(text, max, overlap);
+            let indexed = tokenize_with_overlap_indexed(text, max, overlap);
+            assert_eq!(
+                plain.len(),
+                indexed.len(),
+                "Length mismatch for ({}, {}, {}): plain={}, indexed={}",
+                text,
+                max,
+                overlap,
+                plain.len(),
+                indexed.len()
+            );
+            for (i, (p, (_, _, _))) in plain.iter().zip(indexed.iter()).enumerate() {
+                assert_eq!(
+                    p, &indexed[i].0,
+                    "Text mismatch at index {} for ({}, {}, {})",
+                    i, text, max, overlap
+                );
+            }
+        }
     }
 }
