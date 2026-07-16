@@ -433,13 +433,16 @@ impl notectl_core::operation::Operation for ReadFilesOperation {
     }
 
     fn get_remote_command(&self) -> clap::Command {
-        // Rebuild without the vault_path positional; shift file_paths to index 1
+        // Rebuild without the vault_path positional (CLI only).
+        // Uses num_args + value_delimiter so that "a.md,b.md" is treated as multiple
+        // values from a single argument (matching the derived command's behavior).
         clap::Command::new("read-files")
             .about("Read one or more markdown files")
             .arg(
                 clap::Arg::new("file_paths")
                     .index(1)
                     .required(true)
+                    .num_args(1..)
                     .value_delimiter(',')
                     .help("Comma-separated file paths relative to vault root"),
             )
@@ -492,9 +495,22 @@ impl notectl_core::operation::Operation for ReadFilesOperation {
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = ReadFilesRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        // Build JSON field-by-field from matches rather than routing through
+        // ReadFilesRequest::from_arg_matches(). The latter panics when vault_path
+        // is absent from get_remote_command's hand-built Command ("Mismatch between
+        // definition and access of vault_path"). This matches the pattern established
+        // in TASK-14 (notectl-search) and TASK-17 (notectl-outline).
+        let mut obj = serde_json::Map::new();
+        if let Some(vals) = matches.get_many::<String>("file_paths") {
+            obj.insert(
+                "file_paths".into(),
+                serde_json::json!(vals.collect::<Vec<_>>()),
+            );
+        }
+        if let Some(v) = matches.get_one::<bool>("continue_on_error") {
+            obj.insert("continue_on_error".into(), serde_json::Value::Bool(*v));
+        }
+        Ok(serde_json::Value::Object(obj))
     }
 }
 
@@ -894,5 +910,48 @@ impl notectl_core::operation::Operation for RecentFilesOperation {
         let mut request = RecentFilesRequest::from_arg_matches(matches)?;
         request.path = None;
         Ok(serde_json::to_value(request)?)
+    }
+}
+
+#[cfg(test)]
+mod remote_command_tests {
+    use super::*;
+    use notectl_core::operation::Operation;
+
+    fn dummy_capability() -> Arc<FileCapability> {
+        Arc::new(FileCapability::new(
+            PathBuf::from("/tmp"),
+            Arc::new(Config::default()),
+        ))
+    }
+
+    #[test]
+    fn read_files_remote_command_args_to_json_no_vault_path_panic() {
+        let op = ReadFilesOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+        let matches = cmd
+            .try_get_matches_from(["read-files", "a.md,b.md", "--continue-on-error", "true"])
+            .expect("should parse remote command args");
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic without vault_path");
+        // Assert file_paths and continue_on_error are present
+        assert!(json.get("file_paths").is_some());
+        assert!(json.get("continue_on_error").is_some());
+        // vault_path should NOT be in the JSON
+        assert!(json.get("vault_path").is_none());
+    }
+
+    #[test]
+    fn read_files_remote_command_minimal_args() {
+        let op = ReadFilesOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+        let matches = cmd
+            .try_get_matches_from(["read-files", "single.md"])
+            .expect("should parse minimal args");
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+        assert!(json.get("file_paths").is_some());
     }
 }
