@@ -274,7 +274,7 @@ pub fn compute_overall_content_hash(file_hashes: &BTreeMap<String, String>) -> S
 }
 
 /// Compute blake3 hash of a string, returning hex.
-fn blake3_hash_str(s: &str) -> String {
+pub(crate) fn blake3_hash_str(s: &str) -> String {
     let mut hasher = Blake3Hasher::new();
     hasher.update(s.as_bytes());
     hasher.finalize().to_hex().to_string()
@@ -285,7 +285,7 @@ fn blake3_hash_str(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Write a string to disk atomically using a temp file + rename.
-fn atomic_write_json(path: &Path, data: &str) -> Result<(), SearchError> {
+pub(crate) fn atomic_write_json(path: &Path, data: &str) -> Result<(), SearchError> {
     let dir = path
         .parent()
         .ok_or_else(|| SearchError::Storage(format!("Cannot determine parent dir for {path:?}")))?;
@@ -305,8 +305,8 @@ fn atomic_write_json(path: &Path, data: &str) -> Result<(), SearchError> {
 }
 
 /// Write binary data atomically using a temp file + rename.
-#[allow(dead_code)]
-fn atomic_write_binary(path: &Path, data: &[u8]) -> Result<(), SearchError> {
+#[cfg(feature = "embeddings")]
+pub(crate) fn atomic_write_binary(path: &Path, data: &[u8]) -> Result<(), SearchError> {
     let dir = path
         .parent()
         .ok_or_else(|| SearchError::Storage(format!("Cannot determine parent dir for {path:?}")))?;
@@ -576,12 +576,12 @@ impl SearchIndex {
 
     /// Build or update the search index for all markdown files in the base path.
     ///
-    /// This is the main orchestration method that:
-    /// 1. Computes staleness diff
-    /// 2. On full rebuild: clears everything and rebuilds from scratch
-    /// 3. On incremental: removes chunks for deleted files, re-chunks modified/added files
-    /// 4. Updates manifest with new FileInfo entries, chunk list, and overall hash
-    /// 5. Persists atomically
+    /// **NOTE**: For new code, prefer [`crate::index::IndexBuilder`] which provides
+    /// an async API with embedding support. This synchronous method is kept for
+    /// backward compatibility and testing.
+    ///
+    /// SearchIndex owns persistence: open_or_create, save_manifest, write_chunks,
+    /// write_vectors, read_vectors, read_chunk, clear_chunks, remove_chunks, reset.
     pub fn build_index(
         &mut self,
         base_path: &Path,
@@ -600,7 +600,6 @@ impl SearchIndex {
             StalenessDiff::FullRebuild(ref reason) => {
                 tracing::info!("Full rebuild required: {:?}", reason);
                 self.clear_chunks()?;
-                // Remove vectors file if it exists.
                 let vectors_path = self.base_dir.join("vectors.bin");
                 if vectors_path.exists() {
                     fs::remove_file(&vectors_path).map_err(|e| {
@@ -608,17 +607,7 @@ impl SearchIndex {
                     })?;
                 }
             }
-            StalenessDiff::Incremental {
-                ref added,
-                ref modified,
-                ref removed,
-            } => {
-                tracing::info!(
-                    "Incremental update: {} added, {} modified, {} removed",
-                    added.len(),
-                    modified.len(),
-                    removed.len()
-                );
+            StalenessDiff::Incremental { ref removed, .. } => {
                 // Drop chunks for removed files.
                 if !removed.is_empty() {
                     self.remove_chunks(removed)?;
@@ -657,24 +646,25 @@ impl SearchIndex {
                 .unwrap_or_default()
                 .as_secs();
 
-            // Chunk the file.
             let chunks = chunker.chunk_file(abs_path, &content);
             let chunk_ids: Vec<String> = chunks.iter().map(|c| c.id.clone()).collect();
 
-            all_chunks.extend(chunks.clone());
+            all_chunks.extend(chunks);
 
             file_info_map.insert(
                 rel_path.clone(),
                 FileInfo {
                     path: rel_path,
-                    content_hash: content_hash.clone(),
+                    content_hash,
                     mtime: mtime_secs,
                     chunk_ids,
                 },
             );
         }
 
-        // Build chunk entries for the manifest.
+        // Sort chunks by source_file for deterministic ordering.
+        all_chunks.sort_by(|a, b| a.source_file.cmp(&b.source_file));
+
         let chunk_entries: Vec<ChunkEntry> = all_chunks
             .iter()
             .map(|c| ChunkEntry {
@@ -687,13 +677,10 @@ impl SearchIndex {
             })
             .collect();
 
-        // Build file info list (sorted by path for deterministic output).
         let files: Vec<FileInfo> = file_info_map.values().cloned().collect();
-
-        // Compute overall content hash.
         let overall_hash = compute_overall_content_hash(&file_hashes);
 
-        // Update manifest with new params (may have changed, triggering full rebuild).
+        // Update manifest.
         self.manifest.model_id = config.search.model_id.clone();
         self.manifest.embedding_dim = config.search.embedding_dim;
         self.manifest.chunk_config = ChunkConfigSnapshot {
@@ -720,7 +707,7 @@ impl SearchIndex {
 }
 
 /// Return the current time as an RFC 3339 string (no external chrono dependency needed).
-fn chrono_now_rfc3339() -> String {
+pub(crate) fn chrono_now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)

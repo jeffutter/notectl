@@ -1,6 +1,7 @@
 pub mod bm25;
 pub mod chunker;
 pub mod fusion;
+pub mod index;
 pub mod sparse;
 pub mod storage;
 pub mod tokenize;
@@ -118,7 +119,25 @@ impl SearchCapability {
 
     /// Build or update the search index for all markdown files in the base path.
     pub async fn index(&self) -> SearchResult<()> {
-        todo!("implement full reindex")
+        use notectl_core::config::Config;
+
+        // Build a minimal Config from our SearchConfig for the index pipeline.
+        let config = Config {
+            exclude_paths: Vec::new(),
+            daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
+            search: self.config.clone(),
+        };
+
+        let summary = crate::index::build_index(&self.base_path, &config).await?;
+
+        tracing::info!(
+            "Index complete: {} files, {} chunks, embeddings={}",
+            summary.files_indexed,
+            summary.chunks_produced,
+            summary.has_embeddings
+        );
+
+        Ok(())
     }
 }
 
