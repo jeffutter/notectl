@@ -230,18 +230,22 @@ pub async fn search(
         })
         .collect();
 
-    // Read dense vectors (empty if vectors.bin missing).
-    let has_vectors = {
+    // Read dense vectors ONCE if the requested mode could use them.
+    // For Sparse mode, skip entirely — has_vectors cannot affect the outcome.
+    let raw_vectors: Vec<Vec<f32>> = if options.mode.needs_dense() {
         #[cfg(feature = "embeddings")]
         {
-            let vecs = index.read_vectors().unwrap_or_default();
-            !vecs.is_empty() && vecs.len() == manifest.chunks.len()
+            index.read_vectors().unwrap_or_default()
         }
         #[cfg(not(feature = "embeddings"))]
         {
-            false
+            Vec::new()
         }
+    } else {
+        Vec::new()
     };
+
+    let has_vectors = !raw_vectors.is_empty() && raw_vectors.len() == manifest.chunks.len();
 
     // -----------------------------------------------------------------------
     // Steps 2-4: Load artifacts, embed query, score & rank
@@ -286,10 +290,7 @@ pub async fn search(
                     .embed_single(query, None, TaskType::RetrievalQuery)
                     .await
                 {
-                    Ok(qvec) => {
-                        let vectors = index.read_vectors().unwrap_or_default();
-                        Some((qvec, vectors))
-                    }
+                    Ok(qvec) => Some((qvec, raw_vectors.clone())),
                     Err(e) => {
                         tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
                         None

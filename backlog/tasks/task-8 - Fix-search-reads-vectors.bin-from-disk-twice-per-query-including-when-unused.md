@@ -3,12 +3,14 @@ id: TASK-8
 title: >-
   Fix: search() reads vectors.bin from disk twice per query, including when
   unused
-status: Needs Plan
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 07:22'
-updated_date: '2026-07-16 16:31'
+updated_date: '2026-07-16 17:12'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-1.9
@@ -30,40 +32,104 @@ For a Dense or Hybrid query this means `vectors.bin` — which can be large for 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 notectl-search/src/search.rs::search() calls index.read_vectors() at most once per invocation
-- [ ] #2 When options.mode == SearchMode::Sparse, index.read_vectors() is not called at all (has_vectors/auto-degradation logic is restructured so it only reads vectors when the requested mode could actually use them, i.e. Dense or Hybrid)
-- [ ] #3 The single read result is reused for both the has_vectors/auto-degradation check and the actual cosine_top_k scoring, rather than being read once and discarded then read again
-- [ ] #4 Existing behavior is unchanged for all modes: auto-degradation from Dense/Hybrid to Sparse when vectors are missing or empty still works, and all existing tests in notectl-search/src/search.rs pass without modification to their assertions
-- [ ] #5 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #6 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 notectl-search/src/search.rs::search() calls index.read_vectors() at most once per invocation
+- [x] #2 When options.mode == SearchMode::Sparse, index.read_vectors() is not called at all (has_vectors/auto-degradation logic is restructured so it only reads vectors when the requested mode could actually use them, i.e. Dense or Hybrid)
+- [x] #3 The single read result is reused for both the has_vectors/auto-degradation check and the actual cosine_top_k scoring, rather than being read once and discarded then read again
+- [x] #4 Existing behavior is unchanged for all modes: auto-degradation from Dense/Hybrid to Sparse when vectors are missing or empty still works, and all existing tests in notectl-search/src/search.rs pass without modification to their assertions
+- [x] #5 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #6 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a
-TypeScript/React web app (web/). ALL commands must run inside the Nix dev
-shell: either run 'direnv allow' once, or prefix every command with
-'nix develop -c'. Work from the repository root unless told otherwise. Do not
-change pinned dependency versions.
+Single-file refactoring in notectl-search/src/search.rs: hoist the vector read to be called at most once per search() invocation, guarded by options.mode.needs_dense().
 
-(This repo is notectl; the crate under test is notectl-search. The same Nix-shell rule applies.)
+## Implementation Plan
 
-1. Open notectl-search/src/search.rs and read the whole `search()` function (~line 112-382) to see the full current structure of `has_vectors` (~186-196), `effective_mode` (~199-213), and `dense_vectors` (~290-301).
+### Step 1: Hoist vector read behind needs_dense() guard
 
-2. Restructure so `index.read_vectors()` (feature-gated behind `#[cfg(feature = "embeddings")]`) is called at most once. Suggested approach:
-   - Immediately after Step 2's manifest-empty check, if `options.mode.needs_dense()` (add/reuse a `needs_dense()` check on `options.mode`, NOT a mode derived later), read vectors once into a local `let raw_vectors: Vec<Vec<f32>> = ...` (feature-gated; `Vec::new()` when the `embeddings` feature is off or mode doesn't need dense).
-   - Compute `has_vectors` from `raw_vectors` directly (`!raw_vectors.is_empty() && raw_vectors.len() == manifest.chunks.len()`) instead of calling `read_vectors()` again.
-   - When `options.mode == SearchMode::Sparse`, skip the read entirely (`raw_vectors` stays empty, `has_vectors` stays `false`, matching today's behavior for that path since `effective_mode` never changes for `Sparse` regardless of `has_vectors`).
-   - Downstream, in the "Score & rank" step, reuse `raw_vectors` (renamed appropriately, e.g. as part of the `ScoreInputs` restructuring from the companion ticket if it has already landed — if not, just reuse the same `Vec<Vec<f32>>` local variable) instead of calling `index.read_vectors()` a second time.
+Replace the unconditional `has_vectors` block (~lines 186-196) with an early conditional read:
 
-3. Preserve existing auto-degradation behavior exactly: if `options.mode` is `Dense`/`Hybrid` but `raw_vectors` ends up empty or mismatched in length, the existing warn-and-degrade-to-Sparse logic (currently at ~lines 199-213) must still trigger.
+```rust
+// Read dense vectors ONCE if the requested mode could use them.
+// For Sparse mode, skip entirely — has_vectors cannot affect the outcome.
+let raw_vectors: Vec<Vec<f32>> = if options.mode.needs_dense() {
+    #[cfg(feature = "embeddings")]
+    {
+        index.read_vectors().unwrap_or_default()
+    }
+    #[cfg(not(feature = "embeddings"))]
+    {
+        Vec::new()
+    }
+} else {
+    Vec::new()
+};
 
-4. Do not change the public `SearchOptions`/`SearchMode` API — this is an internal restructuring only.
+let has_vectors = !raw_vectors.is_empty() && raw_vectors.len() == manifest.chunks.len();
+```
 
-5. Run `nix develop -c cargo test -p notectl-search --all-features` and confirm every existing test still passes without modifying their assertions (in particular `test_search_sparse_only`, `test_auto_degrade_to_sparse_without_embeddings`, and any hybrid/dense-mode tests).
+This eliminates the wasteful read on the Sparse path (acceptance criterion #2) and ensures at most one read total.
 
-6. As a sanity check that the read count actually dropped, temporarily add a `tracing::debug!` (or use `eprintln!` locally, not committed) inside `SearchIndex::read_vectors` in storage.rs to count invocations during a single `search()` test call, confirm it's now 1 instead of 2 for a Dense/Hybrid-mode search and 0 for a Sparse-mode search, then remove the temporary instrumentation before committing.
+### Step 2: Reuse raw_vectors in dense_data construction
 
-7. Run `nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings` and fix any warnings.
+In the `dense_data` block (~line 240+), replace the second `index.read_vectors()` call with the already-loaded `raw_vectors`:
+
+In the `Ok(qvec)` arm inside `dense_data`, change:
+```rust
+let vectors = index.read_vectors().unwrap_or_default();
+Some((qvec, vectors))
+```
+to:
+```rust
+Some((qvec, raw_vectors))
+```
+
+Note: `raw_vectors` is moved here. If the embedding fails (Err arm) or model is not ready, `raw_vectors` is dropped without being used — that's fine, we only paid the disk read cost once.
+
+However, since `raw_vectors` is consumed in the `Ok` arm but might not exist in other branches, we need to handle ownership. Two options:
+
+**Option A (preferred — clone only on success):** Keep `raw_vectors` as-is and clone it in the Ok arm:
+```rust
+Ok(qvec) => Some((qvec, raw_vectors.clone())),
+```
+This means we clone the vectors Vec only when embedding succeeds. The original is dropped in failure paths. Cost of one Vec clone (pointer + length + capacity, plus the inner vecs which are shared via clone) is negligible compared to the fs::read we're saving.
+
+**Option B (reference-based):** Store `raw_vectors` in a local that outlives the dense_data block and take references. More complex due to lifetime constraints across the async .await point.
+
+Go with Option A for simplicity and clarity.
+
+### Step 3: Verify auto-degradation chain is preserved
+
+The three degradation points must fire identically:
+
+1. **Vectors missing on disk → Dense/Hybrid degrades to Sparse**: `has_vectors` is computed from `raw_vectors` (same boolean check). The `effective_mode` match (~lines 199-213) uses `has_vectors` unchanged. Warn message identical.
+
+2. **Model not downloaded/embedding fails → dense_data = None**: Unchanged. The embedder creation and embed_single call are untouched. When embedding fails, `dense_data = None`, triggering the second degradation in `final_mode`.
+
+3. **Both dense paths fail → final_mode degrades**: Unchanged.
+
+### Step 4: Run tests and clippy
+
+```bash
+nix develop -c cargo test -p notectl-search --all-features
+nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings
+```
+
+All 121+ existing tests should pass without modification. Key tests to watch:
+- `test_search_sparse_only` — Sparse mode should work (no vector read at all now)
+- `test_auto_degrade_to_sparse_without_embeddings` — auto-degradation still works
+- `test_dense_mode_degrades_to_sparse_when_embedding_unavailable` — two-level degradation chain
+- `test_search_mode_used_reflects_degradation` — mode_used field correct after degradation
+
+### Step 5: Sanity-check read count (temporary instrumentation)
+
+Temporarily add `tracing::debug!("read_vectors called");` at the top of `SearchIndex::read_vectors()` in storage.rs. Run a Dense-mode test and confirm exactly 1 debug line (was 2 before). Run a Sparse-mode test and confirm 0 lines (was 1 before). Remove the instrumentation before committing.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Single-file refactoring in notectl-search/src/search.rs: hoisted index.read_vectors() to at most one call per search() invocation, guarded by options.mode.needs_dense(). Sparse mode now skips vector read entirely (was 1 read). Dense/Hybrid mode reads vectors once instead of twice. Verified with temporary instrumentation: 0 reads for Sparse, 1 read for Dense. All 137 tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
