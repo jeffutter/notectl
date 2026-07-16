@@ -1,10 +1,11 @@
 ---
 id: TASK-1.9
 title: 'Search pipeline: freshen -> embed query -> hybrid rank'
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-16 06:40'
+updated_date: '2026-07-16 06:55'
 labels:
   - planned
 dependencies:

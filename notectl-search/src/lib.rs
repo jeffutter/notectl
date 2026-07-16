@@ -2,6 +2,7 @@ pub mod bm25;
 pub mod chunker;
 pub mod fusion;
 pub mod index;
+pub mod search;
 pub mod sparse;
 pub mod storage;
 pub mod tokenize;
@@ -10,6 +11,7 @@ pub mod tokenize;
 pub mod embeddings;
 
 pub use chunker::Chunker;
+pub use search::{SearchMode, SearchOptions, search};
 pub use storage::{SearchIndex, SearchManifest};
 
 #[cfg(feature = "embeddings")]
@@ -104,17 +106,19 @@ impl SearchCapability {
 
     /// Execute a search query. Returns dense results if the embeddings feature is enabled,
     /// otherwise falls back to BM25-only sparse search.
-    pub async fn search(&self, _query: &str) -> SearchResult<Vec<RankedChunk>> {
-        #[cfg(feature = "embeddings")]
-        {
-            // Dense + sparse hybrid search via RRF
-            todo!("implement hybrid search with embeddings")
-        }
+    pub async fn search(&self, query: &str) -> SearchResult<Vec<RankedChunk>> {
+        use notectl_core::config::Config;
 
-        #[cfg(not(feature = "embeddings"))]
-        {
-            Err(SearchError::EmbeddingsNotEnabled)
-        }
+        // Build a minimal Config from our SearchConfig for the search pipeline.
+        let config = Config {
+            exclude_paths: Vec::new(),
+            daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
+            search: self.config.clone(),
+        };
+
+        let options = search::SearchOptions::from_config(&self.config);
+
+        search::search(&self.base_path, &config, query, options).await
     }
 
     /// Build or update the search index for all markdown files in the base path.
@@ -175,13 +179,35 @@ mod tests {
 
     #[cfg(not(feature = "embeddings"))]
     #[tokio::test]
-    async fn test_search_without_embeddings_returns_clear_error() {
-        let cap = SearchCapability::new(PathBuf::from("/tmp"), SearchConfig::default());
-        let result = cap.search("test query").await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SearchError::EmbeddingsNotEnabled => {} // expected
-            other => panic!("Expected EmbeddingsNotEnabled, got: {other}"),
-        }
+    async fn test_search_without_embeddings_runs_sparse_only() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("hello.md"), "# Hello\n\nThis is a test document.").unwrap();
+
+        // Build index first.
+        use notectl_core::config::Config;
+        crate::index::build_index(
+            &base,
+            &Config {
+                exclude_paths: Vec::new(),
+                daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
+                search: SearchConfig::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let cap = SearchCapability::new(base, SearchConfig::default());
+        let result = cap.search("test document").await;
+        // Without embeddings feature, search runs sparse-only and should succeed.
+        assert!(
+            result.is_ok(),
+            "Search should work in sparse-only mode: {:?}",
+            result
+        );
     }
 }
