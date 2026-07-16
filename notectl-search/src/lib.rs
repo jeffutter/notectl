@@ -1,5 +1,6 @@
 pub mod bm25;
 pub mod chunker;
+pub mod fusion;
 pub mod sparse;
 pub mod storage;
 pub mod tokenize;

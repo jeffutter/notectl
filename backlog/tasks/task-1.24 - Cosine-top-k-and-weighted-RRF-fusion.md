@@ -1,11 +1,13 @@
 ---
 id: TASK-1.24
-title: 'Cosine top-k and weighted RRF fusion'
-status: Dev Ready
-assignee: []
+title: Cosine top-k and weighted RRF fusion
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 04:40'
-updated_date: '2026-07-16 04:40'
-labels: [planned]
+updated_date: '2026-07-16 05:09'
+labels:
+  - planned
 dependencies:
   - TASK-1.7
 parent_task_id: TASK-1.6
@@ -42,6 +44,7 @@ Consumes L2-normalized embeddings from TASK-1.7's `normalize_embedding()` output
 
 ## Implementation Plan
 
+<!-- SECTION:PLAN:BEGIN -->
 <!-- SECTION:IMPLEMENTATION_PLAN:BEGIN -->
 
 ### Structure
@@ -102,3 +105,21 @@ None — pure Rust math, no external crates beyond std
 
 ### No new Cargo.toml dependencies needed
 <!-- SECTION:IMPLEMENTATION_PLAN:END -->
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented fusion.rs with:
+- cosine_top_k(vectors, query, k) → Vec<(usize, f32)> sorted descending
+- rrf_fuse(dense, sparse, k, w_dense, w_sparse) → Vec<(usize, f64)> sorted descending
+- 12 unit tests covering exact match, orthogonal, truncation, empty inputs, overlapping/non-overlapping RRF, weighted fusion, config default alignment, and tie-breaking
+- No external crate deps beyond std (HashMap only)
+- Module registered in lib.rs
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Created notectl-search/src/fusion.rs with cosine_top_k and rrf_fuse functions. Pure Rust vector math, no external deps, 12 passing tests, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
