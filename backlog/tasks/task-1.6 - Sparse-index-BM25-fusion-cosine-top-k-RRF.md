@@ -1,11 +1,13 @@
 ---
 id: TASK-1.6
 title: 'Sparse index (BM25) + fusion (cosine top-k, RRF)'
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-16 04:40'
-labels: [planned]
+updated_date: '2026-07-16 05:12'
+labels:
+  - planned
 dependencies:
   - TASK-1.2
   - TASK-1.21
@@ -48,6 +50,7 @@ Delivered as two child tickets:
 
 ## Implementation Plan
 
+<!-- SECTION:PLAN:BEGIN -->
 <!-- SECTION:IMPLEMENTATION_PLAN:BEGIN -->
 
 ### Overview
@@ -166,3 +169,16 @@ No changes to `Cargo.toml` needed — no new dependencies.
 | `notectl-search/src/lib.rs` | Edit | +2 (mod declarations) |
 
 <!-- SECTION:IMPLEMENTATION_PLAN:END -->
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Both child tickets (TASK-1.23 sparse.rs, TASK-1.24 fusion.rs) were already completed. Verified: modules registered in lib.rs, all 67 notectl-search tests pass, clippy clean.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Parent task completed via child tickets TASK-1.23 (sparse.rs — SparseIndexer wrapping Bm25Indexer) and TASK-1.24 (fusion.rs — cosine_top_k + rrf_fuse). Both modules registered in lib.rs, 67 tests passing, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
