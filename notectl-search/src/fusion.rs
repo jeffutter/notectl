@@ -11,7 +11,7 @@ use std::collections::HashMap;
 /// Return top-k chunk indices ranked by cosine similarity to `query`.
 ///
 /// Both `vectors` and `query` must be L2-normalized (they come from
-/// [`normalize_embedding`](crate::embeddings::model::normalize_embedding)).
+/// `normalize_embedding`).
 /// When vectors are normalized, the dot product *is* cosine similarity.
 ///
 /// # Arguments
@@ -46,7 +46,7 @@ pub fn cosine_top_k(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(usize
 ///
 /// # Arguments
 /// * `dense` — `(chunk_index, cosine_score)` from [`cosine_top_k`], sorted descending
-/// * `sparse` — `(chunk_index, bm25_score)` from [`SparseIndexer::score_query`], sorted descending
+/// * `sparse` — `(chunk_index, bm25_score)` from [`crate::sparse::SparseIndexer::score_query`], sorted descending
 /// * `k` — RRF rank-damping constant (typically 60)
 /// * `w_dense` — weight multiplier for dense-side contributions
 /// * `w_sparse` — weight multiplier for sparse-side contributions
