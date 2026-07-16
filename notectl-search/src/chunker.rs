@@ -273,13 +273,18 @@ impl Chunker {
     }
 
     /// Compute the 0-indexed line number at a given character position in `content`.
-    /// Returns the total number of lines if `pos >= content.len()`.
+    ///
+    /// Counts newline bytes before `pos`, which is the correct 0-indexed line
+    /// number for any position — not just positions that fall exactly on a
+    /// line boundary. Using `.lines().count()` would over-count by 1 for
+    /// mid-line positions because it treats a partial trailing line as a
+    /// full line.
     fn line_at(content: &str, pos: usize) -> usize {
-        if pos >= content.len() {
-            content.lines().count()
-        } else {
-            content[..pos].lines().count()
-        }
+        let clamped = pos.min(content.len());
+        content.as_bytes()[..clamped]
+            .iter()
+            .filter(|&&b| b == b'\n')
+            .count()
     }
 
     /// Collect byte-span ranges for each whitespace-delimited word in `content`.
@@ -619,12 +624,13 @@ Charlie content goes here for testing.
             "First chunk should start at line 0"
         );
 
-        // Verify the last chunk's line_end covers the end of content.
-        let expected_last_line = content.lines().count();
+        // Verify the last chunk's line_end reaches the last line of content.
+        // line_end is the 0-indexed line number of the last word (inclusive).
+        let expected_last_line = content.lines().count().saturating_sub(1);
         assert_eq!(
             chunks.last().unwrap().line_end,
             expected_last_line,
-            "Last chunk should extend to end of content"
+            "Last chunk should extend to last line of content"
         );
     }
 
@@ -705,7 +711,7 @@ Charlie content goes here for testing.
     fn test_long_section_split_overlap_nonzero_line_spans() {
         let config = ChunkerConfig {
             max_tokens: 10,
-            overlap_tokens: 3, // nonzero overlap — the exact code path where the bug lived
+            overlap_tokens: 3, // nonzero overlap — word-window advances by 7 (not a multiple of 3 words/line)
             min_chunk_size: 5,
             merge_threshold: 0, // disable merging
         };
@@ -734,41 +740,33 @@ Charlie content goes here for testing.
             section_chunks.len()
         );
 
-        // Independently compute expected line numbers using tokenize_with_overlap_indexed
-        // and the word-span map, then compare against actual chunk line_start/line_end.
-        let indexed = tokenize::tokenize_with_overlap_indexed(
-            &section_content,
-            config.max_tokens,
-            config.overlap_tokens,
-        );
-        let word_spans = Chunker::word_spans(&section_content);
-        // Heading is on line 0 of the file; content starts on line 1.
-        let heading_line = 1usize;
+        // Independently compute expected line numbers WITHOUT calling Chunker::line_at.
+        // For each chunk, find its first and last word, then locate those words in the
+        // original file content by scanning lines directly.
+        for chunk in &section_chunks {
+            let first_word = chunk.text.split_whitespace().next().unwrap();
+            let last_word = chunk.text.split_whitespace().last().unwrap();
 
-        assert_eq!(section_chunks.len(), indexed.len(), "Chunk count mismatch");
-
-        for (chunk, &(ref _text, start_idx, end_idx)) in section_chunks.iter().zip(indexed.iter()) {
-            let expected_line_start = if start_idx < word_spans.len() {
-                heading_line + Chunker::line_at(&section_content, word_spans[start_idx].start)
-            } else {
-                heading_line
-            };
-            let last_idx = end_idx.saturating_sub(1).min(word_spans.len() - 1);
-            let expected_line_end = if end_idx > 0 && last_idx < word_spans.len() {
-                heading_line + Chunker::line_at(&section_content, word_spans[last_idx].end)
-            } else {
-                heading_line
-            };
+            // True 0-indexed line of the first word in the full file content.
+            // The heading is on line 0; section content starts on line 1.
+            let true_line_start = content
+                .lines()
+                .position(|l| l.split_whitespace().any(|w| w == first_word))
+                .unwrap();
+            let true_line_end = content
+                .lines()
+                .position(|l| l.split_whitespace().any(|w| w == last_word))
+                .unwrap();
 
             assert_eq!(
-                chunk.line_start, expected_line_start,
-                "Chunk line_start mismatch: got {}, expected {} (word index {}..{})",
-                chunk.line_start, expected_line_start, start_idx, end_idx
+                chunk.line_start, true_line_start,
+                "Chunk {:?} line_start mismatch: got {}, expected {} (first word '{}')",
+                chunk.id, chunk.line_start, true_line_start, first_word,
             );
             assert_eq!(
-                chunk.line_end, expected_line_end,
-                "Chunk line_end mismatch: got {}, expected {} (word index {}..{})",
-                chunk.line_end, expected_line_end, start_idx, end_idx
+                chunk.line_end, true_line_end,
+                "Chunk {:?} line_end mismatch: got {}, expected {} (last word '{}')",
+                chunk.id, chunk.line_end, true_line_end, last_word,
             );
         }
 
@@ -795,11 +793,9 @@ Charlie content goes here for testing.
         let chunker = Chunker::new(config);
 
         // Two small sections with UNIQUE words that will be merged.
-        // Section A: 6 lines × 3 words = 18 words (< merge_threshold? no, 18 > 8)
-        // We need sections < merge_threshold, so use fewer words.
-        // Actually merge_threshold checks token count, so we need < 8 tokens per section.
-        // Let's use 2 lines per section = 6 words each (< 8).
-        // Merged = 12 words + "\n\n" separator, which exceeds max_tokens=10.
+        // Section A: 6 words (< merge_threshold=8 tokens)
+        // Section B: 6 words (< merge_threshold=8 tokens)
+        // Merged = 12 words + "\n\n" separator, which exceeds max_tokens=10 → split.
         let content = r"# Title
 ## Small A
 sa0 sa1 sa2
@@ -823,6 +819,33 @@ sb3 sb4 sb5
             merged_chunks.len(),
             merged_chunks.iter().map(|c| &c.text).collect::<Vec<_>>()
         );
+
+        // Exact-match assertions: independently verify line_start/line_end against
+        // the true position of each chunk's first and last word in the source content.
+        for chunk in &merged_chunks {
+            let first_word = chunk.text.split_whitespace().next().unwrap();
+            let last_word = chunk.text.split_whitespace().last().unwrap();
+
+            let true_line_start = content
+                .lines()
+                .position(|l| l.split_whitespace().any(|w| w == first_word))
+                .unwrap();
+            let true_line_end = content
+                .lines()
+                .position(|l| l.split_whitespace().any(|w| w == last_word))
+                .unwrap();
+
+            assert_eq!(
+                chunk.line_start, true_line_start,
+                "Merged chunk {:?} line_start mismatch: got {}, expected {} (first word '{}')",
+                chunk.id, chunk.line_start, true_line_start, first_word,
+            );
+            assert_eq!(
+                chunk.line_end, true_line_end,
+                "Merged chunk {:?} line_end mismatch: got {}, expected {} (last word '{}')",
+                chunk.id, chunk.line_end, true_line_end, last_word,
+            );
+        }
 
         // Verify line spans are non-decreasing (chunks in file order).
         for w in merged_chunks.windows(2) {
