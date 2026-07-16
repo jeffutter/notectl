@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-16 06:28'
+updated_date: '2026-07-16 06:30'
 labels:
   - planned
 dependencies:
@@ -58,3 +58,9 @@ After TASK-1.8.1 completes:
 
 None — TASK-1.9 (search pipeline) and TASK-1.10 (capability operations) are sibling tickets that consume the index built by this one.
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented IndexBuilder orchestration in notectl-search/src/index.rs. Full async pipeline: walk -> diff -> chunk -> embed -> persist. Feature-gated embedding support gracefully degrades when model not downloaded. SearchCapability.index() wired through. 242 tests pass across workspace (107 in notectl-search including 9 new index.rs tests). Clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
