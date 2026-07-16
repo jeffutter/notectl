@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-16 06:55'
+updated_date: '2026-07-16 06:56'
 labels:
   - planned
 dependencies:
@@ -101,3 +101,18 @@ Unit tests in search.rs mod tests:
 - Empty corpus: return empty Vec gracefully
 ,
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Created notectl-search/src/search.rs implementing the full search pipeline:
+
+1. **SearchMode enum** (Hybrid, Dense, Sparse) with needs_dense/needs_sparse helpers
+2. **SearchOptions struct** configurable from SearchConfig
+3. **search() function** orchestrating: freshen (staleness + conditional reindex), load index artifacts, embed query with RetrievalQuery prefix, score & rank (cosine_top_k + BM25 + RRF fusion), map to RankedChunk
+4. **Auto-degradation**: gracefully falls back to sparse-only when vectors/model unavailable
+5. **Wired into SearchCapability::search()**, replacing the todo!() stub
+6. **Without embeddings feature**: search runs sparse-only via BM25 (no longer returns EmbeddingsNotEnabled error)
+
+Added 12 new tests covering: SearchMode flags, SearchOptions defaults/config, extract_preview, sparse-only end-to-end search, empty vault, max_results limit, no_reindex flag, result sorting, RankedChunk field population, and auto-degradation. All 121 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
