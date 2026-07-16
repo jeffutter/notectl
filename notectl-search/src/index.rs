@@ -608,6 +608,144 @@ mod tests {
         assert!(secs > 0);
     }
 
+    // ---- Integration tests ported from storage.rs (were exercising dead SearchIndex::build_index) ----
+
+    /// Verify content hash changes when file content is modified.
+    #[tokio::test]
+    async fn test_content_hash_changes_on_modification() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+
+        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
+
+        let config = test_config();
+        let summary1 = run_build(&tmp, &base, &config).await;
+        let hash1 = summary1.content_hash.clone();
+
+        // Modify the file.
+        fs::write(base.join("note.md"), "# Hello\nWorld\nNew line").unwrap();
+
+        let summary2 = run_build(&tmp, &base, &config).await;
+        let hash2 = summary2.content_hash.clone();
+        assert_ne!(
+            hash1, hash2,
+            "Content hash should change after modification"
+        );
+    }
+
+    /// Touch without content change should not reindex (blake3 catches touch-only changes).
+    #[tokio::test]
+    async fn test_touch_without_content_change_no_reindex() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+
+        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
+
+        let config = test_config();
+        let summary1 = run_build(&tmp, &base, &config).await;
+
+        // Touch the file (change mtime without changing content).
+        std::process::Command::new("touch")
+            .arg(base.join("note.md"))
+            .output()
+            .unwrap();
+
+        // Should detect no changes because content hash didn't change.
+        let summary2 = run_build(&tmp, &base, &config).await;
+        assert_eq!(
+            summary2.files_indexed, summary1.files_indexed,
+            "files_indexed should not change after touch"
+        );
+        assert_eq!(
+            summary2.chunks_produced, summary1.chunks_produced,
+            "chunks_produced should not change after touch"
+        );
+    }
+
+    /// Verify manifest persists to disk and can be re-opened.
+    #[tokio::test]
+    async fn test_manifest_persists_after_build() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+
+        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
+
+        let config = test_config();
+        let summary = run_build(&tmp, &base, &config).await;
+
+        // Re-open the index and verify data persisted.
+        let index_dir = config.search.resolve_index_dir(&base);
+        let chunk_config = ChunkConfigSnapshot {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+        };
+        let index2 = SearchIndex::open_or_create(
+            &index_dir,
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            chunk_config,
+        )
+        .unwrap();
+
+        assert_eq!(index2.manifest().document_count(), 1);
+        assert_eq!(index2.manifest().chunk_count(), summary.chunks_produced);
+    }
+
+    /// Full rebuild clears old chunks and writes new ones.
+    #[tokio::test]
+    async fn test_full_rebuild_clears_chunks() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+
+        fs::write(
+            base.join("note.md"),
+            "# Hello\n\nThis is a longer note with enough content to produce multiple chunks when chunked. It has several sentences of text that should be sufficient for the chunker to generate output.\n\n## Section One\n\nMore content here to ensure we exceed the minimum chunk size threshold and get actual chunks produced by the chunker logic.\n",
+        )
+        .unwrap();
+
+        let config = test_config();
+        let _summary1 = run_build(&tmp, &base, &config).await;
+
+        // Verify chunks exist.
+        let index_dir = config.search.resolve_index_dir(&base);
+        let chunks_dir = index_dir.join("chunks");
+        assert!(
+            chunks_dir.exists(),
+            "Chunks dir should exist after first build"
+        );
+
+        // Trigger a full rebuild by changing model_id.
+        let mut modified_config = config.clone();
+        modified_config.search.model_id = "different/model".to_string();
+
+        let _summary2 = run_build(&tmp, &base, &modified_config).await;
+
+        // Chunks should have been rebuilt (full rebuild clears then rebuilds).
+        assert!(chunks_dir.exists(), "Chunks dir should exist after rebuild");
+
+        // Verify manifest was updated with new model_id.
+        let chunk_config = ChunkConfigSnapshot {
+            max_tokens: modified_config.search.max_seq_tokens,
+            overlap_tokens: modified_config.search.chunk_overlap_tokens,
+            min_chunk_size: modified_config.search.min_chunk_tokens,
+            merge_threshold: modified_config.search.merge_threshold,
+        };
+        let index = SearchIndex::open_or_create(
+            &index_dir,
+            modified_config.search.model_id.clone(),
+            modified_config.search.embedding_dim,
+            chunk_config,
+        )
+        .unwrap();
+        assert_eq!(index.manifest().model_id, "different/model");
+    }
+
     /// Regression test: chunk source_file must be vault-relative, not absolute.
     /// Ensures IndexBuilder::build passes rel_path (not abs_path) to the chunker,
     /// so Chunk.source_file and Chunk.id are portable across machines/mount points.

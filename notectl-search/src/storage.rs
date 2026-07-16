@@ -329,25 +329,6 @@ pub(crate) fn atomic_write_binary(path: &Path, data: &[u8]) -> Result<(), Search
 // SearchIndex
 // ---------------------------------------------------------------------------
 
-/// Reference to an embedder (type-erased to avoid circular deps in tests).
-/// When the `embeddings` feature is enabled this wraps `&crate::Embedder`;
-/// otherwise it is always `None`.
-pub enum EmbedderRef {
-    #[cfg(feature = "embeddings")]
-    Dense(Box<crate::Embedder>),
-    None,
-}
-
-impl EmbedderRef {
-    pub fn is_some(&self) -> bool {
-        match self {
-            #[cfg(feature = "embeddings")]
-            EmbedderRef::Dense(_) => true,
-            EmbedderRef::None => false,
-        }
-    }
-}
-
 /// A complete search index on disk.
 pub struct SearchIndex {
     /// Base directory for the index (e.g., `.notectl/search/`).
@@ -593,133 +574,6 @@ impl SearchIndex {
             .map_err(|e| SearchError::Storage(format!("Failed to reset index: {e}")))?;
         Ok(())
     }
-
-    /// Build or update the search index for all markdown files in the base path.
-    ///
-    /// **NOTE**: For new code, prefer [`crate::index::IndexBuilder`] which provides
-    /// an async API with embedding support. This synchronous method is kept for
-    /// backward compatibility and testing.
-    ///
-    /// SearchIndex owns persistence: open_or_create, save_manifest, write_chunks,
-    /// write_vectors, read_vectors, read_chunk, clear_chunks, remove_chunks,
-    /// remove_manifest, remove_vectors, reset.
-    pub fn build_index(
-        &mut self,
-        base_path: &Path,
-        config: &Config,
-        chunker: &crate::Chunker,
-        _embedder: Option<EmbedderRef>,
-    ) -> Result<StalenessDiff, SearchError> {
-        // Compute staleness diff.
-        let diff = compute_staleness_diff(base_path, config, &self.manifest)?;
-
-        match diff {
-            StalenessDiff::UpToDate => {
-                tracing::debug!("Index is up to date.");
-                return Ok(StalenessDiff::UpToDate);
-            }
-            StalenessDiff::FullRebuild(ref reason) => {
-                tracing::info!("Full rebuild required: {:?}", reason);
-                self.clear_chunks()?;
-                self.remove_vectors()?;
-            }
-            StalenessDiff::Incremental { ref removed, .. } => {
-                // Drop chunks for removed files.
-                if !removed.is_empty() {
-                    self.remove_chunks(removed)?;
-                }
-            }
-        }
-
-        // Walk current files and chunk everything.
-        let current_files = notectl_core::file_walker::collect_markdown_files(base_path, config)
-            .map_err(|e| SearchError::Storage(format!("Failed to collect markdown files: {e}")))?;
-
-        let mut all_chunks: Vec<Chunk> = Vec::new();
-        let mut file_hashes: BTreeMap<String, String> = BTreeMap::new();
-        let mut file_info_map: BTreeMap<String, FileInfo> = BTreeMap::new();
-
-        for abs_path in &current_files {
-            let rel_path = abs_path
-                .strip_prefix(base_path)
-                .unwrap_or(abs_path.as_path())
-                .to_string_lossy()
-                .to_string();
-
-            let content = fs::read_to_string(abs_path)
-                .map_err(|e| SearchError::Storage(format!("Failed to read {rel_path}: {e}")))?;
-
-            let content_hash = blake3_hash_str(&content);
-            file_hashes.insert(rel_path.clone(), content_hash.clone());
-
-            let metadata = fs::metadata(abs_path)
-                .map_err(|e| SearchError::Storage(format!("Failed to stat {rel_path}: {e}")))?;
-            let mtime = metadata.modified().map_err(|e| {
-                SearchError::Storage(format!("Failed to get mtime for {rel_path}: {e}"))
-            })?;
-            let mtime_secs = mtime
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            let chunks = chunker.chunk_file(abs_path, &content);
-            let chunk_ids: Vec<String> = chunks.iter().map(|c| c.id.clone()).collect();
-
-            all_chunks.extend(chunks);
-
-            file_info_map.insert(
-                rel_path.clone(),
-                FileInfo {
-                    path: rel_path,
-                    content_hash,
-                    mtime: mtime_secs,
-                    chunk_ids,
-                },
-            );
-        }
-
-        // Sort chunks by source_file for deterministic ordering.
-        all_chunks.sort_by(|a, b| a.source_file.cmp(&b.source_file));
-
-        let chunk_entries: Vec<ChunkEntry> = all_chunks
-            .iter()
-            .map(|c| ChunkEntry {
-                id: c.id.clone(),
-                source_file: c.source_file.clone(),
-                line_start: c.line_start,
-                line_end: c.line_end,
-                heading: c.heading.clone(),
-                heading_path: c.heading_path.clone(),
-            })
-            .collect();
-
-        let files: Vec<FileInfo> = file_info_map.values().cloned().collect();
-        let overall_hash = compute_overall_content_hash(&file_hashes);
-
-        // Update manifest.
-        self.manifest.model_id = config.search.model_id.clone();
-        self.manifest.embedding_dim = config.search.embedding_dim;
-        self.manifest.chunk_config = ChunkConfigSnapshot {
-            max_tokens: config.search.max_seq_tokens,
-            overlap_tokens: config.search.chunk_overlap_tokens,
-            min_chunk_size: config.search.min_chunk_tokens,
-            merge_threshold: config.search.merge_threshold,
-        };
-        self.manifest.files = files;
-        self.manifest.chunks = chunk_entries;
-        self.manifest.content_hash = overall_hash;
-        self.manifest.last_indexed = Some(chrono_now_rfc3339());
-
-        // Write chunks to disk.
-        if !all_chunks.is_empty() {
-            self.write_chunks(&all_chunks)?;
-        }
-
-        // Save manifest atomically.
-        self.save_manifest()?;
-
-        Ok(diff)
-    }
 }
 
 /// Return the current time as an RFC 3339 string (no external chrono dependency needed).
@@ -780,19 +634,6 @@ mod tests {
             daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
             search: SearchConfig::default(),
         }
-    }
-
-    /// Helper: create a chunker with small token limits for faster tests.
-    fn test_chunker() -> crate::Chunker {
-        use notectl_core::config::SearchConfig;
-        let sc = SearchConfig {
-            max_seq_tokens: 128,
-            chunk_overlap_tokens: 16,
-            min_chunk_tokens: 8,
-            merge_threshold: 5,
-            ..Default::default()
-        };
-        crate::Chunker::new(crate::chunker::ChunkerConfig::from_search_config(&sc))
     }
 
     // ---- Manifest tests ----
@@ -1078,7 +919,31 @@ mod tests {
         assert!(index.read_chunk("file1.md:0:a").is_err());
     }
 
-    // ---- Staleness diff tests ----
+    // ---- Staleness diff tests (direct calls to compute_staleness_diff) ----
+
+    /// Helper: create a FileInfo entry for a given path and content.
+    fn make_file_info(path: &str, content: &str) -> FileInfo {
+        FileInfo {
+            path: path.to_string(),
+            content_hash: blake3_hash_str(content),
+            mtime: 1700000000,
+            chunk_ids: vec![format!("{path}:0:intro")],
+        }
+    }
+
+    /// Helper: create an empty manifest matching the default test config.
+    fn empty_manifest() -> SearchManifest {
+        SearchManifest::new_empty(
+            "google/embedding-gemma-300m".to_string(),
+            256, // matches default_embedding_dim()
+            ChunkConfigSnapshot {
+                max_tokens: 512,
+                overlap_tokens: 64,
+                min_chunk_size: 32,
+                merge_threshold: 30,
+            },
+        )
+    }
 
     #[test]
     fn test_staleness_diff_up_to_date() {
@@ -1087,33 +952,16 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
 
         // Create a markdown file.
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
+        let content = "# Hello\nWorld";
+        fs::write(base.join("note.md"), content).unwrap();
 
         let config = test_config();
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
+        // Build manifest matching current file state.
+        let mut manifest = empty_manifest();
+        manifest.files.push(make_file_info("note.md", content));
 
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Second build should return UpToDate.
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::UpToDate => {} // expected
             other => panic!("Expected UpToDate, got: {:?}", other),
@@ -1126,35 +974,18 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Modify the file.
+        // Write the file with different content than the manifest.
         fs::write(base.join("note.md"), "# Hello\nWorld\nNew line").unwrap();
 
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let config = test_config();
+
+        // Manifest has old content hash.
+        let mut manifest = empty_manifest();
+        manifest
+            .files
+            .push(make_file_info("note.md", "# Hello\nWorld"));
+
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::Incremental {
                 added,
@@ -1175,36 +1006,17 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
+        // Only one file on disk.
         fs::write(base.join("note1.md"), "# Note 1").unwrap();
-        fs::write(base.join("note2.md"), "# Note 2").unwrap();
 
         let config = test_config();
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
+        // Manifest references two files (note2.md was removed).
+        let mut manifest = empty_manifest();
+        manifest.files.push(make_file_info("note1.md", "# Note 1"));
+        manifest.files.push(make_file_info("note2.md", "# Note 2"));
 
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Remove a file.
-        fs::remove_file(base.join("note2.md")).unwrap();
-
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::Incremental {
                 added,
@@ -1225,35 +1037,17 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
+        // Two files on disk.
         fs::write(base.join("note1.md"), "# Note 1").unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Add a new file.
         fs::write(base.join("note2.md"), "# Note 2").unwrap();
 
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let config = test_config();
+
+        // Manifest references only note1.md (note2.md is new).
+        let mut manifest = empty_manifest();
+        manifest.files.push(make_file_info("note1.md", "# Note 1"));
+
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::Incremental {
                 added,
@@ -1274,36 +1068,14 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
         let config = test_config();
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
+        // Manifest has different model_id than config.
+        let mut manifest = empty_manifest();
+        manifest.model_id = "different/model".to_string();
+        manifest.files.push(make_file_info("note.md", "content"));
 
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Change the model_id in config.
-        let mut modified_config = config.clone();
-        modified_config.search.model_id = "different/model".to_string();
-
-        let diff = index
-            .build_index(&base, &modified_config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::FullRebuild(RebuildReason::ModelChanged(_)) => {} // expected
             other => panic!("Expected FullRebuild with ModelChanged, got: {:?}", other),
@@ -1316,36 +1088,14 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
         let config = test_config();
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
+        // Manifest has different embedding_dim than config.
+        let mut manifest = empty_manifest();
+        manifest.embedding_dim = 512;
+        manifest.files.push(make_file_info("note.md", "content"));
 
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Change embedding_dim in config.
-        let mut modified_config = config.clone();
-        modified_config.search.embedding_dim = 512;
-
-        let diff = index
-            .build_index(&base, &modified_config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::FullRebuild(RebuildReason::DimensionChanged(_)) => {} // expected
             other => panic!(
@@ -1361,36 +1111,19 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
         let config = test_config();
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
+        // Manifest has different chunk_config than config.
+        let mut manifest = empty_manifest();
+        manifest.chunk_config = ChunkConfigSnapshot {
+            max_tokens: 1024, // differs from default 512
+            overlap_tokens: 64,
+            min_chunk_size: 32,
+            merge_threshold: 5,
+        };
+        manifest.files.push(make_file_info("note.md", "content"));
 
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Change chunking param in config.
-        let mut modified_config = config.clone();
-        modified_config.search.max_seq_tokens = 1024;
-
-        let diff = index
-            .build_index(&base, &modified_config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::FullRebuild(RebuildReason::ChunkConfigChanged) => {} // expected
             other => panic!(
@@ -1416,44 +1149,28 @@ mod tests {
             daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
             search: SearchConfig::default(),
         };
-        let chunker = test_chunker();
 
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Verify only the included file is in the manifest.
-        let file_paths: Vec<&str> = index
-            .manifest()
+        // Manifest matches only the included file (excluded path is not tracked).
+        let mut manifest = empty_manifest();
+        manifest
             .files
-            .iter()
-            .map(|f| f.path.as_str())
-            .collect();
-        assert!(file_paths.contains(&"included.md"));
-        assert!(!file_paths.contains(&"Template/tmpl.md"));
+            .push(make_file_info("included.md", "# Included"));
 
-        // Modify the excluded file — should not trigger change detection.
-        fs::write(base.join("Template/tmpl.md"), "# Template Modified").unwrap();
-
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        // Diff should be UpToDate — excluded file is not counted.
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
-            StalenessDiff::UpToDate => {} // expected — excluded file change is ignored
+            StalenessDiff::UpToDate => {} // expected — excluded file is ignored
+            other => panic!(
+                "Expected UpToDate (excluded file should not affect diff), got: {:?}",
+                other
+            ),
+        }
+
+        // Now modify the excluded file — should still be UpToDate.
+        fs::write(base.join("Template/tmpl.md"), "# Template Modified").unwrap();
+        let diff2 = compute_staleness_diff(&base, &config, &manifest).unwrap();
+        match diff2 {
+            StalenessDiff::UpToDate => {} // expected
             other => panic!(
                 "Expected UpToDate (excluded file changed), got: {:?}",
                 other
@@ -1467,227 +1184,15 @@ mod tests {
         let base = tmp.path().join("vault");
         fs::create_dir_all(&base).unwrap();
 
-        // Empty vault — build index.
+        // Empty vault.
         let config = test_config();
-        let chunker = test_chunker();
+        let manifest = empty_manifest();
 
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Second build on empty vault should return UpToDate.
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
+        let diff = compute_staleness_diff(&base, &config, &manifest).unwrap();
         match diff {
             StalenessDiff::UpToDate => {} // expected
             other => panic!("Expected UpToDate for empty index, got: {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_content_hash_changes_on_modification() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("vault");
-        fs::create_dir_all(&base).unwrap();
-
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        let hash1 = index.manifest().content_hash.clone();
-
-        // Modify the file.
-        fs::write(base.join("note.md"), "# Hello\nWorld\nNew line").unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        let hash2 = index.manifest().content_hash.clone();
-        assert_ne!(hash1, hash2);
-    }
-
-    #[test]
-    fn test_touch_without_content_change_no_reindex() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("vault");
-        fs::create_dir_all(&base).unwrap();
-
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Touch the file (change mtime without changing content).
-        // Use touch command to update mtime without changing content.
-        std::process::Command::new("touch")
-            .arg(base.join("note.md"))
-            .output()
-            .unwrap();
-
-        // Should still be UpToDate because content hash didn't change.
-        let diff = index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-        match diff {
-            StalenessDiff::UpToDate => {} // expected — blake3 catches touch-only changes
-            other => panic!("Expected UpToDate after touch, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_manifest_persists_after_build() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("vault");
-        fs::create_dir_all(&base).unwrap();
-
-        fs::write(base.join("note.md"), "# Hello\nWorld").unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Verify manifest file exists on disk.
-        let manifest_path = tmp.path().join("manifest.json");
-        assert!(manifest_path.exists());
-
-        // Re-open and verify data persisted.
-        let index2 = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(index2.manifest().document_count(), 1);
-        assert_eq!(
-            index2.manifest().chunk_count(),
-            index.manifest().chunk_count()
-        );
-    }
-
-    #[test]
-    fn test_full_rebuild_clears_chunks() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("vault");
-        fs::create_dir_all(&base).unwrap();
-
-        fs::write(
-            base.join("note.md"),
-            "# Hello\n\nThis is a longer note with enough content to produce multiple chunks when chunked. It has several sentences of text that should be sufficient for the chunker to generate output.\n\n## Section One\n\nMore content here to ensure we exceed the minimum chunk size threshold and get actual chunks produced by the chunker logic.\n",
-        )
-        .unwrap();
-
-        let config = test_config();
-        let chunker = test_chunker();
-
-        // Build initial index.
-        let mut index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        index
-            .build_index(&base, &config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Verify chunks exist.
-        let chunks_dir = tmp.path().join("chunks");
-        assert!(chunks_dir.exists());
-
-        // Trigger a full rebuild by changing model_id.
-        let mut modified_config = config.clone();
-        modified_config.search.model_id = "different/model".to_string();
-
-        index
-            .build_index(&base, &modified_config, &chunker, Some(EmbedderRef::None))
-            .unwrap();
-
-        // Chunks should have been rebuilt (full rebuild clears then rebuilds).
-        assert!(chunks_dir.exists());
-        // Verify manifest was updated with new model_id.
-        assert_eq!(index.manifest().model_id, "different/model");
     }
 
     #[test]

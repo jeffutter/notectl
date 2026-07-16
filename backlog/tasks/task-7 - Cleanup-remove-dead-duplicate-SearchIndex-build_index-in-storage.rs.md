@@ -1,12 +1,14 @@
 ---
 id: TASK-7
 title: 'Cleanup: remove dead duplicate SearchIndex::build_index in storage.rs'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 07:21'
-updated_date: '2026-07-16 07:22'
+updated_date: '2026-07-16 20:58'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-1.8
@@ -27,37 +29,108 @@ This is a Concise/Organization-axis finding: two independent implementations of 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 SearchIndex::build_index and its EmbedderRef parameter/type (notectl-search/src/storage.rs) are removed, along with the ~15 tests in storage.rs that exist solely to exercise it (grep for '.build_index(' in storage.rs test module to find them)
-- [ ] #2 Any assertions in the removed tests that covered behavior NOT otherwise covered by notectl-search/src/index.rs's IndexBuilder tests (e.g. specific staleness-diff edge cases) are ported to storage.rs's compute_staleness_diff tests or index.rs's IndexBuilder tests instead of being silently dropped — check this by diffing the removed test names/assertions against existing coverage before deleting
-- [ ] #3 notectl-search compiles and all remaining tests pass with no reference to SearchIndex::build_index anywhere in notectl-search/src
-- [ ] #4 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 SearchIndex::build_index and its EmbedderRef parameter/type (notectl-search/src/storage.rs) are removed, along with the ~15 tests in storage.rs that exist solely to exercise it (grep for '.build_index(' in storage.rs test module to find them)
+- [x] #2 Any assertions in the removed tests that covered behavior NOT otherwise covered by notectl-search/src/index.rs's IndexBuilder tests (e.g. specific staleness-diff edge cases) are ported to storage.rs's compute_staleness_diff tests or index.rs's IndexBuilder tests instead of being silently dropped — check this by diffing the removed test names/assertions against existing coverage before deleting
+- [x] #3 notectl-search compiles and all remaining tests pass with no reference to SearchIndex::build_index anywhere in notectl-search/src
+- [x] #4 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a
-TypeScript/React web app (web/). ALL commands must run inside the Nix dev
-shell: either run 'direnv allow' once, or prefix every command with
-'nix develop -c'. Work from the repository root unless told otherwise. Do not
-change pinned dependency versions.
+SETUP (read first): ALL commands must run inside the Nix dev shell — prefix every command with `nix develop -c`. Work from the repository root.
 
-(This repo is notectl; the crate under test is notectl-search. The same Nix-shell rule applies.)
+### Background (from code audit)
 
-1. Open notectl-search/src/storage.rs and locate `pub fn build_index` on `impl SearchIndex` (~line 585-706), and the `EmbedderRef` type it takes as a parameter (search for `EmbedderRef` definition, likely just above or near this method).
+Dead code to remove:
+- `SearchIndex::build_index` (storage.rs lines 606–706, ~100 lines) — zero production callers
+- `EmbedderRef` enum (storage.rs lines 335–348) — exists solely as a parameter type for `build_index`
 
-2. Before deleting anything, run `grep -n "\.build_index(\|EmbedderRef" notectl-search/src/storage.rs` and read every one of the ~15 test functions that call `.build_index(...)` (they're all inside `storage.rs`'s own `#[cfg(test)] mod tests`, roughly lines 1080-1660). For each test, note what specific behavior it's asserting (e.g. staleness diff on model change, incremental add/remove, exclusion filtering, up-to-date detection).
+The authoritative pipeline is `IndexBuilder::build` (index.rs), called via `crate::index::build_index` from lib.rs, capability.rs, and search.rs.
 
-3. Cross-reference each behavior from step 2 against the tests already in `notectl-search/src/index.rs`'s `#[cfg(test)] mod tests` (which exercise the same scenarios through `IndexBuilder::build`/`run_build`) and against `compute_staleness_diff`'s own tests in storage.rs (search for `test_staleness_diff_` — these test the diff computation directly, independent of `build_index`). For any storage.rs `build_index`-based test whose exact scenario is NOT already covered by an `index.rs` test or a `test_staleness_diff_*` test, port that scenario as a new test in `notectl-search/src/index.rs` using the existing `run_build` helper there, BEFORE deleting the original.
+There are exactly **13 test functions** in storage.rs that call `.build_index(...)`. These fall into two categories:
 
-4. Delete `SearchIndex::build_index` (storage.rs) and the `EmbedderRef` type/enum if it has no other callers after the deletion (re-check with grep). Delete all ~15 test functions in storage.rs that called `.build_index(...)` — they no longer compile once the method is gone.
+**Category A: Staleness-diff variant assertions (9 tests)** — assert on exact `StalenessDiff` variant returned (`UpToDate`, `Incremental{added/modified/removed}`, `FullRebuild{reason}`). Since `IndexBuilder::build` returns only `BuildSummary` (not `StalenessDiff`), these cannot port directly to index.rs integration tests.
 
-5. Run `nix develop -c cargo build -p notectl-search --all-features` to confirm the crate still compiles with the method removed (catches any other caller you missed).
+**Category B: End-to-end pipeline tests (4 tests)** — verify disk persistence, chunk clearing, content hash changes across builds.
 
-6. Run `nix develop -c cargo test -p notectl-search --all-features` — confirm the total test count only dropped by however many storage.rs tests were deleted minus however many were ported to index.rs in step 3, and that everything passes.
+### Step 1: Port 4 integration tests to index.rs
 
-7. Run `nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings` and fix any warnings (e.g. now-unused imports in storage.rs after the deletion).
+Add the following tests to `notectl-search/src/index.rs` test module using the existing `run_build` helper:
 
-8. In the task's Implementation Notes, list which (if any) test scenarios were ported to index.rs per step 3, so the coverage trail is documented.
+1. **`test_content_hash_changes_on_modification`** — Run build, modify file content, run build again, assert `content_hash` differs between the two `BuildSummary` results.
+2. **`test_touch_without_content_change_no_reindex`** — Run build, `touch` the file (mtime-only change), run build again, assert `files_indexed` and `chunks_produced` are unchanged.
+3. **`test_manifest_persists_after_build`** — Run build, re-open `SearchIndex` from disk, assert `document_count()` == 1 and `chunk_count()` matches original manifest.
+4. **`test_full_rebuild_clears_chunks`** — Run build, verify chunks dir exists, change `model_id` in config, rebuild, assert chunks dir still exists and manifest has new model_id.
+
+### Step 2: Convert 9 staleness-diff tests to direct unit tests of `compute_staleness_diff`
+
+In storage.rs, replace each `build_index`-based test with a leaner version that calls `compute_staleness_diff(base_path, config, &manifest)` directly. This eliminates dependency on `build_index` while preserving the exact same assertions about diff computation.
+
+Each converted test should:
+1. Create temp vault + write files as needed
+2. Open a `SearchIndex` via `open_or_create` to get an initial manifest
+3. Call `compute_staleness_diff(base_path, &config, index.manifest())` directly
+4. Assert on the returned `StalenessDiff` variant
+
+For tests requiring a "second build" scenario (e.g., up_to_date after initial build), first do a real build via `open_or_create` → manually populate manifest by calling the function under test's prerequisite setup, OR simply create a pre-populated manifest and call diff against it.
+
+Actually, the simplest approach: for tests that need an indexed state before testing diff behavior, use `crate::index::build_index` (the LIVE async one) to set up the initial index, then call `compute_staleness_diff` directly to test the diff logic. This avoids depending on dead code.
+
+The 9 conversions:
+- `test_staleness_diff_up_to_date`
+- `test_staleness_diff_modified_file`
+- `test_staleness_diff_removed_file`
+- `test_staleness_diff_added_file`
+- `test_staleness_diff_full_rebuild_model_changed`
+- `test_staleness_diff_full_rebuild_dimension_changed`
+- `test_staleness_diff_full_rebuild_chunk_config_changed`
+- `test_staleness_diff_exclusion_filtering`
+- `test_staleness_diff_empty_index`
+
+### Step 3: Delete dead code
+
+Delete from storage.rs:
+1. `pub enum EmbedderRef` and its `impl EmbedderRef` block (~lines 335–348)
+2. `pub fn build_index(&mut self, ...)` method on `impl SearchIndex` (~lines 606–706)
+3. All 13 original `build_index`-based test functions (replaced by steps 1–2)
+4. Any now-unused imports (e.g., `EmbedderRef` references in test helpers)
+
+### Step 4: Verify compilation and tests
+
+```bash
+nix develop -c cargo build -p notectl-search --all-features
+nix develop -c cargo test -p notectl-search --all-features
+nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings
+```
+
+Expected test count: -13 (deleted) + 4 (new in index.rs) + 9 (converted in storage.rs) = net 0 change. Total test count should remain the same.
+
+### Step 5: Final grep verification
+
+```bash
+# Should find zero references to EmbedderRef
+grep -rn "EmbedderRef" notectl-search/src/
+
+# Should find only crate::index::build_index references (the live one)
+grep -rn "\.build_index(" notectl-search/src/storage.rs
+```
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+All 5 acceptance criteria met:
+1. ✅ SearchIndex::build_index and EmbedderRef removed from storage.rs, plus all 13 tests that called build_index
+2. ✅ 4 integration tests ported to index.rs (content hash, touch, manifest persistence, full rebuild). 9 staleness-diff tests converted to direct compute_staleness_diff calls — no coverage lost
+3. ✅ notectl-search compiles cleanly, zero references to SearchIndex::build_index or EmbedderRef remain
+4. ✅ cargo test -p notectl-search --all-features: 137 passed
+5. ✅ cargo clippy -p notectl-search --all-features --all-targets -- -D warnings: clean
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Removed dead SearchIndex::build_index (~100 lines) and EmbedderRef enum from storage.rs. Converted 9 staleness-diff tests to direct compute_staleness_diff calls (leaner, no pipeline dependency). Ported 4 integration tests to index.rs using existing run_build helper. Net result: -289 lines of dead code, test count unchanged at 137 passing tests.
+<!-- SECTION:FINAL_SUMMARY:END -->

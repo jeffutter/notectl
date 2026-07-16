@@ -80,3 +80,15 @@ Mirror notectl-search/src/capability.rs test module (added in TASK-14):
 - cargo fmt -p notectl-outline -- --check
 - cargo build (workspace-wide sanity check)
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed all three operations (GetOutlineOperation, GetSectionOperation, SearchHeadingsOperation) in notectl-outline/src/capability.rs by replacing Request::from_arg_matches() with field-by-field serde_json::Map construction in args_to_json(). This prevents the 'Mismatch between definition and access of vault_path' panic when called from get_remote_command. Added 10 new tests in remote_command_tests module mirroring notectl-search's tests from TASK-14.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced panic-prone from_arg_matches calls with field-by-field JSON construction in args_to_json() for all 3 outline operations. Added 10 regression tests. All quality gates pass (tests, clippy, fmt, pre-push hooks).
+<!-- SECTION:FINAL_SUMMARY:END -->
