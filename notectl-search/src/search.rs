@@ -15,7 +15,7 @@ use crate::chunker::Chunk;
 use crate::fusion::{cosine_top_k, rrf_fuse};
 use crate::sparse::SparseIndexer;
 use crate::storage::{ChunkConfigSnapshot, SearchIndex, StalenessDiff};
-use crate::{RankedChunk, SearchResult};
+use crate::{RankedChunk, SearchError, SearchResult};
 
 /// Default empty string for fallback when chunk text is missing.
 const EMPTY_STR: &str = "";
@@ -50,6 +50,26 @@ impl SearchMode {
     pub fn needs_sparse(&self) -> bool {
         matches!(self, SearchMode::Hybrid | SearchMode::Sparse)
     }
+}
+
+/// Data required to score results in a given search mode.
+///
+/// Each variant owns exactly the inputs its scoring path needs — no Option
+/// plumbing or runtime assertions.  Built once after all auto-degradation
+/// decisions so the type system guarantees correctness.
+enum ScoreInputs {
+    Dense {
+        query_vec: Vec<f32>,
+        vectors: Vec<Vec<f32>>,
+    },
+    Sparse {
+        indexer: SparseIndexer,
+    },
+    Hybrid {
+        query_vec: Vec<f32>,
+        vectors: Vec<Vec<f32>>,
+        indexer: SparseIndexer,
+    },
 }
 
 /// Options controlling search behavior.
@@ -195,7 +215,15 @@ pub async fn search(
         }
     };
 
-    // Determine effective mode (auto-degrade if vectors missing).
+    // -----------------------------------------------------------------------
+    // Steps 2-4: Load artifacts, embed query, score & rank
+    //
+    // All degradation decisions are collapsed into a single ScoreInputs
+    // construction point so the type system guarantees the right data is
+    // present for each scoring path — no .expect() / .unwrap() needed.
+    // -----------------------------------------------------------------------
+
+    // Determine effective mode (auto-degrade if vectors missing on disk).
     let effective_mode = match (options.mode, has_vectors) {
         (SearchMode::Dense, false) => {
             tracing::warn!(
@@ -212,8 +240,8 @@ pub async fn search(
         (mode, _) => mode,
     };
 
-    // Rebuild BM25 in-memory from chunk texts.
-    let sparse_indexer = if effective_mode.needs_sparse() {
+    // Build BM25 indexer when the mode needs sparse scoring.
+    let sparse_indexer: Option<SparseIndexer> = if effective_mode.needs_sparse() {
         let chunks_for_bm25: Vec<Chunk> = manifest
             .chunks
             .iter()
@@ -233,8 +261,8 @@ pub async fn search(
         None
     };
 
-    // ---- Step 3: Embed query (only for Dense/Hybrid) ----
-    let query_vec: Option<Vec<f32>> = if effective_mode.needs_dense() {
+    // Embed query + read vectors when the mode needs dense scoring.
+    let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense() {
         #[cfg(feature = "embeddings")]
         {
             let model_cache_dir = index_dir.join("models");
@@ -243,18 +271,18 @@ pub async fn search(
                 EmbeddingConfig::from_search_config(&config.search),
             );
 
-            // If model isn't downloaded, degrade gracefully.
             if !embedder.is_ready() {
                 tracing::warn!("Model not downloaded yet. Degrading to sparse-only search.");
-                // Fall through to sparse-only below.
-                // We need to re-evaluate effective_mode, so handle inline.
                 None
             } else {
                 match embedder
                     .embed_single(query, None, TaskType::RetrievalQuery)
                     .await
                 {
-                    Ok(vec) => Some(vec),
+                    Ok(qvec) => {
+                        let vectors = index.read_vectors().unwrap_or_default();
+                        Some((qvec, vectors))
+                    }
                     Err(e) => {
                         tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
                         None
@@ -264,15 +292,15 @@ pub async fn search(
         }
         #[cfg(not(feature = "embeddings"))]
         {
-            // Can't happen because effective_mode would be Sparse without embeddings feature.
+            // Unreachable: without the embeddings feature, effective_mode is always Sparse.
             None
         }
     } else {
         None
     };
 
-    // If we had dense mode but embedding failed/isn't ready, fall back to sparse.
-    let final_mode = match (effective_mode, query_vec.as_ref()) {
+    // Final mode after embedding availability is known.
+    let final_mode = match (effective_mode, dense_data.as_ref()) {
         (SearchMode::Dense, None) => {
             tracing::warn!("Dense mode unavailable, falling back to sparse.");
             SearchMode::Sparse
@@ -284,30 +312,39 @@ pub async fn search(
         (mode, _) => mode,
     };
 
-    // ---- Step 4: Score & rank ----
+    // Capture debug info before moving values into the match.
+    let has_dense = dense_data.is_some();
+    let has_sparse = sparse_indexer.is_some();
 
-    // Read dense vectors if needed (feature-gated).
-    let dense_vectors: Option<Vec<Vec<f32>>> = if final_mode.needs_dense() {
-        #[cfg(feature = "embeddings")]
-        {
-            Some(index.read_vectors().unwrap_or_default())
+    // Construct typed scoring inputs — the type system now guarantees correctness.
+    let inputs = match (final_mode, dense_data, sparse_indexer) {
+        // Dense: needs query_vec + vectors
+        (SearchMode::Dense, Some((qvec, vectors)), _) => ScoreInputs::Dense {
+            query_vec: qvec,
+            vectors,
+        },
+        // Sparse: needs indexer
+        (SearchMode::Sparse, _, Some(indexer)) => ScoreInputs::Sparse { indexer },
+        // Hybrid: needs all three
+        (SearchMode::Hybrid, Some((qvec, vectors)), Some(indexer)) => ScoreInputs::Hybrid {
+            query_vec: qvec,
+            vectors,
+            indexer,
+        },
+        // Any other combination means an internal invariant was violated.
+        // Return an error instead of panicking.
+        _ => {
+            return Err(SearchError::Other(format!(
+                "Inconsistent search state: mode={:?}, has_dense={}, has_sparse={}",
+                final_mode, has_dense, has_sparse,
+            )));
         }
-        #[cfg(not(feature = "embeddings"))]
-        {
-            None
-        }
-    } else {
-        None
     };
 
-    let fused: Vec<(usize, f64)> = match final_mode {
-        SearchMode::Dense => {
-            let qvec = query_vec.expect("query_vec should be present for Dense mode");
-            let vectors = dense_vectors
-                .as_ref()
-                .expect("vectors should exist for Dense mode");
-            let dense_scores = cosine_top_k(vectors, &qvec, options.max_results);
-            // Fuse with empty sparse (dense-only).
+    // Score & rank based on the typed inputs.
+    let fused: Vec<(usize, f64)> = match inputs {
+        ScoreInputs::Dense { query_vec, vectors } => {
+            let dense_scores = cosine_top_k(&vectors, &query_vec, options.max_results);
             rrf_fuse(
                 &dense_scores,
                 &[],
@@ -316,10 +353,8 @@ pub async fn search(
                 0.0,
             )
         }
-        SearchMode::Sparse => {
-            let indexer = sparse_indexer.expect("sparse_indexer should exist for Sparse mode");
+        ScoreInputs::Sparse { indexer } => {
             let sparse_scores = indexer.score_query(query);
-            // No dense scores.
             rrf_fuse(
                 &[],
                 &sparse_scores,
@@ -328,17 +363,14 @@ pub async fn search(
                 options.rrf_bm25_weight,
             )
         }
-        SearchMode::Hybrid => {
-            let qvec = query_vec.expect("query_vec should be present for Hybrid mode");
-            let vectors = dense_vectors
-                .as_ref()
-                .expect("vectors should exist for Hybrid mode");
+        ScoreInputs::Hybrid {
+            query_vec,
+            vectors,
+            indexer,
+        } => {
             // Use 2x max_results for cosine to give BM25 long-tail terms a chance.
-            let dense_scores = cosine_top_k(vectors, &qvec, options.max_results * 2);
-
-            let indexer = sparse_indexer.expect("sparse_indexer should exist for Hybrid mode");
+            let dense_scores = cosine_top_k(&vectors, &query_vec, options.max_results * 2);
             let sparse_scores = indexer.score_query(query);
-
             rrf_fuse(
                 &dense_scores,
                 &sparse_scores,
