@@ -99,3 +99,9 @@ Fixed the word_cursor drift bug in chunker.rs by having the tokenizer emit index
 
 4. **Tests**: Added 6 new unit tests for the indexed tokenizer variant and 2 regression tests exercising nonzero overlap_tokens for both split paths.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed line_start/line_end drift in chunker when overlap_tokens > 0. Root cause: word_cursor advanced by full part word count instead of accounting for overlap re-emission. Solution: tokenizer now emits indexed (text, start, end) tuples; both split loops use indices directly. Also fixed a pre-existing merge-path bug where byte positions weren't adjusted for the separator offset. All 75 tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
