@@ -3,10 +3,11 @@ id: TASK-16
 title: >-
   Remove dead SearchEngine struct that duplicates SearchCapability's
   index/search orchestration
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 14:40'
-updated_date: '2026-07-16 14:40'
+updated_date: '2026-07-16 16:42'
 labels:
   - review-followup
 milestone: Active
@@ -48,3 +49,14 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 8. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 9. Run: nix develop -c cargo build (workspace-wide, all features off and on) to confirm nothing else in the workspace broke.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation summary:
+
+- Removed SearchEngine struct and impl block (search + index methods) from notectl-search/src/lib.rs (~50 lines deleted)
+- Rewrote test_search_without_embeddings_runs_sparse_only to use SearchCapability::do_search() instead of SearchEngine::search(), preserving coverage of sparse-only search without embeddings feature
+- All 137 tests pass (--all-features), clippy clean (-D warnings), fmt check passes
+- grep -rn "SearchEngine" returns zero matches across the repo
+<!-- SECTION:NOTES:END -->

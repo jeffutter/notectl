@@ -95,59 +95,6 @@ pub struct RankedChunk {
 /// Re-export the authoritative SearchConfig from notectl-core.
 pub use notectl_core::config::SearchConfig;
 
-/// Engine struct that holds state for search operations
-pub struct SearchEngine {
-    pub config: SearchConfig,
-    pub base_path: PathBuf,
-}
-
-impl SearchEngine {
-    pub fn new(base_path: PathBuf, config: SearchConfig) -> Self {
-        Self { config, base_path }
-    }
-
-    /// Execute a search query. Returns dense results if the embeddings feature is enabled,
-    /// otherwise falls back to BM25-only sparse search.
-    pub async fn search(&self, query: &str) -> SearchResult<Vec<RankedChunk>> {
-        use notectl_core::config::Config;
-
-        // Build a minimal Config from our SearchConfig for the search pipeline.
-        let config = Config {
-            exclude_paths: Vec::new(),
-            daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
-            search: self.config.clone(),
-        };
-
-        let options = search::SearchOptions::from_config(&self.config);
-
-        let outcome = search::search(&self.base_path, &config, query, options).await?;
-        Ok(outcome.results)
-    }
-
-    /// Build or update the search index for all markdown files in the base path.
-    pub async fn index(&self) -> SearchResult<()> {
-        use notectl_core::config::Config;
-
-        // Build a minimal Config from our SearchConfig for the index pipeline.
-        let config = Config {
-            exclude_paths: Vec::new(),
-            daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
-            search: self.config.clone(),
-        };
-
-        let summary = crate::index::build_index(&self.base_path, &config).await?;
-
-        tracing::info!(
-            "Index complete: {} files, {} chunks, embeddings={}",
-            summary.files_indexed,
-            summary.chunks_produced,
-            summary.has_embeddings
-        );
-
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +131,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_without_embeddings_runs_sparse_only() {
         use std::fs;
+        use std::sync::Arc;
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
@@ -193,19 +141,14 @@ mod tests {
 
         // Build index first.
         use notectl_core::config::Config;
-        crate::index::build_index(
-            &base,
-            &Config {
-                exclude_paths: Vec::new(),
-                daily_note_patterns: vec!["YYYY-MM-DD.md".to_string()],
-                search: SearchConfig::default(),
-            },
-        )
-        .await
-        .unwrap();
+        crate::index::build_index(&base, &Config::default())
+            .await
+            .unwrap();
 
-        let cap = SearchEngine::new(base, SearchConfig::default());
-        let result = cap.search("test document").await;
+        let cap = SearchCapability::new(base, Arc::new(Config::default()));
+        let result = cap
+            .do_search("test document", 50, SearchMode::Sparse, false)
+            .await;
         // Without embeddings feature, search runs sparse-only and should succeed.
         assert!(
             result.is_ok(),
