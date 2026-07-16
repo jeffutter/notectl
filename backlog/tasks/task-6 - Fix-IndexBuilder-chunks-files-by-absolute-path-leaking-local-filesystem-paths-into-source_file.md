@@ -3,10 +3,11 @@ id: TASK-6
 title: >-
   Fix: IndexBuilder chunks files by absolute path, leaking local filesystem
   paths into source_file
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 07:21'
-updated_date: '2026-07-16 07:22'
+updated_date: '2026-07-16 12:56'
 labels:
   - review-followup
 milestone: Active
@@ -35,23 +36,19 @@ This is a Correctness/Resilient-axis finding: the manifest's own documentation p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 IndexBuilder::build (notectl-search/src/index.rs) calls chunker.chunk_file with the vault-relative path (rel_path), not abs_path, so every resulting Chunk.source_file and Chunk.id is relative to base_path
-- [ ] #2 A new or updated test in notectl-search/src/index.rs builds an index for a vault at a TempDir path and asserts that manifest.chunks[].source_file does NOT contain the TempDir's absolute path prefix and DOES equal the expected relative path (e.g. "note.md" or "sub/note.md")
-- [ ] #3 Existing tests in notectl-search/src/index.rs and notectl-search/src/search.rs continue to pass unmodified in their assertions (source_file.contains("rust") style checks remain valid for relative paths)
-- [ ] #4 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 IndexBuilder::build (notectl-search/src/index.rs) calls chunker.chunk_file with the vault-relative path (rel_path), not abs_path, so every resulting Chunk.source_file and Chunk.id is relative to base_path
+- [x] #2 A new or updated test in notectl-search/src/index.rs builds an index for a vault at a TempDir path and asserts that manifest.chunks[].source_file does NOT contain the TempDir's absolute path prefix and DOES equal the expected relative path (e.g. "note.md" or "sub/note.md")
+- [x] #3 Existing tests in notectl-search/src/index.rs and notectl-search/src/search.rs continue to pass unmodified in their assertions (source_file.contains("rust") style checks remain valid for relative paths)
+- [x] #4 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a
-TypeScript/React web app (web/). ALL commands must run inside the Nix dev
-shell: either run 'direnv allow' once, or prefix every command with
-'nix develop -c'. Work from the repository root unless told otherwise. Do not
-change pinned dependency versions.
+This is a single-call-site fix plus a regression test. No children needed.
 
-(This repo is notectl; the crate under test is notectl-search. The same Nix-shell rule applies.)
+**Scope**: Only `notectl-search/src/index.rs`. Do NOT touch `storage.rs` — TASK-7 removes the dead `SearchIndex::build_index` there.
 
 1. Open notectl-search/src/index.rs and find the file-processing loop inside `IndexBuilder::build` (~line 142-179). Note the existing computation:
    ```rust
@@ -85,3 +82,15 @@ change pinned dependency versions.
 
 7. Run `nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings` and fix any warnings.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation: Changed single call site in IndexBuilder::build (notectl-search/src/index.rs:165) from chunker.chunk_file(abs_path, ...) to chunker.chunk_file(Path::new(&rel_path), ...). Added regression test test_chunk_source_file_is_relative_not_absolute that builds an index in a TempDir vault with a nested file (sub/note.md) and asserts all ChunkEntry.source_file values are relative (equal 'sub/note.md') and do not contain the temp dir's absolute path prefix. All 122 tests pass, clippy clean.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Single-line fix in IndexBuilder::build: pass rel_path instead of abs_path to chunker.chunk_file. Added regression test asserting ChunkEntry.source_file values are vault-relative. All 122 tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->

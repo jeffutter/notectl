@@ -162,7 +162,7 @@ impl<'a> IndexBuilder<'a> {
                 0
             });
 
-            let chunks = self.chunker.chunk_file(abs_path, &content);
+            let chunks = self.chunker.chunk_file(Path::new(&rel_path), &content);
             let chunk_ids: Vec<String> = chunks.iter().map(|c| c.id.clone()).collect();
 
             all_chunks.extend(chunks);
@@ -606,5 +606,64 @@ mod tests {
 
         let secs = metadata_mtime_secs(&path).unwrap();
         assert!(secs > 0);
+    }
+
+    /// Regression test: chunk source_file must be vault-relative, not absolute.
+    /// Ensures IndexBuilder::build passes rel_path (not abs_path) to the chunker,
+    /// so Chunk.source_file and Chunk.id are portable across machines/mount points.
+    #[tokio::test]
+    async fn test_chunk_source_file_is_relative_not_absolute() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(base.join("sub")).unwrap();
+
+        // File with enough content to produce at least one chunk.
+        fs::write(
+            base.join("sub").join("note.md"),
+            "# Hello\n\nThis is a longer note with enough content to produce chunks from the chunker pipeline.",
+        )
+        .unwrap();
+
+        let config = test_config();
+        let summary = run_build(&tmp, &base, &config).await;
+        assert!(summary.chunks_produced >= 1, "Expected at least one chunk");
+
+        // Re-open the index and inspect manifest chunks.
+        let index_dir = config.search.resolve_index_dir(&base);
+        let chunk_config = ChunkConfigSnapshot {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+        };
+        let index = SearchIndex::open_or_create(
+            &index_dir,
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            chunk_config,
+        )
+        .unwrap();
+
+        let manifest = index.manifest();
+        assert!(!manifest.chunks.is_empty(), "Manifest should have chunks");
+
+        let abs_prefix = tmp.path().to_string_lossy().to_string();
+        for entry in &manifest.chunks {
+            // Must NOT contain the temp dir's absolute path.
+            assert!(
+                !entry.source_file.starts_with(&abs_prefix)
+                    && !entry
+                        .source_file
+                        .contains(std::env::temp_dir().to_string_lossy().as_ref()),
+                "Chunk source_file '{}' must not contain absolute temp dir path",
+                entry.source_file,
+            );
+            // Must equal the expected relative path.
+            assert_eq!(
+                entry.source_file, "sub/note.md",
+                "Expected relative path 'sub/note.md', got '{}'",
+                entry.source_file,
+            );
+        }
     }
 }
