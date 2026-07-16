@@ -212,21 +212,21 @@ impl SearchCapability {
             no_reindex,
         };
 
-        let results = crate::search::search(&self.base_path, &self.config, query, options.clone())
+        let outcome = crate::search::search(&self.base_path, &self.config, query, options)
             .await
             .map_err(|e| internal_error(format!("Search failed: {e}")))?;
 
-        // Determine effective mode label for the response.
-        let mode_used = match options.mode {
+        // Use the actual effective mode from the search pipeline, not the requested mode.
+        let mode_used = match outcome.mode_used {
             SearchMode::Hybrid => "hybrid".to_string(),
             SearchMode::Dense => "dense".to_string(),
             SearchMode::Sparse => "sparse".to_string(),
         };
 
-        let total_count = results.len();
+        let total_count = outcome.results.len();
 
         Ok(SearchResponse {
-            results,
+            results: outcome.results,
             total_count,
             mode_used,
         })

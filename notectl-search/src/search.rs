@@ -133,6 +133,19 @@ impl SearchOptions {
 // Search pipeline
 // ---------------------------------------------------------------------------
 
+/// Outcome of a search operation: ranked results plus the effective search mode.
+///
+/// The `mode_used` field reflects the actual mode the search ran in, which may
+/// differ from the requested mode due to auto-degradation (e.g., Hybrid → Sparse
+/// when vectors are missing).
+#[derive(Debug, Clone)]
+pub struct SearchOutcome {
+    /// Ranked search results.
+    pub results: Vec<RankedChunk>,
+    /// Effective search mode used (may differ from requested due to auto-degradation).
+    pub mode_used: SearchMode,
+}
+
 /// Run the full search pipeline.
 ///
 /// Steps:
@@ -146,7 +159,7 @@ pub async fn search(
     config: &Config,
     query: &str,
     options: SearchOptions,
-) -> SearchResult<Vec<RankedChunk>> {
+) -> SearchResult<SearchOutcome> {
     let index_dir = config.search.resolve_index_dir(base_path);
 
     // Ensure the index directory exists (open_or_create creates it if missing).
@@ -200,7 +213,10 @@ pub async fn search(
     // Empty corpus → empty results.
     if manifest.chunks.is_empty() {
         tracing::debug!("Empty corpus: no chunks indexed.");
-        return Ok(Vec::new());
+        return Ok(SearchOutcome {
+            results: Vec::new(),
+            mode_used: options.mode,
+        });
     }
 
     // ---- Step 2: Load index artifacts ----
@@ -423,7 +439,10 @@ pub async fn search(
         })
         .collect();
 
-    Ok(results)
+    Ok(SearchOutcome {
+        results,
+        mode_used: final_mode,
+    })
 }
 
 /// Extract a preview of ~`max_len` characters from the beginning of the text.
@@ -605,9 +624,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "rust programming", options)
+        let outcome = search(&base, &config, "rust programming", options)
             .await
             .unwrap();
+        let results = outcome.results;
 
         // Should get results.
         assert!(!results.is_empty(), "Should have search results");
@@ -634,8 +654,8 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "anything", options).await.unwrap();
-        assert!(results.is_empty());
+        let outcome = search(&base, &config, "anything", options).await.unwrap();
+        assert!(outcome.results.is_empty());
     }
 
     /// Test search respects max_results limit.
@@ -667,9 +687,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "programming", options)
+        let outcome = search(&base, &config, "programming", options)
             .await
             .unwrap();
+        let results = outcome.results;
         assert!(
             results.len() <= 2,
             "Should have at most 2 results, got {}",
@@ -707,9 +728,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "cloud computing", options)
+        let outcome = search(&base, &config, "cloud computing", options)
             .await
             .unwrap();
+        let results = outcome.results;
 
         // The new file shouldn't appear since we didn't reindex.
         assert!(
@@ -750,9 +772,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "rust memory safety", options)
+        let outcome = search(&base, &config, "rust memory safety", options)
             .await
             .unwrap();
+        let results = outcome.results;
 
         // Results should be sorted descending by score.
         for window in results.windows(2) {
@@ -796,9 +819,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "testing frameworks", options)
+        let outcome = search(&base, &config, "testing frameworks", options)
             .await
             .unwrap();
+        let results = outcome.results;
 
         assert!(!results.is_empty(), "Should have results");
 
@@ -844,10 +868,10 @@ mod tests {
             ..Default::default()
         };
 
-        let results = search(&base, &config, "greeting", options).await.unwrap();
+        let outcome = search(&base, &config, "greeting", options).await.unwrap();
         // May or may not find "greeting" depending on tokenization, but should not error.
         // The important thing is it doesn't panic or return an error.
-        let _ = results;
+        let _ = outcome.results;
     }
 
     /// Test that Dense mode degrades to Sparse when embedding is unavailable at query time.
@@ -916,19 +940,99 @@ mod tests {
 
         // Assert: should be Ok with sparse-scored results, NOT Err.
         match result {
-            Ok(results) => {
+            Ok(outcome) => {
                 assert!(
-                    !results.is_empty(),
+                    !outcome.results.is_empty(),
                     "Should have sparse-scored results after degradation"
                 );
                 assert!(
-                    results[0].score > 0.0,
+                    outcome.results[0].score > 0.0,
                     "Top result should have positive score"
+                );
+                // mode_used should reflect the actual degraded mode (Sparse), not Dense.
+                assert!(
+                    matches!(outcome.mode_used, SearchMode::Sparse),
+                    "mode_used should be Sparse after degradation, got {:?}",
+                    outcome.mode_used
                 );
             }
             Err(e) => {
                 panic!("search() should degrade to sparse, not error. Got: {:?}", e);
             }
         }
+    }
+
+    /// Test that SearchOutcome.mode_used reflects actual degradation.
+    ///
+    /// Regression test for TASK-13: when Dense or Hybrid is requested but no
+    /// vectors are available, the returned mode_used must be Sparse (the actual
+    /// mode used), NOT the originally requested mode.
+    #[tokio::test]
+    async fn test_search_mode_used_reflects_degradation() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Create files with enough content to produce chunks.
+        std::fs::write(
+            base.join("rust.md"),
+            "# Rust Programming\n\nRust is a systems programming language focused on safety and performance. It provides fine-grained control over memory management while guaranteeing thread safety through its ownership and borrowing system. Rust has excellent tooling including cargo for package management and rustfmt for code formatting.",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("python.md"),
+            "# Python Guide\n\nPython is great for data science and machine learning. It has a rich ecosystem of libraries including numpy, pandas, and scikit-learn for statistical analysis. Python's dynamic typing and interpreted nature make it ideal for rapid prototyping and scripting tasks.",
+        )
+        .unwrap();
+
+        let config = test_config();
+        crate::index::build_index(&base, &config).await.unwrap();
+
+        // Request Hybrid mode (which needs dense vectors).
+        // Without the embeddings feature (or with no vectors on disk),
+        // this should auto-degrade to Sparse.
+        let options = SearchOptions {
+            mode: SearchMode::Hybrid,
+            max_results: 10,
+            ..Default::default()
+        };
+
+        let outcome = search(&base, &config, "rust programming", options)
+            .await
+            .unwrap();
+
+        // mode_used should be Sparse (degraded), NOT Hybrid (requested).
+        assert!(
+            matches!(outcome.mode_used, SearchMode::Sparse),
+            "mode_used should be Sparse after degradation, got {:?}",
+            outcome.mode_used
+        );
+
+        // Results should still be populated (from sparse scoring).
+        assert!(
+            !outcome.results.is_empty(),
+            "Should have results despite degradation"
+        );
+        assert!(
+            outcome.results[0].score > 0.0,
+            "Top result should have positive score"
+        );
+
+        // Also test Dense → Sparse degradation.
+        let options_dense = SearchOptions {
+            mode: SearchMode::Dense,
+            max_results: 10,
+            ..Default::default()
+        };
+
+        let outcome_dense = search(&base, &config, "rust programming", options_dense)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(outcome_dense.mode_used, SearchMode::Sparse),
+            "Dense mode should also degrade to Sparse, got {:?}",
+            outcome_dense.mode_used
+        );
     }
 }

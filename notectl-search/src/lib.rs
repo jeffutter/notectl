@@ -13,7 +13,7 @@ pub mod embeddings;
 
 pub use capability::*;
 pub use chunker::Chunker;
-pub use search::{SearchMode, SearchOptions, search};
+pub use search::{SearchMode, SearchOptions, SearchOutcome, search};
 pub use storage::{SearchIndex, SearchManifest};
 
 #[cfg(feature = "embeddings")]
@@ -120,7 +120,8 @@ impl SearchEngine {
 
         let options = search::SearchOptions::from_config(&self.config);
 
-        search::search(&self.base_path, &config, query, options).await
+        let outcome = search::search(&self.base_path, &config, query, options).await?;
+        Ok(outcome.results)
     }
 
     /// Build or update the search index for all markdown files in the base path.
