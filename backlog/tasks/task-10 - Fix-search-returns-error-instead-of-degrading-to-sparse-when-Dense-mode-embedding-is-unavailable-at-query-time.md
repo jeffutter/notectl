@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-16 13:38'
-updated_date: '2026-07-16 16:05'
+updated_date: '2026-07-16 16:06'
 labels:
   - review-followup
   - planned
@@ -81,3 +81,15 @@ nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D
 Before fix: new test fails with `Err(SearchError::Other("Inconsistent search state: mode=Sparse, has_dense=false, has_sparse=false"))`.
 After fix: new test passes with Ok containing sparse-scored results.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation: Moved sparse_indexer construction from effective_mode.needs_sparse() to final_mode.needs_sparse() in notectl-search/src/search.rs. This ensures BM25 indexer is built whenever final_mode ends up Sparse via query-time degradation (Dense -> Sparse when embedding unavailable). Added test_dense_mode_degrades_to_sparse_when_embedding_unavailable that writes fake vectors.bin, forces Embedder::is_ready()==false, and asserts search(mode=Dense) returns Ok with sparse results instead of Err(SearchError::Other(...)).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed query-time degradation bug: sparse_indexer now gated on final_mode.needs_sparse() instead of effective_mode.needs_sparse(). When Dense mode is requested but embedding fails at query time (model missing, embed_single error), search() correctly degrades to BM25 sparse scoring and returns Ok results instead of hard-erroring with 'Inconsistent search state'. Added regression test that reproduces the exact failure path. All 123 tests pass with --all-features, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->

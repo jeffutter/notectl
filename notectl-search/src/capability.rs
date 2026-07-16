@@ -277,14 +277,19 @@ impl notectl_core::operation::Operation for IndexOperation {
         IndexRequest::command()
     }
 
+    // NOTE: This same panic-on-missing-arg risk applies to every other capability file
+    // (notectl-outline, notectl-tags, notectl-files, notectl-daily-notes, notectl-tasks)
+    // since they all follow the identical pattern of omitting vault_path from
+    // get_remote_command while args_to_json routes through Request::from_arg_matches.
+    // See TASK-14 for details. A follow-up ticket should fix those systematically.
     fn get_remote_command(&self) -> clap::Command {
-        // Rebuild without the vault_path positional
+        // Rebuild without the vault_path positional.
         clap::Command::new("index")
             .about("Build or update the search index")
             .arg(
                 clap::Arg::new("reindex")
                     .long("reindex")
-                    .action(clap::ArgAction::SetTrue)
+                    .value_parser(clap::value_parser!(bool))
                     .help("Force full reindex"),
             )
             .arg(
@@ -344,13 +349,23 @@ impl notectl_core::operation::Operation for IndexOperation {
         serde_json::to_value(schema_for!(IndexRequest)).unwrap()
     }
 
+    // Build JSON field-by-field instead of routing through IndexRequest::from_arg_matches,
+    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = IndexRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = matches.get_one::<bool>("reindex") {
+            obj.insert("reindex".into(), serde_json::Value::Bool(*v));
+        }
+        if let Some(v) = matches.get_one::<String>("model") {
+            obj.insert("model".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<u32>("dim") {
+            obj.insert("dim".into(), serde_json::json!(v));
+        }
+        Ok(serde_json::Value::Object(obj))
     }
 }
 
@@ -372,8 +387,13 @@ impl notectl_core::operation::Operation for SearchOperation {
         SearchRequest::command()
     }
 
+    // NOTE: This same panic-on-missing-arg risk applies to every other capability file
+    // (notectl-outline, notectl-tags, notectl-files, notectl-daily-notes, notectl-tasks)
+    // since they all follow the identical pattern of omitting vault_path from
+    // get_remote_command while args_to_json routes through Request::from_arg_matches.
+    // See TASK-14 for details. A follow-up ticket should fix those systematically.
     fn get_remote_command(&self) -> clap::Command {
-        // Rebuild without the vault_path positional; shift query to index 1
+        // Rebuild without the vault_path positional; shift query to index 1.
         clap::Command::new("search")
             .about("Search across indexed notes")
             .arg(
@@ -399,7 +419,7 @@ impl notectl_core::operation::Operation for SearchOperation {
             .arg(
                 clap::Arg::new("no_reindex")
                     .long("no-reindex")
-                    .action(clap::ArgAction::SetTrue)
+                    .value_parser(clap::value_parser!(bool))
                     .help("Skip reindexing"),
             )
     }
@@ -458,12 +478,166 @@ impl notectl_core::operation::Operation for SearchOperation {
         serde_json::to_value(schema_for!(SearchRequest)).unwrap()
     }
 
+    // Build JSON field-by-field instead of routing through SearchRequest::from_arg_matches,
+    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut request = SearchRequest::from_arg_matches(matches)?;
-        request.vault_path = None;
-        Ok(serde_json::to_value(request)?)
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = matches.get_one::<String>("query") {
+            obj.insert("query".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<usize>("limit") {
+            obj.insert("limit".into(), serde_json::json!(v));
+        }
+        if let Some(v) = matches.get_one::<String>("mode") {
+            obj.insert("mode".into(), serde_json::Value::String(v.clone()));
+        }
+        if let Some(v) = matches.get_one::<bool>("no_reindex") {
+            obj.insert("no_reindex".into(), serde_json::Value::Bool(*v));
+        }
+        Ok(serde_json::Value::Object(obj))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for get_remote_command() grammar consistency (TASK-14)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod remote_command_tests {
+    use super::*;
+    use notectl_core::operation::Operation;
+
+    /// Create a dummy SearchCapability for testing (base_path doesn't matter for these tests).
+    fn dummy_capability() -> Arc<SearchCapability> {
+        Arc::new(SearchCapability::new(
+            PathBuf::from("/tmp"),
+            Arc::new(Config::default()),
+        ))
+    }
+
+    // -- IndexOperation tests --
+
+    #[test]
+    fn index_remote_command_reindex_accepts_bool_value() {
+        let op = IndexOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // --reindex true should succeed (value_parser bool expects a value)
+        let matches = cmd
+            .clone()
+            .try_get_matches_from(["index", "--reindex", "true"])
+            .unwrap();
+        assert_eq!(matches.get_one::<bool>("reindex").copied(), Some(true));
+
+        // --reindex false should also succeed
+        let matches = cmd
+            .try_get_matches_from(["index", "--reindex", "false"])
+            .unwrap();
+        assert_eq!(matches.get_one::<bool>("reindex").copied(), Some(false));
+    }
+
+    #[test]
+    fn index_remote_command_reindex_bare_flag_fails() {
+        let op = IndexOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Bare --reindex without a value should fail (it's not SetTrue)
+        let result = cmd.try_get_matches_from(["index", "--reindex"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn index_remote_command_args_to_json_no_vault_path_panic() {
+        let op = IndexOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Parse without vault_path — this must NOT panic
+        let matches = cmd
+            .try_get_matches_from(["index", "--reindex", "true"])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        // Verify the JSON contains expected fields
+        assert!(json.get("reindex").is_some());
+        assert_eq!(json["reindex"], true);
+    }
+
+    // -- SearchOperation tests --
+
+    #[test]
+    fn search_remote_command_no_reindex_accepts_bool_value() {
+        let op = SearchOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // --no-reindex true should succeed
+        let matches = cmd
+            .clone()
+            .try_get_matches_from(["search", "hello", "--no-reindex", "true"])
+            .unwrap();
+        assert_eq!(matches.get_one::<bool>("no_reindex").copied(), Some(true));
+
+        // --no-reindex false should also succeed
+        let matches = cmd
+            .try_get_matches_from(["search", "hello", "--no-reindex", "false"])
+            .unwrap();
+        assert_eq!(matches.get_one::<bool>("no_reindex").copied(), Some(false));
+    }
+
+    #[test]
+    fn search_remote_command_no_reindex_bare_flag_fails() {
+        let op = SearchOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Bare --no-reindex without a value should fail
+        let result = cmd.try_get_matches_from(["search", "hello", "--no-reindex"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn search_remote_command_args_to_json_no_vault_path_panic() {
+        let op = SearchOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        // Parse without vault_path — this must NOT panic
+        let matches = cmd.try_get_matches_from(["search", "my query"]).unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        // Verify the JSON contains expected fields
+        assert!(json.get("query").is_some());
+        assert_eq!(json["query"], "my query");
+    }
+
+    #[test]
+    fn search_remote_command_with_all_options() {
+        let op = SearchOperation::new(dummy_capability());
+        let cmd = op.get_remote_command();
+
+        let matches = cmd
+            .try_get_matches_from([
+                "search",
+                "test query",
+                "--limit",
+                "10",
+                "--mode",
+                "dense",
+                "--no-reindex",
+                "true",
+            ])
+            .unwrap();
+        let json = op
+            .args_to_json(&matches)
+            .expect("args_to_json must not panic");
+
+        assert_eq!(json["query"], "test query");
+        assert_eq!(json["limit"], 10);
+        assert_eq!(json["mode"], "dense");
+        assert_eq!(json["no_reindex"], true);
     }
 }
