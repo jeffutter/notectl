@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-16 14:39'
-updated_date: '2026-07-16 16:37'
+updated_date: '2026-07-16 16:38'
 labels:
   - review-followup
 milestone: Active
@@ -50,3 +50,34 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 9. Run: nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings
 10. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Implementation
+
+Added two new methods to `SearchIndex` in storage.rs:
+- `remove_manifest()` - removes manifest.json if it exists, no-ops when absent
+- `remove_vectors()` - removes vectors.bin if it exists, no-ops when absent
+
+Both follow the existing style of `clear_chunks()` (check .exists(), map errors to SearchError::Storage).
+
+Updated `SearchCapability::build_index` in capability.rs to open a SearchIndex and call these three methods (`remove_manifest`, `clear_chunks`, `remove_vectors`) instead of raw std::fs calls with hardcoded filenames. This eliminates persistence-format knowledge leakage from capability.rs into storage.rs's domain.
+
+Also fixed an internal duplication: `SearchIndex::build_index`'s FullRebuild path was directly removing vectors.bin via raw fs::remove_file — now uses `self.remove_vectors()?`.
+
+Added 5 tests:
+- test_remove_manifest_removes_existing_file
+- test_remove_manifest_noop_when_absent
+- test_remove_vectors_removes_existing_file
+- test_remove_vectors_noop_when_absent
+- test_reindex_cleanup_preserves_models_dir (integration test confirming models/ survives while manifest/chunks/vectors are removed)
+
+All 137 tests pass, clippy clean, fmt clean.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Refactored --reindex cleanup from raw std::fs calls to SearchIndex methods (remove_manifest, remove_vectors), consolidating persistence-format knowledge in storage.rs per project design philosophy. Added 5 tests covering the new methods and reindex cleanup behavior. All quality gates pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
