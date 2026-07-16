@@ -22,7 +22,7 @@ use crate::storage::{
 use crate::embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
 
 /// Build summary returned by [`IndexBuilder::build`].
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct BuildSummary {
     /// Number of files indexed
     pub files_indexed: usize,

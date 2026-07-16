@@ -1,4 +1,5 @@
 pub mod bm25;
+pub mod capability;
 pub mod chunker;
 pub mod fusion;
 pub mod index;
@@ -10,6 +11,7 @@ pub mod tokenize;
 #[cfg(feature = "embeddings")]
 pub mod embeddings;
 
+pub use capability::*;
 pub use chunker::Chunker;
 pub use search::{SearchMode, SearchOptions, search};
 pub use storage::{SearchIndex, SearchManifest};
@@ -76,7 +78,7 @@ impl From<SearchError> for rmcp::model::ErrorData {
 pub type SearchResult<T> = Result<T, SearchError>;
 
 /// A ranked search result with relevance score
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct RankedChunk {
     /// The chunk ID
     pub id: String,
@@ -93,13 +95,13 @@ pub struct RankedChunk {
 /// Re-export the authoritative SearchConfig from notectl-core.
 pub use notectl_core::config::SearchConfig;
 
-/// Capability struct that holds state for search operations
-pub struct SearchCapability {
+/// Engine struct that holds state for search operations
+pub struct SearchEngine {
     pub config: SearchConfig,
     pub base_path: PathBuf,
 }
 
-impl SearchCapability {
+impl SearchEngine {
     pub fn new(base_path: PathBuf, config: SearchConfig) -> Self {
         Self { config, base_path }
     }
@@ -201,7 +203,7 @@ mod tests {
         .await
         .unwrap();
 
-        let cap = SearchCapability::new(base, SearchConfig::default());
+        let cap = SearchEngine::new(base, SearchConfig::default());
         let result = cap.search("test document").await;
         // Without embeddings feature, search runs sparse-only and should succeed.
         assert!(

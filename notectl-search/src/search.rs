@@ -28,7 +28,18 @@ use crate::embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
 // ---------------------------------------------------------------------------
 
 /// Which scoring paths to run during search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    clap::ValueEnum,
+)]
 #[non_exhaustive]
 pub enum SearchMode {
     /// Run dense (cosine) + sparse (BM25) and fuse via RRF.
