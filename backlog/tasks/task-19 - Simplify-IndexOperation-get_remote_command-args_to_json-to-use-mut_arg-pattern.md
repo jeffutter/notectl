@@ -1,9 +1,11 @@
 ---
 id: TASK-19
 title: Simplify IndexOperation get_remote_command/args_to_json to use mut_arg pattern
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 16:52'
+updated_date: '2026-07-17 00:14'
 labels:
   - review-followup
 milestone: Active
@@ -22,12 +24,12 @@ Found while reviewing TASK-14 (notectl-search/src/capability.rs). IndexOperation
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 IndexOperation::get_remote_command in notectl-search/src/capability.rs uses self.get_command().mut_arg("vault_path", |a| a.required(false).hide(true)) instead of manually rebuilding clap::Command with individual .arg() calls for reindex/model/dim
-- [ ] #2 IndexOperation::args_to_json is simplified to: let mut request = IndexRequest::from_arg_matches(matches)?; request.vault_path = None; Ok(serde_json::to_value(request)?) -- matching the pattern in notectl-tags/src/capability.rs's args_to_json
-- [ ] #3 SearchOperation::get_remote_command and SearchOperation::args_to_json are left unchanged (they require the manual rebuild due to positional ordering -- do not touch them in this ticket)
-- [ ] #4 Existing remote_command_tests in notectl-search/src/capability.rs (index_remote_command_reindex_accepts_bool_value, index_remote_command_reindex_bare_flag_fails, index_remote_command_args_to_json_no_vault_path_panic) still pass unmodified against the simplified implementation, proving the externally observable grammar and JSON shape are unchanged
-- [ ] #5 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #6 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 IndexOperation::get_remote_command in notectl-search/src/capability.rs uses self.get_command().mut_arg("vault_path", |a| a.required(false).hide(true)) instead of manually rebuilding clap::Command with individual .arg() calls for reindex/model/dim
+- [x] #2 IndexOperation::args_to_json is simplified to: let mut request = IndexRequest::from_arg_matches(matches)?; request.vault_path = None; Ok(serde_json::to_value(request)?) -- matching the pattern in notectl-tags/src/capability.rs's args_to_json
+- [x] #3 SearchOperation::get_remote_command and SearchOperation::args_to_json are left unchanged (they require the manual rebuild due to positional ordering -- do not touch them in this ticket)
+- [x] #4 Existing remote_command_tests in notectl-search/src/capability.rs (index_remote_command_reindex_accepts_bool_value, index_remote_command_reindex_bare_flag_fails, index_remote_command_args_to_json_no_vault_path_panic) still pass unmodified against the simplified implementation, proving the externally observable grammar and JSON shape are unchanged
+- [x] #5 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #6 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -47,3 +49,9 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 10. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 11. Run: nix develop -c cargo build (workspace-wide) to confirm nothing else broke.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Replaced IndexOperation::get_remote_command manual clap::Command rebuild with self.get_command().mut_arg("vault_path", |a| a.required(false).hide(true)). Replaced IndexOperation::args_to_json field-by-field extraction with IndexRequest::from_arg_matches + vault_path = None. SearchOperation left untouched per AC #3. All 140 tests pass, clippy clean, fmt clean, workspace build clean.
+<!-- SECTION:NOTES:END -->

@@ -279,33 +279,9 @@ impl notectl_core::operation::Operation for IndexOperation {
         IndexRequest::command()
     }
 
-    // NOTE: This same panic-on-missing-arg risk applies to every other capability file
-    // (notectl-outline, notectl-tags, notectl-files, notectl-daily-notes, notectl-tasks)
-    // since they all follow the identical pattern of omitting vault_path from
-    // get_remote_command while args_to_json routes through Request::from_arg_matches.
-    // See TASK-14 for details. A follow-up ticket should fix those systematically.
     fn get_remote_command(&self) -> clap::Command {
-        // Rebuild without the vault_path positional.
-        clap::Command::new("index")
-            .about("Build or update the search index")
-            .arg(
-                clap::Arg::new("reindex")
-                    .long("reindex")
-                    .value_parser(clap::value_parser!(bool))
-                    .help("Force full reindex"),
-            )
-            .arg(
-                clap::Arg::new("model")
-                    .long("model")
-                    .value_parser(clap::value_parser!(String))
-                    .help("Override embedding model ID"),
-            )
-            .arg(
-                clap::Arg::new("dim")
-                    .long("dim")
-                    .value_parser(clap::value_parser!(u32))
-                    .help("Override embedding dimension"),
-            )
+        self.get_command()
+            .mut_arg("vault_path", |a| a.required(false).hide(true))
     }
 
     async fn execute_json(
@@ -351,23 +327,13 @@ impl notectl_core::operation::Operation for IndexOperation {
         serde_json::to_value(schema_for!(IndexRequest)).unwrap()
     }
 
-    // Build JSON field-by-field instead of routing through IndexRequest::from_arg_matches,
-    // which would panic on a missing vault_path arg id when called from get_remote_command.
     fn args_to_json(
         &self,
         matches: &clap::ArgMatches,
     ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let mut obj = serde_json::Map::new();
-        if let Some(v) = matches.get_one::<bool>("reindex") {
-            obj.insert("reindex".into(), serde_json::Value::Bool(*v));
-        }
-        if let Some(v) = matches.get_one::<String>("model") {
-            obj.insert("model".into(), serde_json::Value::String(v.clone()));
-        }
-        if let Some(v) = matches.get_one::<u32>("dim") {
-            obj.insert("dim".into(), serde_json::json!(v));
-        }
-        Ok(serde_json::Value::Object(obj))
+        let mut request = IndexRequest::from_arg_matches(matches)?;
+        request.vault_path = None;
+        Ok(serde_json::to_value(request)?)
     }
 }
 
