@@ -55,3 +55,9 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 <!-- SECTION:NOTES:BEGIN -->
 Replaced IndexOperation::get_remote_command manual clap::Command rebuild with self.get_command().mut_arg("vault_path", |a| a.required(false).hide(true)). Replaced IndexOperation::args_to_json field-by-field extraction with IndexRequest::from_arg_matches + vault_path = None. SearchOperation left untouched per AC #3. All 140 tests pass, clippy clean, fmt clean, workspace build clean.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Simplified IndexOperation::get_remote_command and args_to_json in notectl-search/src/capability.rs to use the mut_arg pattern (matching notectl-tags). Removed 26 lines of duplicated clap Command field-by-field rebuild code. SearchOperation left untouched per requirements. All 140 tests pass, clippy/fmt clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
