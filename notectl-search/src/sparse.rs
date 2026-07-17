@@ -5,6 +5,27 @@ use crate::chunker::Chunk;
 /// returns ranked `(chunk_index, score)` pairs for query strings.
 ///
 /// Built at search time from the chunk list; no persistence needed.
+///
+/// # Example
+/// ```
+/// use notectl_search::sparse::SparseIndexer;
+/// use notectl_search::chunker::Chunk;
+///
+/// let chunks = vec![
+///     Chunk {
+///         id: "c1".into(),
+///         source_file: "note.md".into(),
+///         line_start: 0,
+///         line_end: 10,
+///         heading: None,
+///         heading_path: Vec::new(),
+///         text: "Rust is a systems programming language".to_string(),
+///     },
+/// ];
+/// let indexer = SparseIndexer::index_chunks(&chunks);
+/// let results = indexer.score_query("rust programming");
+/// assert!(!results.is_empty());
+/// ```
 pub struct SparseIndexer {
     inner: Bm25Indexer,
 }
@@ -127,5 +148,28 @@ mod tests {
             top_indices.contains(&3),
             "Chunk 3 (graphql schema) should be in results"
         );
+    }
+
+    #[test]
+    fn test_empty_query() {
+        let chunks = vec![
+            make_chunk(0, "Rust is great"),
+            make_chunk(1, "Python is also great"),
+        ];
+        let indexer = SparseIndexer::index_chunks(&chunks);
+        let results = indexer.score_query("");
+        assert!(results.is_empty(), "Empty query should return no results");
+    }
+
+    #[test]
+    fn test_single_chunk() {
+        let chunks = vec![make_chunk(0, "hello world foo bar")];
+        let indexer = SparseIndexer::index_chunks(&chunks);
+
+        // Any matching term should return the single chunk.
+        let results = indexer.score_query("hello");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, 0);
+        assert!(results[0].1 > 0.0);
     }
 }

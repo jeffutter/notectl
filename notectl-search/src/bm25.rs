@@ -26,6 +26,19 @@ pub struct Bm25Result {
 ///
 /// This is a lightweight implementation that stores an inverted index
 /// (term → postings) for efficient query-time scoring. It does not require external crates.
+///
+/// # Example
+/// ```
+/// use notectl_search::bm25::{Bm25Indexer, Bm25Params};
+///
+/// let mut indexer = Bm25Indexer::new(Bm25Params::default());
+/// indexer.add_document(&Bm25Indexer::tokenize("Rust is great"));
+/// indexer.add_document(&Bm25Indexer::tokenize("Python is also great"));
+/// indexer.finalize();
+///
+/// let results = indexer.score_query(&Bm25Indexer::tokenize("rust"));
+/// assert!(!results.is_empty());
+/// ```
 pub struct Bm25Indexer {
     params: Bm25Params,
     /// Inverted index: term → [(doc_index, term_frequency)]
@@ -145,7 +158,18 @@ impl Bm25Indexer {
         results
     }
 
-    /// Tokenize text into lowercase tokens (simple whitespace + punctuation split)
+    /// Tokenize text into lowercase tokens (simple whitespace + punctuation split).
+    ///
+    /// Splits on any whitespace or ASCII punctuation character, lowercases the result,
+    /// and filters out empty strings.
+    ///
+    /// # Example
+    /// ```
+    /// use notectl_search::bm25::Bm25Indexer;
+    ///
+    /// let tokens = Bm25Indexer::tokenize("Hello, World!");
+    /// assert_eq!(tokens, vec!["hello", "world"]);
+    /// ```
     pub fn tokenize(text: &str) -> Vec<String> {
         text.to_lowercase()
             .split(|c: char| c.is_whitespace() || c.is_ascii_punctuation())
@@ -196,5 +220,87 @@ mod tests {
 
         let results = indexer.score_query(&["nonexistent_term_xyz".into()]);
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_single_document_corpus() {
+        // IDF should still compute correctly with only one document.
+        let mut indexer = Bm25Indexer::default_params();
+        indexer.add_document(&["rust".into(), "is".into(), "great".into()]);
+        indexer.finalize();
+
+        let results = indexer.score_query(&["rust".into()]);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].doc_index, 0);
+        assert!(results[0].score > 0.0);
+    }
+
+    #[test]
+    fn test_identical_documents() {
+        // Two documents with identical content should score equally for any query.
+        let mut indexer = Bm25Indexer::default_params();
+        indexer.add_document(&["foo".into(), "bar".into(), "baz".into()]);
+        indexer.add_document(&["foo".into(), "bar".into(), "baz".into()]);
+        indexer.finalize();
+
+        let results = indexer.score_query(&["foo".into()]);
+        assert_eq!(results.len(), 2);
+        // Both docs have identical content and length → equal scores.
+        assert!((results[0].score - results[1].score).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_extreme_params() {
+        // k1=0.0 (no TF saturation) and b=1.0 (max length normalization)
+        // should produce valid scores without NaN or inf.
+        let mut indexer = Bm25Indexer::new(Bm25Params { k1: 0.0, b: 1.0 });
+        indexer.add_document(&["rust".into(), "is".into(), "great".into()]);
+        indexer.add_document(&[
+            "rust".into(),
+            "programming".into(),
+            "language".into(),
+            "is".into(),
+            "also".into(),
+            "amazing".into(),
+        ]);
+        indexer.finalize();
+
+        let results = indexer.score_query(&["rust".into(), "is".into()]);
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(!r.score.is_nan(), "Score must not be NaN");
+            assert!(!r.score.is_infinite(), "Score must not be infinite");
+            assert!(r.score >= 0.0, "Score must be non-negative");
+        }
+    }
+
+    #[test]
+    fn test_long_document_vs_short() {
+        // BM25 length normalization: a short doc containing all query terms
+        // should rank higher than a long doc with the same terms plus noise.
+        let mut indexer = Bm25Indexer::default_params();
+        // Short doc: exactly the query terms
+        indexer.add_document(&["search".into(), "engine".into()]);
+        // Long doc: same query terms buried in extra tokens
+        indexer.add_document(&[
+            "the".into(),
+            "search".into(),
+            "engine".into(),
+            "is".into(),
+            "very".into(),
+            "fast".into(),
+            "and".into(),
+            "reliable".into(),
+            "for".into(),
+            "large".into(),
+            "corpora".into(),
+        ]);
+        indexer.finalize();
+
+        let results = indexer.score_query(&["search".into(), "engine".into()]);
+        assert_eq!(results.len(), 2);
+        // Short doc (index 0) should rank higher due to length normalization.
+        assert_eq!(results[0].doc_index, 0);
+        assert!(results[0].score > results[1].score);
     }
 }

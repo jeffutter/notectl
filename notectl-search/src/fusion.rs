@@ -10,8 +10,7 @@ use std::collections::HashMap;
 
 /// Return top-k chunk indices ranked by cosine similarity to `query`.
 ///
-/// Both `vectors` and `query` must be L2-normalized (they come from
-/// `normalize_embedding`).
+/// Both `vectors` and `query` must be L2-normalized.
 /// When vectors are normalized, the dot product *is* cosine similarity.
 ///
 /// # Arguments
@@ -21,6 +20,20 @@ use std::collections::HashMap;
 ///
 /// # Returns
 /// `Vec<(usize, f32)>` — `(chunk_index, cosine_similarity)` sorted descending.
+///
+/// # Example
+/// ```
+/// use notectl_search::fusion::cosine_top_k;
+///
+/// // Exact match → score 1.0; orthogonal → score ~0.0
+/// let vecs = vec![vec![1.0, 0.0], vec![0.0, 1.0]];
+/// let query = vec![1.0, 0.0];
+///
+/// let result = cosine_top_k(&vecs, &query, 10);
+/// assert_eq!(result[0].0, 0); // exact match ranks first
+/// assert!((result[0].1 - 1.0).abs() < f32::EPSILON);
+/// assert!((result[1].1 - 0.0).abs() < f32::EPSILON); // orthogonal
+/// ```
 pub fn cosine_top_k(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(usize, f32)> {
     let mut scores: Vec<(usize, f32)> = vectors
         .iter()
@@ -53,6 +66,18 @@ pub fn cosine_top_k(vectors: &[Vec<f32>], query: &[f32], k: usize) -> Vec<(usize
 ///
 /// # Returns
 /// `Vec<(usize, f64)>` — `(chunk_index, fused_score)` sorted descending.
+///
+/// # Example
+/// ```
+/// use notectl_search::fusion::rrf_fuse;
+///
+/// let dense = [(0, 0.9), (1, 0.7)];
+/// let sparse = [(0, 1.5), (2, 1.0)];
+///
+/// let result = rrf_fuse(&dense, &sparse, 60.0, 1.0, 1.0);
+/// // Doc 0 appears at rank 1 in both lists → highest fused score.
+/// assert_eq!(result[0].0, 0);
+/// ```
 pub fn rrf_fuse(
     dense: &[(usize, f32)],
     sparse: &[(usize, f64)],

@@ -190,4 +190,34 @@ mod tests {
         assert!(!REQUIRED_FILES.is_empty());
         assert!(REQUIRED_FILES.len() >= 8);
     }
+
+    #[test]
+    fn test_is_model_ready_missing_dir() {
+        // Returns false when cache directory doesn't exist.
+        let non_existent = PathBuf::from(format!(
+            "/tmp/notectl-test-model-cache-xyz-{}",
+            std::process::id()
+        ));
+        assert!(
+            !non_existent.exists(),
+            "Test precondition: path must not exist"
+        );
+        assert!(!is_model_ready(&non_existent));
+    }
+
+    #[test]
+    fn test_is_model_ready_partial_files() {
+        // Returns false when some required files are missing.
+        let dir =
+            std::env::temp_dir().join(format!("notectl-partial-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create only one of the required files.
+        std::fs::write(dir.join(TOKENIZER_FILE), "{}").unwrap();
+
+        assert!(!is_model_ready(&dir));
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

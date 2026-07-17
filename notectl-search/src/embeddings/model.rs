@@ -713,7 +713,22 @@ fn l2_normalize(vec: &mut [f32]) {
     }
 }
 
-/// Apply matryoshka truncation + L2 normalization to a single embedding vector
+/// Apply matryoshka truncation + L2 normalization to a single embedding vector.
+///
+/// Truncates the input to `target_dim` if it is longer (Matryoshka representation
+/// learning), then applies L2 normalization so the output has unit length.
+///
+/// # Example
+/// ```
+/// use notectl_search::embeddings::model::normalize_embedding;
+///
+/// let vec = vec![3.0, 4.0, 0.0, 0.0];
+/// let result = normalize_embedding(&vec, 2); // truncate to 2 dims
+/// assert_eq!(result.len(), 2);
+/// // [3, 4] normalized → [0.6, 0.8]
+/// assert!((result[0] - 0.6).abs() < 1e-6);
+/// assert!((result[1] - 0.8).abs() < 1e-6);
+/// ```
 pub fn normalize_embedding(vec: &[f32], target_dim: usize) -> Vec<f32> {
     let mut result = matryoshka_truncate(vec, target_dim);
     l2_normalize(&mut result);
