@@ -643,3 +643,111 @@ mod remote_command_tests {
         assert_eq!(json["no_reindex"], true);
     }
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end tests for SearchCapability::build_index --reindex path (TASK-20)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod build_index_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Build index with --reindex removes artifacts, rebuilds them, and preserves models/.
+    #[tokio::test]
+    async fn build_index_reindex_removes_and_rebuilds_artifacts_preserves_models() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+        // Write content long enough to produce chunks (min_chunk_tokens default is 32).
+        fs::write(
+            base.join("hello.md"),
+            "# Hello\n\nThis is a longer note with enough content to produce chunks from the chunker pipeline. It has several sentences of text that should be sufficient for the chunker to generate output. Additional paragraphs ensure we exceed the minimum token threshold required by the default configuration settings.",
+        )
+        .unwrap();
+
+        let cap = SearchCapability::new(base.clone(), Arc::new(Config::default()));
+        let config = Config::default();
+        let index_dir = config.search.resolve_index_dir(&base);
+
+        // Initial build (non-reindex) to create real index artifacts.
+        let resp = cap.build_index(false, None, None).await.unwrap();
+        assert!(!resp.content_hash.is_empty());
+        assert!(resp.files_indexed >= 1);
+        assert!(
+            resp.chunks_produced >= 1,
+            "initial build must produce chunks"
+        );
+
+        // Verify artifacts exist before reindex.
+        assert!(index_dir.join("manifest.json").exists());
+        assert!(index_dir.join("chunks").is_dir());
+
+        // Create a models/ directory with a placeholder file under the index dir.
+        let models_dir = index_dir.join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        fs::write(models_dir.join("model.bin"), b"model data").unwrap();
+
+        // Rebuild with --reindex.
+        let result = cap.build_index(true, None, None).await;
+        assert!(
+            result.is_ok(),
+            "build_index(reindex=true) should succeed: {:?}",
+            result
+        );
+
+        // Assert models/ still exists after reindex.
+        assert!(
+            models_dir.join("model.bin").exists(),
+            "models/model.bin must survive --reindex"
+        );
+
+        // Assert index was rebuilt (artifacts recreated).
+        assert!(
+            index_dir.join("manifest.json").exists(),
+            "manifest.json must be rebuilt after --reindex"
+        );
+        assert!(
+            index_dir.join("chunks").is_dir(),
+            "chunks/ must be rebuilt after --reindex"
+        );
+
+        // Assert response shows valid index state.
+        let resp = result.unwrap();
+        assert!(
+            !resp.content_hash.is_empty(),
+            "content_hash must not be empty"
+        );
+        assert!(resp.files_indexed >= 1, "files_indexed must be >= 1");
+    }
+
+    /// --reindex on a vault with no existing index succeeds (covers the exists() false branch).
+    #[tokio::test]
+    async fn build_index_reindex_when_no_existing_index_succeeds() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(&base).unwrap();
+        // Write content long enough to produce chunks (min_chunk_tokens default is 32).
+        fs::write(
+            base.join("hello.md"),
+            "# Hello\n\nThis is a longer note with enough content to produce chunks from the chunker pipeline. It has several sentences of text that should be sufficient for the chunker to generate output. Additional paragraphs ensure we exceed the minimum token threshold required by the default configuration settings.",
+        )
+        .unwrap();
+
+        let cap = SearchCapability::new(base.clone(), Arc::new(Config::default()));
+
+        // Call build_index with reindex=true on a fresh vault (no prior index).
+        let result = cap.build_index(true, None, None).await;
+        assert!(
+            result.is_ok(),
+            "build_index(reindex=true) on fresh vault should succeed: {:?}",
+            result
+        );
+
+        // The index should have been built successfully.
+        let resp = result.unwrap();
+        assert!(!resp.content_hash.is_empty());
+        assert!(resp.files_indexed >= 1);
+    }
+}

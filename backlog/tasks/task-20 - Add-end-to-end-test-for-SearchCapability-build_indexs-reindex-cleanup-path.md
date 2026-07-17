@@ -1,9 +1,11 @@
 ---
 id: TASK-20
 title: 'Add end-to-end test for SearchCapability::build_index''s --reindex cleanup path'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 16:53'
+updated_date: '2026-07-17 00:06'
 labels:
   - review-followup
 milestone: Active

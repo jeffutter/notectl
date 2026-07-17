@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-16 22:01'
+updated_date: '2026-07-16 22:02'
 labels:
   - planned
 dependencies:
@@ -150,3 +150,9 @@ cargo build
 <!-- SECTION:NOTES:BEGIN -->
 Implementation complete. Added two MCP tools (search, build_search_index) via trait-based AsyncTool pattern since #[tool_router] macro doesn't support #[cfg]-gated methods. Created McpSearchParams/McpIndexParams with all-optional fields (Default required by ToolBase). Updated get_info() instructions to include search tool descriptions when feature is enabled.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added two MCP tools (search, build_search_index) gated behind the 'search' feature flag. Used trait-based AsyncTool pattern since #[tool_router] macro doesn't support conditional methods. Created McpSearchParams/McpIndexParams types with all-optional fields for Default compliance. Updated get_info() instructions to include search tool descriptions when feature is enabled. Both builds (with/without search) compile cleanly with no warnings.
+<!-- SECTION:FINAL_SUMMARY:END -->
