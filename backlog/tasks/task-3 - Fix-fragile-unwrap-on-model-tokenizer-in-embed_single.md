@@ -1,10 +1,11 @@
 ---
 id: TASK-3
 title: 'Fix: fragile unwrap() on model/tokenizer in embed_single'
-status: Needs Plan
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-15 21:50'
-updated_date: '2026-07-15 22:58'
+updated_date: '2026-07-18 14:26'
 labels:
   - review-followup
 milestone: Active
@@ -43,3 +44,10 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 3. Verify the function signature already returns Result — it does (Result<Vec<f32>, EmbedError>).
 4. Run: nix develop -c cargo clippy -p notectl-search (verify clean)
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+- [x] #1 embed_single uses ok_or_else instead of unwrap() to propagate EmbedError::Inference gracefully
+- [x] #2 cargo clippy -p notectl-search passes clean; all 122 tests pass
+<!-- SECTION:NOTES:END -->

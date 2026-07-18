@@ -212,8 +212,16 @@ impl Embedder {
 
         let prefixed = task.apply_prefix(text, title);
         let output_dim = self.config.output_dim;
-        let model_arc = self.model.as_ref().unwrap().clone();
-        let tokenizer = self.tokenizer.as_ref().unwrap().clone();
+        let model_arc = self
+            .model
+            .as_ref()
+            .ok_or_else(|| EmbedError::Inference("Model not loaded".into()))?
+            .clone();
+        let tokenizer = self
+            .tokenizer
+            .as_ref()
+            .ok_or_else(|| EmbedError::Inference("Tokenizer not loaded".into()))?
+            .clone();
 
         tokio::task::spawn_blocking(move || {
             let mut model = model_arc
