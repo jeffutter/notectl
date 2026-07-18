@@ -30,7 +30,7 @@
  * that's a separate `--no-skills` flag we don't touch.
  */
 
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -714,6 +714,53 @@ async function runFinalReviewIfNeeded(
   state.currentStepTimeoutMs = exitStepTimeoutMs;
 }
 
+/**
+ * Reads this run's slice of history.jsonl (not `state.history`, which is capped at
+ * MAX_HISTORY and would silently drop early tickets on a long run) and reports what
+ * actually got done: tickets executed/planned/chosen and review outcomes.
+ */
+async function buildFinalSummary(cwd: string, state: RalphState): Promise<string> {
+  const raw = await readFile(
+    join(cwd, STATE_DIR, "history.jsonl"),
+    "utf8",
+  ).catch(() => "");
+  const thisRun = raw
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as RalphHistoryEntry)
+    .filter((entry) => entry.at >= state.startedAt);
+
+  const distinctTickets = (kind: StepKind, outcome: "ok" | "failed") => [
+    ...new Set(
+      thisRun
+        .filter((e) => e.kind === kind && e.outcome === outcome && e.ticket)
+        .map((e) => e.ticket!),
+    ),
+  ];
+
+  const executed = distinctTickets("execute", "ok");
+  const executeFailed = distinctTickets("execute", "failed");
+  const planned = distinctTickets("plan", "ok").filter(
+    (id) => !executed.includes(id),
+  );
+  const reviews = thisRun.filter((e) => e.kind === "review");
+  const elapsed = formatDuration(Date.now() - Date.parse(state.startedAt));
+
+  const lines = [
+    `Ralph run summary: ${state.status} after ${state.loopCount}/${state.iterations} iteration(s), ${elapsed} elapsed`,
+    `Reason: ${state.currentStep ?? "(none)"}`,
+    executed.length
+      ? `Executed (${executed.length}): ${executed.join(", ")}`
+      : "Executed: none",
+  ];
+  if (planned.length) lines.push(`Also touched by planning: ${planned.join(", ")}`);
+  if (executeFailed.length) lines.push(`Failed to execute: ${executeFailed.join(", ")}`);
+  lines.push(
+    `Reviews: ${reviews.length} (${reviews.filter((r) => r.outcome === "ok").length} ok)`,
+  );
+  return lines.join("\n");
+}
+
 async function runLoop(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -782,7 +829,7 @@ async function runLoop(
     renderWidget(ctx, state);
     stopWidgetTicker();
     ctx.ui.notify(
-      `ralph ${state.status}: ${state.currentStep ?? ""} (${state.loopCount}/${state.iterations} iterations)`,
+      await buildFinalSummary(cwd, state),
       state.status === "done" ? "info" : "warn",
     );
   }
