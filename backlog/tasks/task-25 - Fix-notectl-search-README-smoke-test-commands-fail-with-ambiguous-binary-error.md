@@ -82,3 +82,15 @@ When a Cargo package declares multiple `[[bin]]` targets (auto-discovered `src/m
 - **Dependencies:** TASK-1.14 (Done) — the README was created there.
 - **Child tickets:** None needed.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed all three Smoke Test commands in notectl-search/README.md by adding '--bin notectl' flag. Verified: old commands fail with 'could not determine which binary to run', corrected commands succeed against scratch vault (1 file indexed, 2 chunks produced, search returns results). All 417 tests + 6 doc-tests pass.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added --bin notectl to all three cargo run commands in notectl-search/README.md Smoke Test section so they disambiguate between the two workspace binaries (notectl, notectl-remote). Verified old commands fail and corrected commands succeed. All tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
