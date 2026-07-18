@@ -57,3 +57,9 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 
 8. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation: Added REFERENCE_EMBEDDING_POPULATED and DOC_REFERENCE_EMBEDDING_POPULATED bool consts (both false). Replaced both 'array[0] != 0.0' guards with explicit sentinel checks. Updated eprintln messages to reference the new sentinels. Tests pass, clippy clean.
+<!-- SECTION:NOTES:END -->
