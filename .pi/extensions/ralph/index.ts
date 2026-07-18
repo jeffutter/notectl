@@ -13,10 +13,10 @@
  * here in plain TypeScript.
  *
  * Depends on skills already present as this user's global pi/Claude skills
- * (backlog-execute, backlog-planner, review-pi-work, herdr) and on "research"
- * / "planning" model aliases configured in pi's settings — see the design
- * doc for details. Requires HERDR_ENV=1 (the review step drives a herdr
- * pane) and the `backlog` CLI.
+ * (backlog-execute, backlog-planner, review-pi-work, herdr) and on "research" /
+ * "planning" / "chat-fast" model aliases configured in pi's settings — see the
+ * design doc for details. Requires HERDR_ENV=1 (the review step drives a
+ * herdr pane) and the `backlog` CLI.
  *
  * Headless worker calls run with `--no-extensions`: confirmed live that
  * `pi -p` intermittently hangs after printing its response and never exits,
@@ -54,6 +54,7 @@ const PI_WEB_ACCESS_EXTENSION = join(
 const DEFAULT_ITERATIONS = 16;
 const DEFAULT_REVIEW_EVERY = 3;
 
+const TRIAGE_TIMEOUT_MS = 5 * 60_000;
 const RESEARCH_TIMEOUT_MS = 15 * 60_000;
 const PLAN_TIMEOUT_MS = 20 * 60_000;
 const EXECUTE_TIMEOUT_MS = 30 * 60_000;
@@ -242,9 +243,10 @@ async function execCapture(
 function parsePlainTaskList(output: string): Ticket[] {
   const tasks: Ticket[] = [];
   for (const line of output.split("\n")) {
-    const match = line.match(
-      /^\s*\[[^\]]+\]\s*\[[^\]]+\]\s+(\S+)\s+-\s+(.+?)\s*$/,
-    );
+    // Each leading `[...]` is an optional priority/label tag — a ticket may have a
+    // priority and a label, just a priority, or neither, so match zero or more of them
+    // rather than assuming exactly two.
+    const match = line.match(/^\s*(?:\[[^\]]+\]\s*)*(\S+)\s+-\s+(.+?)\s*$/);
     if (match) tasks.push({ id: match[1], title: match[2] });
   }
   return tasks;
@@ -284,15 +286,16 @@ async function listUnblocked(pi: ExtensionAPI, cwd: string): Promise<Ticket[]> {
   return parseUnblockedList(stdout);
 }
 
-async function markNeedsPlan(
+async function setTicketStatus(
   pi: ExtensionAPI,
   cwd: string,
   ticketId: string,
+  status: string,
 ): Promise<boolean> {
   const { ok } = await execCapture(
     pi,
     "backlog",
-    ["task", "edit", ticketId, "-s", "Needs Plan"],
+    ["task", "edit", ticketId, "-s", status],
     {
       cwd,
       timeout: 15_000,
@@ -373,16 +376,25 @@ function summarize(
   return prefix + tailSummary(result.output, maxLen);
 }
 
-function extractTicketId(
+/** Scans a headless call's final message for a line matching one of `candidates` exactly
+ * (last one wins), falling back to a plain substring search. Shared by any prompt that asks
+ * the model to end with one of a fixed set of one-word/one-id answers. */
+function extractMarkerLine(
   output: string,
-  knownIds: string[],
+  candidates: string[],
 ): string | undefined {
   const lines = output.trim().split("\n").reverse();
   for (const line of lines) {
     const trimmed = line.trim();
-    if (knownIds.includes(trimmed)) return trimmed;
+    if (candidates.includes(trimmed)) return trimmed;
   }
-  return knownIds.find((id) => output.includes(id));
+  return candidates.find((candidate) => output.includes(candidate));
+}
+
+/** Parses the `REVIEW_PANE_ID: <id>` marker line the review prompt is required to print,
+ * so the caller can enforce pane cleanup instead of trusting the model remembered to. */
+function extractPaneId(output: string): string | undefined {
+  return output.match(/^REVIEW_PANE_ID:\s*(\S+)/m)?.[1];
 }
 
 // --- Step implementations ---------------------------------------------------
@@ -420,6 +432,41 @@ async function doExecute(
   return result.ok;
 }
 
+/**
+ * Cheap upfront judgment call: is this ticket trivial enough (one-line fix, rename, config
+ * tweak) that research and formal planning would just restate it? A failed or ambiguous
+ * call defaults to `false` — falling through to the normal (safe, expensive) path costs a
+ * few minutes, whereas wrongly skipping planning could not.
+ */
+async function classifyTrivial(
+  pi: ExtensionAPI,
+  ctx: ExtensionCommandContext,
+  cwd: string,
+  state: RalphState,
+  ticket: Ticket,
+): Promise<boolean> {
+  setCurrentStep(ctx, state, `triaging ${ticket.id}`, TRIAGE_TIMEOUT_MS);
+  const prompt = dedent`
+    Run \`backlog task ${ticket.id} --plain\` to read the full ticket ${ticket.id} ("${ticket.title}").
+
+    Judge whether it is trivial enough to skip research and formal planning entirely — a one-line fix, a
+    rename, a config tweak, or anything else where a written implementation plan would just restate the
+    ticket. If there is any real ambiguity, design work, or more than a handful of lines likely to change,
+    it is NOT trivial — when in doubt, say NORMAL.
+
+    End your final message with a line containing exactly one word and nothing else: TRIVIAL or NORMAL.
+  `;
+  const result = await runHeadless(pi, cwd, prompt, { timeout: TRIAGE_TIMEOUT_MS });
+  const verdict = extractMarkerLine(result.output, ["TRIVIAL", "NORMAL"]);
+  await recordHistory(cwd, state, {
+    kind: "plan",
+    ticket: ticket.id,
+    outcome: result.ok ? "ok" : "failed",
+    summary: `triage: ${verdict ?? summarize(result, 80)}`,
+  });
+  return result.ok && verdict === "TRIVIAL";
+}
+
 async function doPlan(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -427,6 +474,23 @@ async function doPlan(
   state: RalphState,
   ticket: Ticket,
 ): Promise<boolean> {
+  // Bypasses /backlog-planner's own prerequisite check (unplanned child tickets block
+  // planning) and leaves no Implementation Plan on the ticket — accepted tradeoff for
+  // skipping both steps outright on genuinely trivial work; see classifyTrivial above.
+  if (await classifyTrivial(pi, ctx, cwd, state, ticket)) {
+    setCurrentStep(ctx, state, `marking ${ticket.id} Dev Ready (trivial)`);
+    const ok = await setTicketStatus(pi, cwd, ticket.id, "Dev Ready");
+    await recordHistory(cwd, state, {
+      kind: "plan",
+      ticket: ticket.id,
+      outcome: ok ? "ok" : "failed",
+      summary: ok
+        ? "trivial — skipped research/planning, marked Dev Ready directly"
+        : "trivial — failed to mark Dev Ready",
+    });
+    return ok;
+  }
+
   setCurrentStep(ctx, state, `researching ${ticket.id}`, RESEARCH_TIMEOUT_MS);
   const researchPrompt = dedent`
     Research context to inform planning ticket ${ticket.id} ("${ticket.title}") in this repo.
@@ -483,7 +547,7 @@ async function doChoose(
   if (candidates.length === 1) {
     const only = candidates[0];
     setCurrentStep(ctx, state, `queuing ${only.id} for planning`);
-    const ok = await markNeedsPlan(pi, cwd, only.id);
+    const ok = await setTicketStatus(pi, cwd, only.id, "Needs Plan");
     await recordHistory(cwd, state, {
       kind: "choose",
       ticket: only.id,
@@ -506,8 +570,9 @@ async function doChoose(
   `;
   const result = await runHeadless(pi, cwd, prompt, {
     timeout: CHOOSE_TIMEOUT_MS,
+    model: "chat-fast",
   });
-  const chosenId = extractTicketId(
+  const chosenId = extractMarkerLine(
     result.output,
     candidates.map((c) => c.id),
   );
@@ -548,21 +613,48 @@ async function doReview(
        intact — e.g.:
        \`herdr pane run <new-pane-id> "cd '${cwd}'"\`
        \`herdr pane run <new-pane-id> 'claude --permission-mode auto "Run the review-pi-work skill for the last ${n} tickets"'\`
-    3. Wait until that pane's agent finishes (poll \`herdr pane list\` for the pane's \`agent_status\` field
-       becoming \`done\`; give it up to ${REVIEW_TIMEOUT_MIN} minutes).
+    3. Wait for that pane's agent to finish with a single blocking call — do NOT poll
+       \`herdr pane list\` in a sleep loop, that wastes your own turns waiting on a subagent that
+       hasn't moved. Wait for \`idle\`, not \`done\`: \`claude --permission-mode auto "<prompt>"\`
+       stays resident afterward waiting for more input rather than exiting, and (especially once the
+       pane is focused) it settles at \`idle\` — \`done\` specifically means "finished but nobody's
+       looked yet," which this pane won't satisfy.
+       \`herdr wait agent-status <new-pane-id> --status idle --timeout ${REVIEW_TIMEOUT_MS}\`
+       (timeout is in milliseconds — ${REVIEW_TIMEOUT_MIN} minutes). A nonzero exit means it timed out;
+       treat that the same as a failed review and continue to steps 4-5 anyway.
     4. Read its final output (\`herdr pane read <new-pane-id> --source recent --lines 400\`) and summarize
        what it found, including any new follow-up ticket IDs it filed.
-    5. Close the review pane (\`herdr pane close <new-pane-id>\`).
+    5. Close the review pane (\`herdr pane close <new-pane-id>\`) — do this even if a step above failed or
+       timed out, so the pane never lingers.
 
-    Report back a concise summary of the review findings and any follow-up ticket IDs filed.
+    Report back a concise summary of the review findings and any follow-up ticket IDs filed. Regardless of
+    what happened above (including if you couldn't close the pane yourself), end your final message with a
+    line containing exactly \`REVIEW_PANE_ID: <new-pane-id>\` (the id from step 1) so the caller can verify
+    the pane is gone.
   `;
   const result = await runHeadless(pi, cwd, prompt, {
     timeout: REVIEW_TIMEOUT_MS,
   });
+
+  // Don't trust the model to have actually run step 5 — close the pane ourselves as a
+  // guaranteed cleanup pass. Closing an already-closed pane just errors, which is the
+  // expected (and ignored) outcome when the model did close it; a successful close here
+  // means it didn't, which is worth surfacing since it points at a review pane silently
+  // lingering unless we catch it.
+  const paneId = extractPaneId(result.output);
+  let cleanupNote = "";
+  if (paneId) {
+    const closed = await execCapture(pi, "herdr", ["pane", "close", paneId], {
+      cwd,
+      timeout: 10_000,
+    });
+    if (closed.ok) cleanupNote = ` [cleanup: pane ${paneId} was still open, closed it]`;
+  }
+
   await recordHistory(cwd, state, {
     kind: "review",
     outcome: result.ok ? "ok" : "failed",
-    summary: summarize(result, 300),
+    summary: summarize(result, 300) + cleanupNote,
   });
   state.executedSinceReview = 0;
   return result.ok;
