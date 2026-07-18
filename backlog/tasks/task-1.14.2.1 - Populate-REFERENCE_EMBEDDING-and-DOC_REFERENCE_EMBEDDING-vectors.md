@@ -1,10 +1,11 @@
 ---
 id: TASK-1.14.2.1
 title: Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING vectors
-status: Needs Plan
-assignee: []
+status: Dev Ready
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 05:30'
-updated_date: '2026-07-18 16:43'
+updated_date: '2026-07-18 17:26'
 labels:
   - planned
 dependencies:
@@ -77,3 +78,9 @@ Both should pass with numerical assertions active (no "REFERENCE_EMBEDDING not p
 - HF_TOKEN env var must be set with accepted license for google/embeddinggemma-300m
 - Model weights (~600MB) will be downloaded on first run via hf-hub cache
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+BLOCKER: Cannot populate REFERENCE_EMBEDDING/DOC_REFERENCE_EMBEDDING without HF_TOKEN. Model google/embeddinggemma-300m is gated (manual access required). All HF inference API subdomains fail DNS resolution on this network. Docker not running for TEI container option. Need HF_TOKEN set with accepted license before this can proceed.
+<!-- SECTION:NOTES:END -->
