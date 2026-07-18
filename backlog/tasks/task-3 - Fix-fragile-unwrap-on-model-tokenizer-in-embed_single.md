@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-15 21:50'
-updated_date: '2026-07-18 14:26'
+updated_date: '2026-07-18 14:27'
 labels:
   - review-followup
 milestone: Active
@@ -51,3 +51,9 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 - [x] #1 embed_single uses ok_or_else instead of unwrap() to propagate EmbedError::Inference gracefully
 - [x] #2 cargo clippy -p notectl-search passes clean; all 122 tests pass
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced unwrap() calls on self.model and self.tokenizer in embed_single() with ok_or_else() that returns EmbedError::Inference. This ensures a graceful error return instead of a panic if ensure_loaded() fails to populate the fields. Clippy clean, all 149 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

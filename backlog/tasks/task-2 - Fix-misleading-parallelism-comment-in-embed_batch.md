@@ -1,10 +1,10 @@
 ---
 id: TASK-2
 title: 'Fix: misleading parallelism comment in embed_batch'
-status: Needs Plan
+status: To Do
 assignee: []
 created_date: '2026-07-15 21:49'
-updated_date: '2026-07-17 00:16'
+updated_date: '2026-07-18 14:20'
 labels:
   - review-followup
 milestone: Active

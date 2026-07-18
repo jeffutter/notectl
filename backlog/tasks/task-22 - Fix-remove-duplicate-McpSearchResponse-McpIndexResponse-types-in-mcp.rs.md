@@ -1,10 +1,10 @@
 ---
 id: TASK-22
 title: 'Fix: remove duplicate McpSearchResponse/McpIndexResponse types in mcp.rs'
-status: Needs Plan
+status: To Do
 assignee: []
 created_date: '2026-07-16 22:09'
-updated_date: '2026-07-16 23:49'
+updated_date: '2026-07-18 14:20'
 labels:
   - review-followup
 milestone: Active

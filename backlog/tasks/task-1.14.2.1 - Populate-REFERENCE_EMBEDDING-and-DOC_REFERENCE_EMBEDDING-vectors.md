@@ -4,8 +4,12 @@ title: Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING vectors
 status: To Do
 assignee: []
 created_date: '2026-07-18 05:30'
-labels: []
-dependencies: []
+updated_date: '2026-07-18 14:20'
+labels:
+  - planned
+dependencies:
+  - TASK-27
+  - TASK-28
 parent_task_id: TASK-1.14.2
 ordinal: 27000
 ---
@@ -35,3 +39,41 @@ Requires: `HF_TOKEN` environment variable set with accepted license for `google/
 - [ ] Both integration tests assert against reference vectors (not skipping numerical check)
 - [ ] `cargo test -p notectl-search --features integration` passes with model available
 <!-- SECTION:DESCRIPTION:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Single file edit: notectl-search/src/embeddings/model.rs
+
+### Step 1: Capture Query Embedding
+Run the existing integration test with temporary debug output to print the full embedding vector:
+
+```bash
+# Add eprintln!("Query embedding: {:?}", &embedding[..50]) before the assertion in test_encoder_produces_correct_dimension
+cargo test -p notectl-search --features integration -- integration_tests::test_encoder_produces_correct_dimension
+```
+
+Copy first ~50 f32 dimensions from output into REFERENCE_EMBEDDING constant.
+
+### Step 2: Capture Document Embedding
+Similarly add debug output to test_document_embedding_matches_reference and run:
+
+```bash
+cargo test -p notectl-search --features integration -- integration_tests::test_document_embedding_matches_reference
+```
+
+Copy first ~50 f32 dimensions into DOC_REFERENCE_EMBEDDING constant.
+
+### Step 3: Remove Debug Output and Verify
+Remove temporary eprintln! calls. Run both tests to confirm they now assert against reference vectors (not skipping numerical check):
+
+```bash
+cargo test -p notectl-search --features integration -- integration_tests
+```
+
+Both should pass with numerical assertions active (no "REFERENCE_EMBEDDING not populated" warning).
+
+### Requirements
+- HF_TOKEN env var must be set with accepted license for google/embeddinggemma-300m
+- Model weights (~600MB) will be downloaded on first run via hf-hub cache
+<!-- SECTION:PLAN:END -->

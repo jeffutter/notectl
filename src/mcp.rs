@@ -215,7 +215,7 @@ mod search_tools {
     #[derive(Debug, Deserialize, JsonSchema, Default)]
     pub struct McpSearchParams {
         /// The text to search for
-        pub query: Option<String>,
+        pub query: String,
         /// Maximum number of results to return (default 50)
         pub limit: Option<usize>,
         /// Scoring mode: hybrid (dense+sparse fused), dense only, or sparse only (default hybrid)
@@ -254,12 +254,11 @@ mod search_tools {
             service: &TaskSearchService,
             params: Self::Parameter,
         ) -> Result<Self::Output, Self::Error> {
-            let query = params.query.unwrap_or_default();
             let response = service
                 .capability_registry
                 .search()
                 .do_search(
-                    &query,
+                    &params.query,
                     params.limit.unwrap_or(50),
                     params.mode.unwrap_or_default(),
                     params.no_reindex.unwrap_or(false),
@@ -329,6 +328,39 @@ mod search_tools {
                 content_hash: response.content_hash,
                 duration_ms: response.duration_ms,
             })
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// McpSearchParams with an empty JSON object (query omitted) must fail
+        /// deserialization, matching SearchRequest's required-query behavior on
+        /// the HTTP/CLI path.
+        #[test]
+        fn mcp_search_params_rejects_missing_query() {
+            let result = serde_json::from_value::<McpSearchParams>(serde_json::json!({}));
+            assert!(
+                result.is_err(),
+                "deserializing McpSearchParams without 'query' must fail"
+            );
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("query"),
+                "error must mention the missing 'query' field: {}",
+                err
+            );
+        }
+
+        /// McpSearchParams with query present succeeds.
+        #[test]
+        fn mcp_search_params_accepts_query() {
+            let result = serde_json::from_value::<McpSearchParams>(serde_json::json!({
+                "query": "hello"
+            }));
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().query, "hello");
         }
     }
 }

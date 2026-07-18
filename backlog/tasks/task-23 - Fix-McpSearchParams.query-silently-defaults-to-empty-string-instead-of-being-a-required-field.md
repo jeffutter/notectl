@@ -3,10 +3,11 @@ id: TASK-23
 title: >-
   Fix: McpSearchParams.query silently defaults to empty string instead of being
   a required field
-status: Needs Plan
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 22:09'
-updated_date: '2026-07-16 23:45'
+updated_date: '2026-07-18 15:04'
 labels:
   - review-followup
 milestone: Active
@@ -66,3 +67,9 @@ change pinned dependency versions.
 
 7. In the task's Implementation Notes, record what rmcp actually does with a missing required parameter (invalid-params JSON-RPC error vs. some other failure mode) so this is documented for future MCP tool authors in this codebase.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+rmcp deserializes tool arguments via serde_json::from_value on the arguments JsonObject directly (see rmcp-2.2.0/src/handler/server/tool.rs:186). A missing required String field produces a 'missing field' serde error wrapped in ErrorData::invalid_params with message prefix 'failed to deserialize parameters:'. This means MCP clients that omit 'query' get an invalid_params JSON-RPC error — matching HTTP/CLI behavior where SearchRequest.query is clap-required and serde-required.
+<!-- SECTION:NOTES:END -->
