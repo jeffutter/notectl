@@ -411,12 +411,8 @@ impl Gemma3Encoder {
             layer_mask = layer_mask.unsqueeze(0)?.unsqueeze(0)?;
 
             if let Some(pad_mask) = attention_mask {
-                let pad_f32 = pad_mask.to_dtype(DType::F32)?;
-                let one = Tensor::new(1.0f32, pad_mask.device())?;
-                let inv_pad = (&one - &pad_f32)?.to_dtype(self.dtype)?;
-                let inv_pad_4d = inv_pad.unsqueeze(1)?.unsqueeze(1)?;
-                let pad_contrib = inv_pad_4d.broadcast_as((_b_size, 1, seq_len, seq_len))?;
-                layer_mask = layer_mask.broadcast_add(&pad_contrib)?;
+                let pad_bias = padding_bias(pad_mask, seq_len, self.dtype, pad_mask.device())?;
+                layer_mask = layer_mask.broadcast_add(&pad_bias)?;
             }
 
             let layer_mask = layer_mask.expand((_b_size, 1, seq_len, seq_len))?;
@@ -473,6 +469,42 @@ pub fn mean_pooling(hidden_states: &Tensor, attention_mask: &Tensor) -> CandleRe
 
     // Average
     sum.broadcast_div(&mask_sum)
+}
+
+/// Build a padding bias tensor that excludes padded key positions from attention.
+///
+/// Uses a large negative FINITE constant (-1e9) rather than `f32::NEG_INFINITY`
+/// because `0.0 * NEG_INFINITY = NaN` would corrupt real-token logits.
+/// The value -1e9 is large enough that `exp(-1e9)` underflows to 0.0 in f32 softmax,
+/// fully excluding padded keys while avoiding NaN propagation.
+///
+/// # Arguments
+/// * `pad_mask` - Shape `[batch, seq_len]`, 1.0 for real tokens, 0.0 for padding
+/// * `seq_len` - Sequence length (for broadcast shape)
+/// * `dtype` - Target data type
+/// * `device` - Device to allocate on
+///
+/// # Returns
+/// Tensor of shape `[batch, 1, seq_len, seq_len]` ready to add to the layer mask.
+pub fn padding_bias(
+    pad_mask: &Tensor,
+    seq_len: usize,
+    dtype: DType,
+    device: &Device,
+) -> CandleResult<Tensor> {
+    const PADDING_BIAS: f64 = -1e9;
+
+    let pad_f32 = pad_mask.to_dtype(DType::F32)?;
+    let ones = Tensor::ones(pad_f32.shape().clone(), DType::F32, device)?;
+    let inv_pad = (&ones - &pad_f32)?; // 0.0 for real tokens, 1.0 for padded
+    let neg_bias = Tensor::new(PADDING_BIAS as f32, device)?;
+    let bias = inv_pad.broadcast_mul(&neg_bias)?; // 0.0 for real, -1e9 for padded
+    let bias = bias.to_dtype(dtype)?;
+
+    // Broadcast from [batch, seq_len] to [batch, 1, seq_len, seq_len]
+    let b_size = pad_mask.dims()[0];
+    let bias = bias.unsqueeze(1)?.unsqueeze(1)?;
+    bias.expand((b_size, 1, seq_len, seq_len))
 }
 
 /// Single Dense projection layer
@@ -798,6 +830,55 @@ mod tests {
         assert_eq!(config.output_dim, 768);
         assert_eq!(config.max_seq_len, 2048);
         assert_eq!(config.dtype, DType::F32);
+    }
+
+    #[test]
+    fn test_padding_bias_excludes_padded_positions() {
+        // pad_mask: [1, 4] — first 2 are real tokens (1.0), last 2 are padding (0.0)
+        let pad_mask = Tensor::new(&[[1.0f32, 1.0, 0.0, 0.0]], &Device::Cpu).unwrap();
+        let bias = padding_bias(&pad_mask, 4, DType::F32, &Device::Cpu).unwrap();
+
+        // Result shape: [1, 1, 4, 4]
+        let dims = bias.dims();
+        assert_eq!(dims, &[1, 1, 4, 4], "Expected [1, 1, 4, 4], got {:?}", dims);
+
+        // Flatten and check values
+        let flat = bias.flatten_all().unwrap();
+        let values: Vec<f32> = flat.to_vec1().unwrap();
+        // [batch=0, head=0, query_pos, key_pos]
+        // For each query position, real key positions (0,1) should be ~0.0,
+        // padded key positions (2,3) should be large negative (~-1e9).
+        for q in 0..4 {
+            for k in 0..4 {
+                let idx = q * 4 + k;
+                let val = values[idx];
+                assert!(
+                    val.is_finite(),
+                    "Position [{}, {}]: got non-finite value",
+                    q,
+                    k
+                );
+                if k < 2 {
+                    // Real key position: should be ~0.0
+                    assert!(
+                        val.abs() < 1e-4,
+                        "Position [{}, {}]: expected ~0.0 for real key, got {}",
+                        q,
+                        k,
+                        val
+                    );
+                } else {
+                    // Padded key position: should be large negative
+                    assert!(
+                        val < -1e6,
+                        "Position [{}, {}]: expected large negative for padded key, got {}",
+                        q,
+                        k,
+                        val
+                    );
+                }
+            }
+        }
     }
 }
 
