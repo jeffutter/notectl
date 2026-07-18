@@ -1,11 +1,11 @@
 ---
 id: TASK-1.14.2.1
 title: Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING vectors
-status: Dev Ready
+status: To Do
 assignee:
   - '@ralph'
 created_date: '2026-07-18 05:30'
-updated_date: '2026-07-18 17:26'
+updated_date: '2026-07-18 17:59'
 labels:
   - planned
 dependencies:
@@ -83,4 +83,6 @@ Both should pass with numerical assertions active (no "REFERENCE_EMBEDDING not p
 
 <!-- SECTION:NOTES:BEGIN -->
 BLOCKER: Cannot populate REFERENCE_EMBEDDING/DOC_REFERENCE_EMBEDDING without HF_TOKEN. Model google/embeddinggemma-300m is gated (manual access required). All HF inference API subdomains fail DNS resolution on this network. Docker not running for TEI container option. Need HF_TOKEN set with accepted license before this can proceed.
+
+Attempted execution on 2026-07-18: verified HF_TOKEN is not set, no ~/.huggingface/token file exists, Docker not running (TEI container unavailable). huggingface.co/api resolves but model files return 401 (gated/manual license). Cannot proceed without user providing HF_TOKEN with accepted license for google/embeddinggemma-300m.
 <!-- SECTION:NOTES:END -->
