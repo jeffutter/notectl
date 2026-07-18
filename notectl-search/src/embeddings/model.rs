@@ -808,10 +808,11 @@ mod tests {
 /// - A valid `HF_TOKEN` with accepted license for `google/embeddinggemma-300m`
 /// - Several minutes of CPU inference time
 ///
-/// To populate REFERENCE_EMBEDDING, run the model via text-embeddings-inference
-/// (TEI) or a prior successful run of this test, then paste the first N dimensions
-/// here. The assertion uses a tight tolerance (1e-4) — if values drift, the encoder
-/// implementation has a bug (wrong attention mask, incorrect layer ordering, etc.).
+/// To populate REFERENCE_EMBEDDING / DOC_REFERENCE_EMBEDDING, run the model via
+/// text-embeddings-inference (TEI) or a prior successful run of this test, then
+/// paste the first N dimensions here. The assertion uses a tight tolerance (1e-4)
+/// — if values drift, the encoder implementation has a bug (wrong attention mask,
+/// incorrect layer ordering, etc.).
 #[cfg(all(test, feature = "integration"))]
 mod integration_tests {
     use super::*;
@@ -830,23 +831,21 @@ mod integration_tests {
         0.0_f32, 0.0, 0.0, 0.0, 0.0,
     ];
 
-    const TEST_INPUT: &str = "task: search result | query: hello world";
+    /// Reference embedding for "title: My Note | text: hello world"
+    /// (document-text prefix path).
+    ///
+    /// TODO: Populate from a TEI run.
+    const DOC_REFERENCE_EMBEDDING: &[f32] = &[
+        // TODO: Fill in reference values from a TEI run.
+        0.0_f32, 0.0, 0.0, 0.0, 0.0,
+    ];
 
-    #[test]
-    fn test_encoder_produces_correct_dimension() {
+    const QUERY_TEST_INPUT: &str = "task: search result | query: hello world";
+    const DOC_TEST_INPUT: &str = "title: My Note | text: hello world";
+
+    /// Shared helper: load model, tokenize, encode, pool, project → embedding vec.
+    fn get_embedding(input: &str) -> Vec<f32> {
         let cache_dir = download::default_cache_dir();
-
-        // Skip if model not downloaded (CI environments won't have it).
-        if !download::is_model_ready(&cache_dir) {
-            eprintln!(
-                "Skipping integration test: model not downloaded at {}. \
-                 Run with `cargo test --features integration -p notectl-search` \
-                 after ensuring HF_TOKEN is set.",
-                cache_dir.display()
-            );
-            return;
-        }
-
         let device = Device::Cpu;
         let embedding_config = EmbeddingModelConfig {
             output_dim: 768,
@@ -857,17 +856,13 @@ mod integration_tests {
         let mut loaded = load_model(&cache_dir, &device, &embedding_config)
             .expect("Failed to load encoder model");
 
-        // Tokenize the test input.
         let tokenizer_path = cache_dir.join("tokenizer.json");
         let tokenizer =
             tokenizers::Tokenizer::from_file(&tokenizer_path).expect("Failed to load tokenizer");
 
-        let encoding = tokenizer
-            .encode(TEST_INPUT, false)
-            .expect("Tokenization failed");
+        let encoding = tokenizer.encode(input, false).expect("Tokenization failed");
         let token_ids: Vec<u32> = encoding.get_ids().to_vec();
 
-        // Pad to max_seq_len.
         let max_len = embedding_config.max_seq_len;
         let pad_id = loaded.pad_token_id;
         let mut padded = token_ids;
@@ -887,7 +882,6 @@ mod integration_tests {
             .unsqueeze(0)
             .unwrap();
 
-        // Run encoder forward.
         let hidden_states = loaded
             .model
             .forward(&input_ids, Some(&pad_tensor))
@@ -908,55 +902,102 @@ mod integration_tests {
             loaded.config.hidden_size, dims[2]
         );
 
-        // Mean pool.
+        // Mean pool + project.
         let pooling_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &device).unwrap();
         let pooled = mean_pooling(&hidden_states, &pooling_mask).expect("Mean pooling failed");
-
-        // Project through Dense head.
         let projected = loaded
             .projection_head
             .forward(&pooled)
             .expect("Projection failed");
 
-        // Extract vector.
         let embedding = projected.squeeze(0).unwrap();
-        let embedding_f32: Vec<f32> = embedding.to_dtype(DType::F32).unwrap().to_vec1().unwrap();
+        embedding.to_dtype(DType::F32).unwrap().to_vec1().unwrap()
+    }
 
-        // Verify output dimension.
+    /// Assert common properties shared by both query and document embeddings.
+    fn assert_embedding_properties(embedding: &[f32], label: &str) {
         assert_eq!(
-            embedding_f32.len(),
+            embedding.len(),
             768,
-            "Expected 768-dim embedding, got {}",
-            embedding_f32.len()
+            "{label}: Expected 768-dim embedding, got {}",
+            embedding.len()
         );
 
-        // Verify it's a unit vector (L2 norm ≈ 1.0 after normalization).
-        let norm: f32 = embedding_f32.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!(
             (norm - 1.0).abs() < 1e-4,
-            "Embedding should be L2-normalized, got norm {norm}"
+            "{label}: Embedding should be L2-normalized, got norm {norm}"
         );
+    }
+
+    /// Assert that the first `ref_len` dimensions match a reference vector within tolerance.
+    fn assert_matches_reference(embedding: &[f32], reference: &[f32], label: &str) {
+        let ref_len = reference.len();
+        for i in 0..ref_len.min(768) {
+            let diff = (embedding[i] - reference[i]).abs();
+            assert!(
+                diff < 1e-4,
+                "{label}: Dimension {i} mismatch: got {}, expected {} (diff={:.6e})",
+                embedding[i],
+                reference[i],
+                diff
+            );
+        }
+        eprintln!("{label}: first {ref_len} dimensions match reference within 1e-4");
+    }
+
+    fn skip_if_model_not_ready() -> bool {
+        let cache_dir = download::default_cache_dir();
+        if !download::is_model_ready(&cache_dir) {
+            eprintln!(
+                "Skipping integration test: model not downloaded at {}. \
+                 Run with `cargo test --features integration -p notectl-search` \
+                 after ensuring HF_TOKEN is set.",
+                cache_dir.display()
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Validates the query-text embedding path against a known reference.
+    #[test]
+    fn test_encoder_produces_correct_dimension() {
+        if skip_if_model_not_ready() {
+            return;
+        }
+
+        let embedding = get_embedding(QUERY_TEST_INPUT);
+        assert_embedding_properties(&embedding, "Query embedding");
 
         // Numerical check against reference (when populated).
-        let ref_len = REFERENCE_EMBEDDING.len();
-        if ref_len > 0 && REFERENCE_EMBEDDING[0] != 0.0 {
-            for i in 0..ref_len.min(768) {
-                let diff = (embedding_f32[i] - REFERENCE_EMBEDDING[i]).abs();
-                assert!(
-                    diff < 1e-4,
-                    "Dimension {i} mismatch: got {}, expected {} (diff={:.6e})",
-                    embedding_f32[i],
-                    REFERENCE_EMBEDDING[i],
-                    diff
-                );
-            }
-            eprintln!(
-                "Integration test PASSED: first {ref_len} dimensions match reference within 1e-4"
-            );
+        if !REFERENCE_EMBEDDING.is_empty() && REFERENCE_EMBEDDING[0] != 0.0 {
+            assert_matches_reference(&embedding, REFERENCE_EMBEDDING, "Query embedding");
         } else {
             eprintln!(
-                "Integration test: shape/dim/norm verified, but REFERENCE_EMBEDDING not populated. \
+                "Query embedding: shape/dim/norm verified, but REFERENCE_EMBEDDING not populated. \
                  Populate REFERENCE_EMBEDDING in model.rs to enable numerical validation."
+            );
+        }
+    }
+
+    /// Validates the document-text embedding path against a known reference.
+    #[test]
+    fn test_document_embedding_matches_reference() {
+        if skip_if_model_not_ready() {
+            return;
+        }
+
+        let embedding = get_embedding(DOC_TEST_INPUT);
+        assert_embedding_properties(&embedding, "Document embedding");
+
+        // Numerical check against reference (when populated).
+        if !DOC_REFERENCE_EMBEDDING.is_empty() && DOC_REFERENCE_EMBEDDING[0] != 0.0 {
+            assert_matches_reference(&embedding, DOC_REFERENCE_EMBEDDING, "Document embedding");
+        } else {
+            eprintln!(
+                "Document embedding: shape/dim/norm verified, but DOC_REFERENCE_EMBEDDING not populated. \
+                 Populate DOC_REFERENCE_EMBEDDING in model.rs to enable numerical validation."
             );
         }
     }
