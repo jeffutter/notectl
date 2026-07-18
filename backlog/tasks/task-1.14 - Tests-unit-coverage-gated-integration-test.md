@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-14 02:22'
-updated_date: '2026-07-17 00:37'
+updated_date: '2026-07-17 00:38'
 labels: []
 dependencies:
   - TASK-1.4
@@ -187,3 +187,19 @@ cargo run --features search -- search /path/to/vault "query" | jq '.results[0]'
 - 6 doc-tests (--features embeddings), up from 0
 - Integration test: passes (graceful skip when model unavailable)
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed all planned work for test coverage:
+
+**Unit tests (+8):** bm25.rs (single-doc corpus, identical docs, extreme params, length normalization), sparse.rs (empty query, single chunk), download.rs (missing dir, partial files).
+
+**Doc-tests (+6):** Bm25Indexer struct/tokenize examples, SparseIndexer example, cosine_top_k example, rrf_fuse example, normalize_embedding example (feature-gated).
+
+**Integration test:** Compiles and gracefully skips when model unavailable. REFERENCE_EMBEDDING population deferred to TASK-1.14.2 (requires HF_TOKEN).
+
+**Smoke test docs:** Created notectl-search/README.md with architecture diagram, features table, smoke test commands, and index format description.
+
+Test counts: 122 → 148 unit tests (no features), 0 → 6 doc-tests. All pre-push hooks pass (audit, clippy, docs, rustfmt, test).
+<!-- SECTION:FINAL_SUMMARY:END -->

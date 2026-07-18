@@ -1,10 +1,10 @@
 ---
 id: TASK-1.14.3
-title: 'Doc-tests for public APIs + smoke test documentation'
-status: To Do
+title: Doc-tests for public APIs + smoke test documentation
+status: Done
 assignee: []
 created_date: '2026-07-17 00:30'
-updated_date: '2026-07-17 00:30'
+updated_date: '2026-07-17 00:48'
 labels: []
 dependencies: []
 parent_task_id: TASK-1.14
@@ -62,3 +62,9 @@ cargo run --features search -- search /path/to/vault "query" | jq '.results[0]'
 - [ ] No regressions in existing test suite
 - [ ] Smoke test procedure documented in crate README or AGENTS.md
 <!-- SECTION:DESCRIPTION:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Already implemented as part of parent TASK-1.14's commit 7143e81 (test(notectl-search): add unit tests, doc-tests, and smoke test docs) -- all 5 doc-tests listed in this subtask's description (Bm25Indexer::tokenize, SparseIndexer::index_chunks, cosine_top_k, rrf_fuse, normalize_embedding) exist verbatim and pass via 'cargo test --doc'. notectl-search/README.md's Smoke Test section was also added, matching this subtask's description. NOTE: the smoke test commands as documented (and as embedded verbatim in this subtask's own description) are missing '--bin notectl' and fail with an ambiguous-binary error since the workspace also has a notectl-remote binary; that gap is now tracked separately as TASK-25. This subtask was left in To Do by mistake when the parent was marked Done; closing to prevent duplicate/conflicting re-implementation on a future pi round.
+<!-- SECTION:FINAL_SUMMARY:END -->
