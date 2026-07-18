@@ -3,10 +3,11 @@ id: TASK-25
 title: >-
   Fix: notectl-search README smoke test commands fail with ambiguous binary
   error
-status: Dev Ready
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-17 00:47'
-updated_date: '2026-07-17 00:55'
+updated_date: '2026-07-18 05:17'
 labels:
   - review-followup
 milestone: Active
