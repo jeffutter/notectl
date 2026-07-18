@@ -1,11 +1,11 @@
 ---
 id: TASK-30
 title: Set up HF_TOKEN for EmbeddingGemma-300M model access
-status: To Do
+status: Dev Ready
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:59'
-updated_date: '2026-07-18 21:46'
+updated_date: '2026-07-18 22:08'
 labels:
   - infra
   - blocker
@@ -45,4 +45,10 @@ Manual steps required:
 6. Paste the output constants into notectl-search/src/embeddings/model.rs per TASK-29
 
 Attempted automated execution. No HF_TOKEN found anywhere on system (~/.bashrc, ~/.zshrc, ~/.profile, env, ~/.config/huggingface/, ~/.cache/huggingface/, .netrc, .envrc). huggingface-cli not installed. Requires manual human action: (1) create/login HuggingFace account, (2) accept google/embeddinggemma-300m license, (3) generate read-access token at huggingface.co/settings/tokens, (4) export HF_TOKEN in shell or .envrc, (5) verify with cargo run --features embeddings -p notectl-search --example print_embedding.
+
+Re-checked 2025-07-21: HF_TOKEN still not set anywhere on system. agent-browser cannot automate HuggingFace login (403 anti-bot). This remains blocked on manual human action: create/login HF account, accept google/embeddinggemma-300m license, generate read-access token, export HF_TOKEN.
+
+Re-checked 2026-07-18: HF_TOKEN still not set. Model download returns HTTP 401. Remains blocked on manual human action: create/login HF account, accept google/embeddinggemma-300m license, generate read-access token, export HF_TOKEN.
+
+Re-checked 2026-07-18: HF_TOKEN still not set. No token found in environment, shell configs, or huggingface directories. Remains blocked on manual human action.
 <!-- SECTION:NOTES:END -->

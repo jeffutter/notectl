@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 21:41'
-updated_date: '2026-07-18 21:51'
+updated_date: '2026-07-18 21:52'
 labels:
   - review-followup
 milestone: Active
@@ -62,3 +62,15 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 
 9. In the task's Implementation Notes, confirm the tracing::warn! for oversized input is still reachable from inner_embed_text's production path (manually trace the call, no need for a new test).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Refactored inner_embed_text in embed.rs to call super::model::truncate_and_pad() instead of hand-inlined actual_len/extend_from_slice/repeat_n block. Removed #[allow(dead_code)] from truncate_and_pad since it is now used by production code. Updated doc comment to reflect shared usage. Preserved tracing::warn! for oversized input above the truncate_and_pad call. Kept pad_id variable for attention mask computation. All 154 tests pass, clippy clean.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Deduplicated truncation+padding logic by replacing inline code in inner_embed_text with call to shared truncate_and_pad helper. Removed #[allow(dead_code)] since helper is now used by production code.
+<!-- SECTION:FINAL_SUMMARY:END -->
