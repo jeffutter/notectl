@@ -3,15 +3,17 @@ id: TASK-29
 title: >-
   Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING with real
   EmbeddingGemma-300M values
-status: Dev Ready
-assignee: []
+status: To Do
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 16:47'
-updated_date: '2026-07-18 16:50'
+updated_date: '2026-07-18 17:00'
 labels:
   - search
   - embeddings
   - integration-test
-dependencies: []
+dependencies:
+  - TASK-30
 priority: medium
 type: task
 ordinal: 28000
@@ -216,3 +218,9 @@ Remove the temporary example file OR keep it as a reusable debugging tool (recom
 - Values should be in range ±0.1 typically for L2-normalized 768-dim embeddings
 - After this change, any regression in the encoder will be caught by CI (when integration feature is enabled)
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Created print_embedding.rs harness example (notectl-search/examples/print_embedding.rs) which will generate real embedding values once HF_TOKEN is available. Blocked on TASK-30 (HF_TOKEN setup).
+<!-- SECTION:NOTES:END -->
