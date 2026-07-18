@@ -187,6 +187,41 @@ notectl search-headings path/to/vault --pattern "TODO"
 notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-level 3
 ```
 
+### Search Operations
+
+Semantic and keyword search across indexed notes. Requires the `search` feature flag.
+
+Build or update the search index:
+```bash
+# Build index (incremental by default)
+notectl index path/to/vault
+
+# Force full rebuild, wiping existing index artifacts
+notectl index path/to/vault --reindex true
+
+# Use a specific embedding model
+notectl index path/to/vault --model google/embedding-gemma-300m --dim 256
+```
+
+Search across indexed notes:
+```bash
+# Hybrid search (dense + sparse BM25 fused via RRF)
+notectl search path/to/vault "project timeline"
+
+# Dense vector search only
+notectl search path/to/vault "deployment steps" --mode dense --limit 10
+
+# Sparse (BM25) keyword search only
+notectl search path/to/vault "error handling" --mode sparse
+
+# Skip reindexing check, use existing index as-is
+notectl search path/to/vault "architecture" --no-reindex true
+```
+
+Each result includes: `id`, `source_file`, `score`, `heading` (optional), and `preview` text.
+
+The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
+
 ### MCP Server Mode
 
 Start an MCP server to expose all capabilities to AI assistants like Claude:

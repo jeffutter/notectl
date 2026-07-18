@@ -171,6 +171,28 @@ Examples:
   {bin} section{v} Projects/Plan.md "Implementation" --include-subsections true
   {bin} search-headings{v} "TODO" --max-level 3 --limit 20
 
+### Search
+
+Semantic and keyword search across indexed notes.
+
+`{bin} index{vp}`              build or update the search index
+  --reindex true|false       force full rebuild (wipe manifest.json, chunks/, vectors.bin; preserve models/)
+  --model <id>               override embedding model ID (default: google/embedding-gemma-300m)
+  --dim <N>                  override embedding dimension (default: 256)
+
+`{bin} search{vp} <query>`    search across indexed notes
+  --limit N                  max results (default 50)
+  --mode hybrid|dense|sparse scoring mode (default: hybrid)
+  --no-reindex true|false    skip staleness check/rebuild
+
+Output fields per result: id, source_file, score, heading (optional), preview
+
+Examples:
+  {bin} index{v}
+  {bin} index{v} --reindex true
+  {bin} search{v} "project timeline"
+  {bin} search{v} "deployment steps" --mode dense --limit 10
+
 {path_conventions}## General notes
 
 - All output is JSON.

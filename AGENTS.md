@@ -184,6 +184,23 @@ notectl/                              (workspace root + main binary)
       lib.rs
       outline_extractor.rs            (OutlineExtractor, heading parsing)
       capability.rs                   (OutlineCapability, GetOutline/GetSection/SearchHeadingsOperation)
+
+  notectl-search/                     (semantic + keyword search, feature-gated)
+    src/
+      lib.rs
+      capability.rs                   (SearchCapability, IndexOperation, SearchOperation)
+      chunker.rs                      (markdown chunking)
+      index.rs                        (index build/incremental update)
+      search.rs                       (search execution, result ranking)
+      bm25.rs                         (BM25 sparse scoring)
+      sparse.rs                       (sparse vector storage)
+      fusion.rs                       (RRF fusion of dense + sparse results)
+      storage.rs                      (persistent index storage)
+      tokenize.rs                     (text tokenization)
+      embeddings/mod.rs               (embedding model management)
+      embeddings/embed.rs             (embedding computation)
+      embeddings/model.rs             (model selection, config)
+      embeddings/download.rs          (model downloading from HuggingFace)
 ```
 
 ### Dependency Graph (no cycles)
@@ -196,7 +213,8 @@ core
   |--- files (core)
   |--- outline (core)
   |--- daily-notes (core, files)
-  |--- binary (core, tasks, tags, files, daily-notes, outline)
+  |--- search (core, files)           [feature = "search"]
+  |--- binary (core, tasks, tags, files, daily-notes, outline, search?)
 ```
 
 ### Capability-Based Architecture
@@ -343,6 +361,16 @@ To add a new capability (e.g., for bookmarks):
    ```
 
 > **Note**: As of now, `notectl-outline` operations (`get_outline`, `get_section`, `search_headings`) are registered for HTTP and CLI but **not** exposed as MCP tools in `src/mcp.rs`. They are available via HTTP and CLI only.
+
+### Conditional Compilation (search feature)
+
+The `notectl-search` crate is behind a `feature = "search"` flag. Key integration points use `#[cfg(feature = "search")]`:
+
+- **`src/capabilities/mod.rs`**: `SearchCapability` import, field, getter, and operation registration are all gated
+- **`src/mcp.rs`**: Search MCP tools use manual `with_async_tool::<search_tools::SearchTool>()` / `IndexTool` registration rather than the `#[tool_router]` macro. Defined in a `#[cfg(feature = "search")] mod search_tools { ... }` block
+- **`src/main.rs`**: Search commands are added conditionally
+
+Build with `--features search` to include search functionality.
 
 ### Adding New Metadata Types or Task Statuses
 
