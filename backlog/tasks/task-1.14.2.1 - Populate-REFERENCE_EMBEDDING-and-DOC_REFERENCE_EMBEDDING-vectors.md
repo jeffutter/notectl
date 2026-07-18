@@ -1,10 +1,10 @@
 ---
 id: TASK-1.14.2.1
 title: Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING vectors
-status: To Do
+status: Needs Plan
 assignee: []
 created_date: '2026-07-18 05:30'
-updated_date: '2026-07-18 14:20'
+updated_date: '2026-07-18 16:43'
 labels:
   - planned
 dependencies:

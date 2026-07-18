@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 07:10'
-updated_date: '2026-07-18 16:09'
+updated_date: '2026-07-18 16:10'
 labels:
   - review-followup
 milestone: Active
@@ -63,3 +63,9 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 <!-- SECTION:NOTES:BEGIN -->
 Implementation: Added REFERENCE_EMBEDDING_POPULATED and DOC_REFERENCE_EMBEDDING_POPULATED bool consts (both false). Replaced both 'array[0] != 0.0' guards with explicit sentinel checks. Updated eprintln messages to reference the new sentinels. Tests pass, clippy clean.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced fragile 'array[0] != 0.0' guards with explicit boolean sentinels (REFERENCE_EMBEDDING_POPULATED, DOC_REFERENCE_EMBEDDING_POPULATED) in notectl-search/src/embeddings/model.rs integration tests. Both tests still pass and gracefully skip numeric validation when sentinels are false. Clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
