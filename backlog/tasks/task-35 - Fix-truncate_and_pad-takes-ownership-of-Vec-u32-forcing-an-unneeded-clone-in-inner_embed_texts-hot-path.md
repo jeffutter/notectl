@@ -3,9 +3,11 @@ id: TASK-35
 title: >-
   Fix: truncate_and_pad takes ownership of Vec<u32>, forcing an unneeded clone
   in inner_embed_text's hot path
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 21:56'
+updated_date: '2026-07-18 22:25'
 labels:
   - review-followup
 milestone: Active
@@ -23,11 +25,11 @@ Found while reviewing TASK-34 (notectl-search/src/embeddings/model.rs:775, notec
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 notectl-search/src/embeddings/model.rs::truncate_and_pad takes token_ids: &[u32] instead of Vec<u32>, and its body no longer requires an owned input (it already only reads via slicing and extend_from_slice)
-- [ ] #2 notectl-search/src/embeddings/embed.rs::inner_embed_text passes token_ids directly (a &[u32]) to truncate_and_pad without calling .to_vec()
-- [ ] #3 All existing call sites in notectl-search/src/embeddings/model.rs's test module (test_truncate_and_pad_over_length_does_not_panic, test_truncate_and_pad_under_length_pads, and the integration test around line 1041) are updated to pass a slice (e.g. &input or &token_ids) instead of an owned Vec, without changing what each test asserts
-- [ ] #4 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 notectl-search/src/embeddings/model.rs::truncate_and_pad takes token_ids: &[u32] instead of Vec<u32>, and its body no longer requires an owned input (it already only reads via slicing and extend_from_slice)
+- [x] #2 notectl-search/src/embeddings/embed.rs::inner_embed_text passes token_ids directly (a &[u32]) to truncate_and_pad without calling .to_vec()
+- [x] #3 All existing call sites in notectl-search/src/embeddings/model.rs's test module (test_truncate_and_pad_over_length_does_not_panic, test_truncate_and_pad_under_length_pads, and the integration test around line 1041) are updated to pass a slice (e.g. &input or &token_ids) instead of an owned Vec, without changing what each test asserts
+- [x] #4 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #5 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -69,3 +71,15 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 
 8. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Changed truncate_and_pad signature from Vec<u32> to &[u32] in model.rs:775. Removed .to_vec() allocation at call site in embed.rs (inner_embed_text hot path). Updated 3 test call sites to pass slices. All 154 tests pass, clippy clean, fmt clean.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Changed truncate_and_pad parameter from Vec<u32> to &[u32] in model.rs, eliminating an unnecessary .to_vec() clone in inner_embed_text's hot path (embed.rs). Updated 3 test call sites to pass slices. All 154 tests pass, clippy clean, fmt clean.
+<!-- SECTION:FINAL_SUMMARY:END -->

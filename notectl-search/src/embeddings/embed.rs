@@ -308,11 +308,7 @@ fn inner_embed_text(
 
     // Truncate and pad to max_seq_len using shared helper.
     let pad_id = model.pad_token_id;
-    let padded_ids = truncate_and_pad(
-        token_ids.to_vec(),
-        model.embedding_config.max_seq_len,
-        pad_id,
-    );
+    let padded_ids = truncate_and_pad(token_ids, model.embedding_config.max_seq_len, pad_id);
 
     // Attention mask: 1.0 for real tokens, 0.0 for padding.
     let attention_mask: Vec<f32> = padded_ids
