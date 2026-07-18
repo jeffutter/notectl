@@ -3,12 +3,14 @@ id: TASK-24
 title: >-
   Fix: version-mismatch rebuild leaves orphaned absolute-path chunk files and
   vectors.bin on disk
-status: Needs Plan
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 22:10'
-updated_date: '2026-07-16 23:47'
+updated_date: '2026-07-18 14:38'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-11
@@ -63,3 +65,15 @@ change pinned dependency versions.
 
 7. In the task's Implementation Notes, state which of step 2 or step 3 was taken and why.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation Notes: Took approach from step 2 of the plan — localized fix in storage.rs::SearchIndex::open_or_create. Added a new private helper clean_stale_artifacts(base_dir) that removes chunks/ and vectors.bin (preserving models/) when version mismatch or parse error is detected. This avoids plumbing a flag through compute_staleness_diff/IndexBuilder (step 3 alt) and mirrors the existing --reindex cleanup convention. Added regression test test_open_or_create_v2_manifest_cleans_up_orphaned_chunk_files per AC#2.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added clean_stale_artifacts() helper to SearchIndex::open_or_create that removes chunks/ and vectors.bin when manifest version mismatch or parse error is detected. Preserves models/ directory. Includes regression test with absolute-path orphaned chunk files.
+<!-- SECTION:FINAL_SUMMARY:END -->

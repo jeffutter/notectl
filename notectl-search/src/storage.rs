@@ -341,6 +341,28 @@ pub struct SearchIndex {
 }
 
 impl SearchIndex {
+    /// Remove stale on-disk artifacts (chunks/ directory and vectors.bin)
+    /// without touching the models/ directory or the base_dir itself.
+    ///
+    /// Called from [`Self::open_or_create`] when a version mismatch or parse
+    /// error is detected, so that orphaned chunk files with absolute-path
+    /// IDs (pre-TASK-6) and old vector data are cleaned up before the fresh
+    /// index is built.
+    fn clean_stale_artifacts(base_dir: &Path) {
+        let chunks_dir = base_dir.join("chunks");
+        if chunks_dir.exists()
+            && let Err(e) = fs::remove_dir_all(&chunks_dir)
+        {
+            tracing::warn!("Failed to remove stale chunks directory: {e}");
+        }
+        let vectors_path = base_dir.join("vectors.bin");
+        if vectors_path.exists()
+            && let Err(e) = fs::remove_file(&vectors_path)
+        {
+            tracing::warn!("Failed to remove stale vectors file: {e}");
+        }
+    }
+
     /// Open an existing index at the given directory, or create a new one if it doesn't exist.
     ///
     /// On version mismatch (old v1 → new v2), treats the manifest as empty and logs a warning.
@@ -368,11 +390,15 @@ impl SearchIndex {
                         parsed.version,
                         INDEX_FORMAT_VERSION
                     );
+                    // Clean up stale on-disk artifacts from the old index format.
+                    Self::clean_stale_artifacts(base_dir);
                     SearchManifest::new_empty(model_id, embedding_dim, chunk_config)
                 }
                 Err(e) => {
                     // Parse error (e.g. old v1 schema missing new fields) — treat as empty.
                     tracing::warn!("Failed to parse manifest ({}). Starting fresh.", e);
+                    // Clean up stale on-disk artifacts from the corrupted index.
+                    Self::clean_stale_artifacts(base_dir);
                     SearchManifest::new_empty(model_id, embedding_dim, chunk_config)
                 }
             }
@@ -834,6 +860,99 @@ mod tests {
         assert_eq!(index.manifest().version, INDEX_FORMAT_VERSION);
         assert!(index.manifest().chunks.is_empty());
         assert!(index.manifest().files.is_empty());
+    }
+
+    /// Regression test (TASK-24): when a version-mismatch manifest is detected,
+    /// orphaned chunk files with absolute-path-derived filenames and vectors.bin
+    /// are cleaned up during open_or_create. The models/ directory is preserved.
+    #[test]
+    fn test_open_or_create_v2_manifest_cleans_up_orphaned_chunk_files() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        // Write a v2-format manifest (stale version).
+        let old_manifest = serde_json::json!({
+            "version": 2,
+            "model_id": "google/embedding-gemma-300m",
+            "embedding_dim": 256,
+            "chunk_config": {
+                "max_tokens": 512,
+                "overlap_tokens": 64,
+                "min_chunk_size": 32,
+                "merge_threshold": 30
+            },
+            "files": [],
+            "chunks": [],
+            "content_hash": "deadbeef",
+            "last_indexed": null,
+            "has_embeddings": false
+        });
+        fs::write(
+            tmp.path().join("manifest.json"),
+            serde_json::to_string_pretty(&old_manifest).unwrap(),
+        )
+        .unwrap();
+
+        // Create chunks/ directory with an old absolute-path-derived chunk file.
+        let chunks_dir = tmp.path().join("chunks");
+        fs::create_dir_all(&chunks_dir).unwrap();
+        let old_chunk_file = chunks_dir.join("_home_alice_vault_note.md_0_intro.txt");
+        fs::write(&old_chunk_file, "old chunk content").unwrap();
+
+        // Create a vectors.bin file.
+        let vectors_path = tmp.path().join("vectors.bin");
+        fs::write(&vectors_path, [0u8; 32]).unwrap();
+
+        // Create a models/ directory with a placeholder (must be preserved).
+        let models_dir = tmp.path().join("models");
+        fs::create_dir_all(&models_dir).unwrap();
+        fs::write(models_dir.join("model.bin"), b"model data").unwrap();
+
+        // Verify preconditions.
+        assert!(old_chunk_file.exists());
+        assert!(vectors_path.exists());
+        assert!(models_dir.is_dir());
+        assert!(models_dir.join("model.bin").exists());
+
+        // Open with current version — should clean up stale artifacts.
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        // Manifest should be fresh.
+        assert_eq!(index.manifest().version, INDEX_FORMAT_VERSION);
+
+        // Old chunk file must be gone.
+        assert!(
+            !old_chunk_file.exists(),
+            "Orphaned chunk file with absolute-path ID must be removed"
+        );
+        assert!(
+            !chunks_dir.exists(),
+            "Entire chunks/ directory must be removed"
+        );
+
+        // vectors.bin must be gone.
+        assert!(!vectors_path.exists(), "Stale vectors.bin must be removed");
+
+        // models/ must still exist.
+        assert!(
+            models_dir.is_dir(),
+            "models/ directory must be preserved across version upgrade"
+        );
+        assert!(
+            models_dir.join("model.bin").exists(),
+            "models/model.bin must be preserved across version upgrade"
+        );
     }
 
     #[test]
