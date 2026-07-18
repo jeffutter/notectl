@@ -80,6 +80,10 @@ type RalphHistoryEntry = {
   ticket?: string;
   outcome: "ok" | "failed";
   summary: string;
+  /** New ticket IDs that appeared between the start and end of this step — only populated
+   * for review steps, via a deterministic before/after diff rather than parsing the review
+   * agent's free-text summary for ticket mentions. */
+  createdTickets?: string[];
 };
 
 type RalphState = {
@@ -284,6 +288,16 @@ async function listUnblocked(pi: ExtensionAPI, cwd: string): Promise<Ticket[]> {
     timeout: 30_000,
   });
   return parseUnblockedList(stdout);
+}
+
+/** All known ticket IDs, across every status. Used to detect new tickets filed by a review
+ * step via a before/after diff, rather than parsing the review agent's free-text summary. */
+async function listAllTicketIds(pi: ExtensionAPI, cwd: string): Promise<Set<string>> {
+  const { stdout } = await execCapture(pi, "backlog", ["task", "list", "--plain"], {
+    cwd,
+    timeout: 15_000,
+  });
+  return new Set(parsePlainTaskList(stdout).map((t) => t.id));
 }
 
 async function setTicketStatus(
@@ -599,6 +613,7 @@ async function doReview(
     `reviewing last ${n} ticket(s)`,
     REVIEW_TIMEOUT_MS,
   );
+  const ticketsBefore = await listAllTicketIds(pi, cwd);
   const prompt = dedent`
     You are the review checkpoint for pi's autonomous backlog loop. Use the herdr CLI (you are already
     running inside a herdr-managed pane) to have a fresh claude subagent audit the last ${n} completed
@@ -651,10 +666,14 @@ async function doReview(
     if (closed.ok) cleanupNote = ` [cleanup: pane ${paneId} was still open, closed it]`;
   }
 
+  const ticketsAfter = await listAllTicketIds(pi, cwd);
+  const createdTickets = [...ticketsAfter].filter((id) => !ticketsBefore.has(id));
+
   await recordHistory(cwd, state, {
     kind: "review",
     outcome: result.ok ? "ok" : "failed",
     summary: summarize(result, 300) + cleanupNote,
+    createdTickets: createdTickets.length ? createdTickets : undefined,
   });
   state.executedSinceReview = 0;
   return result.ok;
@@ -757,6 +776,14 @@ async function buildFinalSummary(cwd: string, state: RalphState): Promise<string
   if (executeFailed.length) lines.push(`Failed to execute: ${executeFailed.join(", ")}`);
   lines.push(
     `Reviews: ${reviews.length} (${reviews.filter((r) => r.outcome === "ok").length} ok)`,
+  );
+  const createdByReview = [
+    ...new Set(reviews.flatMap((r) => r.createdTickets ?? [])),
+  ];
+  lines.push(
+    createdByReview.length
+      ? `New tickets filed by review (${createdByReview.length}): ${createdByReview.join(", ")}`
+      : "New tickets filed by review: none",
   );
   return lines.join("\n");
 }
