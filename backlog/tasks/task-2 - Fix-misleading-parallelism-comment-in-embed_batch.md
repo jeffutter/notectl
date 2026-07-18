@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-15 21:49'
-updated_date: '2026-07-18 23:23'
+updated_date: '2026-07-18 23:24'
 labels:
   - review-followup
 milestone: Active
@@ -44,3 +44,9 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 <!-- SECTION:NOTES:BEGIN -->
 Fixed misleading comment in embed_batch (lines 263-265 of embed.rs). The original comment claimed parallelism via rayon's thread pool, but the batch loop awaits items sequentially. Updated comment to accurately describe that parallelism comes from overlapping batches across spawn_blocking threads on the tokio runtime.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced misleading comment in embed_batch (embed.rs:263-265) that claimed parallelism via rayon's thread pool. Items within a batch are awaited sequentially; any parallelism comes from overlapping batches across spawn_blocking threads. Clippy, tests, and docs all pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
