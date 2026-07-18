@@ -843,7 +843,8 @@ mod integration_tests {
     const QUERY_TEST_INPUT: &str = "task: search result | query: hello world";
     const DOC_TEST_INPUT: &str = "title: My Note | text: hello world";
 
-    /// Shared helper: load model, tokenize, encode, pool, project → embedding vec.
+    /// Mirrors embed.rs::inner_embed_text (tokenize → pad → forward → mean_pooling → projection → normalize_embedding).
+    /// Keep the two in sync — this duplication is what let the missing normalize_embedding call go unnoticed.
     fn get_embedding(input: &str) -> Vec<f32> {
         let cache_dir = download::default_cache_dir();
         let device = Device::Cpu;
@@ -911,7 +912,8 @@ mod integration_tests {
             .expect("Projection failed");
 
         let embedding = projected.squeeze(0).unwrap();
-        embedding.to_dtype(DType::F32).unwrap().to_vec1().unwrap()
+        let raw: Vec<f32> = embedding.to_dtype(DType::F32).unwrap().to_vec1().unwrap();
+        normalize_embedding(&raw, 768)
     }
 
     /// Assert common properties shared by both query and document embeddings.
