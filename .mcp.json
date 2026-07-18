@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "backlog": {
+      "command": "backlog",
+      "args": [
+        "mcp",
+        "start"
+      ],
+      "directTools": [
+        "get_backlog_instructions",
+        "task_create",
+        "task_list",
+        "task_search",
+        "task_edit",
+        "task_view",
+        "task_archive",
+        "task_complete",
+        "definition_of_done_defaults_get",
+        "definition_of_done_defaults_upsert",
+        "document_list",
+        "document_view",
+        "document_create",
+        "document_update",
+        "document_search",
+        "get_backlog_workflow_overview",
+        "get_task_creation_guide",
+        "get_task_execution_guide",
+        "get_task_finalization_guide"
+      ]
+    }
+  }
+}
