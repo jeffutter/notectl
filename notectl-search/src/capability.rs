@@ -650,6 +650,15 @@ mod build_index_tests {
         assert!(index_dir.join("manifest.json").exists());
         assert!(index_dir.join("chunks").is_dir());
 
+        // Plant a sentinel file in chunks/ that a real chunker-driven rebuild would never
+        // produce. If the --reindex cleanup path actually runs, clear_chunks() removes the
+        // entire chunks/ directory, so this sentinel must be gone afterward.
+        fs::write(
+            index_dir.join("chunks").join("_stale_sentinel.txt"),
+            b"stale",
+        )
+        .unwrap();
+
         // Create a models/ directory with a placeholder file under the index dir.
         let models_dir = index_dir.join("models");
         fs::create_dir_all(&models_dir).unwrap();
@@ -677,6 +686,16 @@ mod build_index_tests {
         assert!(
             index_dir.join("chunks").is_dir(),
             "chunks/ must be rebuilt after --reindex"
+        );
+
+        // Assert the stale sentinel was removed — this proves the --reindex cleanup path
+        // actually ran (clear_chunks does fs::remove_dir_all on chunks/).
+        assert!(
+            !index_dir
+                .join("chunks")
+                .join("_stale_sentinel.txt")
+                .exists(),
+            "stale sentinel chunk file must be removed by --reindex cleanup, proving the wipe actually ran"
         );
 
         // Assert response shows valid index state.

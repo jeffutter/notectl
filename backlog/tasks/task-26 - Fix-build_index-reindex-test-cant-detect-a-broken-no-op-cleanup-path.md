@@ -1,10 +1,11 @@
 ---
 id: TASK-26
 title: 'Fix: build_index --reindex test can''t detect a broken/no-op cleanup path'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 05:49'
-updated_date: '2026-07-18 14:20'
+updated_date: '2026-07-18 21:36'
 labels:
   - review-followup
 milestone: Active
@@ -22,10 +23,10 @@ Found while reviewing TASK-20 (notectl-search/src/capability.rs:625-689, test bu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 build_index_reindex_removes_and_rebuilds_artifacts_preserves_models (or a renamed/split test) proves the wipe actually happened by asserting something that ONLY the reindex cleanup path would change -- e.g. a sentinel file planted in <index_dir>/chunks/ after the initial build is confirmed gone after the reindex call
-- [ ] #2 Temporarily disabling the cleanup block in SearchCapability::build_index (capability.rs ~157-183, e.g. changing 'if reindex {' to 'if reindex && false {') causes the updated test to FAIL when verified manually during implementation; the temporary change is reverted before committing
-- [ ] #3 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #4 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 build_index_reindex_removes_and_rebuilds_artifacts_preserves_models (or a renamed/split test) proves the wipe actually happened by asserting something that ONLY the reindex cleanup path would change -- e.g. a sentinel file planted in <index_dir>/chunks/ after the initial build is confirmed gone after the reindex call
+- [x] #2 Temporarily disabling the cleanup block in SearchCapability::build_index (capability.rs ~157-183, e.g. changing 'if reindex {' to 'if reindex && false {') causes the updated test to FAIL when verified manually during implementation; the temporary change is reverted before committing
+- [x] #3 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #4 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -49,3 +50,15 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 
 7. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation Notes: Added sentinel file (_stale_sentinel.txt) planted in chunks/ after initial build. After reindex, assert it's gone — proving clear_chunks() (fs::remove_dir_all) actually ran. Verified rigor by temporarily disabling cleanup block (if reindex && false): test correctly fails on sentinel assertion. Reverted temporary change before committing.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added sentinel file assertion to build_index_reindex_removes_and_rebuilds_artifacts_preserves_models test. The sentinel (_stale_sentinel.txt) is planted in chunks/ after initial build and asserted gone after reindex, proving clear_chunks() actually ran. Previously the test passed even with cleanup disabled because compute_staleness_diff returned UpToDate.
+<!-- SECTION:FINAL_SUMMARY:END -->

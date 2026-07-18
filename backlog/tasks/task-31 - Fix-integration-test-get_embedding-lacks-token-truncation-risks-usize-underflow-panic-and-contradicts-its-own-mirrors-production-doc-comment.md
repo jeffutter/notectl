@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 17:33'
-updated_date: '2026-07-18 21:29'
+updated_date: '2026-07-18 21:30'
 labels:
   - review-followup
   - planned
@@ -107,3 +107,9 @@ Fixed in single commit (582b988). Changes in notectl-search/src/embeddings/model
 
 All acceptance criteria met.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed usize underflow panic risk in integration test get_embedding() by extracting truncate_and_pad() helper that mirrors production's inner_embed_text truncation+padding logic. Added two unit tests proving over-length input does not panic and under-length input pads correctly. All 154 tests pass, clippy clean, docs build clean. Pushed to embedding branch (dc76188).
+<!-- SECTION:FINAL_SUMMARY:END -->
