@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - '@ralph'
 created_date: '2026-07-18 05:30'
-updated_date: '2026-07-18 17:59'
+updated_date: '2026-07-18 19:23'
 labels:
   - planned
 dependencies:
@@ -85,4 +85,6 @@ Both should pass with numerical assertions active (no "REFERENCE_EMBEDDING not p
 BLOCKER: Cannot populate REFERENCE_EMBEDDING/DOC_REFERENCE_EMBEDDING without HF_TOKEN. Model google/embeddinggemma-300m is gated (manual access required). All HF inference API subdomains fail DNS resolution on this network. Docker not running for TEI container option. Need HF_TOKEN set with accepted license before this can proceed.
 
 Attempted execution on 2026-07-18: verified HF_TOKEN is not set, no ~/.huggingface/token file exists, Docker not running (TEI container unavailable). huggingface.co/api resolves but model files return 401 (gated/manual license). Cannot proceed without user providing HF_TOKEN with accepted license for google/embeddinggemma-300m.
+
+Re-attempted 2026-07-18: still blocked by missing HF_TOKEN. No token in env, no ~/.huggingface/token, Docker daemon not running (TEI container unavailable), huggingface.co returns 401 for gated model google/embeddinggemma-300m. Dependencies TASK-27 and TASK-28 are Done. To unblock: set HF_TOKEN with accepted license, then run 'cargo test -p notectl-search --features integration -- integration_tests --nocapture' to capture embedding vectors.
 <!-- SECTION:NOTES:END -->

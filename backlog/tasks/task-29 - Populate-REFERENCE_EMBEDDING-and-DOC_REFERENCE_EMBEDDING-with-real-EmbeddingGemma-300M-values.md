@@ -7,13 +7,15 @@ status: To Do
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:47'
-updated_date: '2026-07-18 17:00'
+updated_date: '2026-07-18 18:18'
 labels:
   - search
   - embeddings
   - integration-test
 dependencies:
   - TASK-30
+  - TASK-32
+  - TASK-33
 priority: medium
 type: task
 ordinal: 28000
