@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:59'
-updated_date: '2026-07-18 19:56'
+updated_date: '2026-07-18 21:46'
 labels:
   - infra
   - blocker
@@ -43,4 +43,6 @@ Manual steps required:
 4. Export HF_TOKEN="hf_xxxxxxxx" in your shell or add to .envrc
 5. Run: cargo run --features embeddings -p notectl-search --example print_embedding
 6. Paste the output constants into notectl-search/src/embeddings/model.rs per TASK-29
+
+Attempted automated execution. No HF_TOKEN found anywhere on system (~/.bashrc, ~/.zshrc, ~/.profile, env, ~/.config/huggingface/, ~/.cache/huggingface/, .netrc, .envrc). huggingface-cli not installed. Requires manual human action: (1) create/login HuggingFace account, (2) accept google/embeddinggemma-300m license, (3) generate read-access token at huggingface.co/settings/tokens, (4) export HF_TOKEN in shell or .envrc, (5) verify with cargo run --features embeddings -p notectl-search --example print_embedding.
 <!-- SECTION:NOTES:END -->
