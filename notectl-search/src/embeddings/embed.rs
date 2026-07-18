@@ -18,6 +18,7 @@ use tokenizers::Tokenizer;
 use super::download::{self, DownloadError};
 use super::model::{
     EmbeddingModelConfig, LoadedModel, ModelLoadError, load_model, normalize_embedding,
+    truncate_and_pad,
 };
 
 /// Task type for prompt prefix injection
@@ -296,7 +297,6 @@ fn inner_embed_text(
         .map_err(|e| EmbedError::Tokenization(format!("Tokenization failed: {e}")))?;
 
     let token_ids = encoding.get_ids();
-    let actual_len = token_ids.len().min(model.embedding_config.max_seq_len);
 
     if token_ids.len() > model.embedding_config.max_seq_len {
         tracing::warn!(
@@ -306,13 +306,13 @@ fn inner_embed_text(
         );
     }
 
-    // Pad to max_seq_len with pad_token_id and build attention mask.
-    let max_len = model.embedding_config.max_seq_len;
+    // Truncate and pad to max_seq_len using shared helper.
     let pad_id = model.pad_token_id;
-
-    let mut padded_ids = Vec::with_capacity(max_len);
-    padded_ids.extend_from_slice(&token_ids[..actual_len]);
-    padded_ids.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
+    let padded_ids = truncate_and_pad(
+        token_ids.to_vec(),
+        model.embedding_config.max_seq_len,
+        pad_id,
+    );
 
     // Attention mask: 1.0 for real tokens, 0.0 for padding.
     let attention_mask: Vec<f32> = padded_ids

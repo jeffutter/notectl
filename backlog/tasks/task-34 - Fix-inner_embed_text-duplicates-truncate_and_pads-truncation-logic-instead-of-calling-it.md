@@ -3,9 +3,11 @@ id: TASK-34
 title: >-
   Fix: inner_embed_text duplicates truncate_and_pad's truncation logic instead
   of calling it
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 21:41'
+updated_date: '2026-07-18 21:51'
 labels:
   - review-followup
 milestone: Active

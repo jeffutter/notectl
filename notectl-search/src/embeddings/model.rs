@@ -769,9 +769,9 @@ pub fn normalize_embedding(vec: &[f32], target_dim: usize) -> Vec<f32> {
 
 /// Truncate token IDs to `max_len` and pad with `pad_id`.
 ///
-/// Mirrors the truncation+padding logic in `inner_embed_text` (embed.rs) so that
-/// test helpers never panic on oversized input via usize underflow.
-#[allow(dead_code)] // Used by integration_tests module and unit tests
+/// Shared helper used by production code (`inner_embed_text` in embed.rs) and
+/// test helpers. Centralized here so truncation+padding policy lives in one place
+/// and callers cannot diverge or panic on oversized input via usize underflow.
 pub(crate) fn truncate_and_pad(token_ids: Vec<u32>, max_len: usize, pad_id: u32) -> Vec<u32> {
     let actual_len = token_ids.len().min(max_len);
     let mut padded = Vec::with_capacity(max_len);
