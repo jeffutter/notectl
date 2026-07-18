@@ -3,10 +3,11 @@ id: TASK-21
 title: >-
   Fix: remove unnecessary raw_vectors clone in search() dense-embedding success
   path
-status: Needs Plan
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 17:20'
-updated_date: '2026-07-18 14:20'
+updated_date: '2026-07-18 22:21'
 labels:
   - review-followup
 milestone: Active
@@ -24,10 +25,10 @@ Found while reviewing TASK-8 (notectl-search/src/search.rs:293). In the Ok(qvec)
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 notectl-search/src/search.rs::search() no longer calls .clone() on raw_vectors; the Ok(qvec) arm moves raw_vectors directly into the tuple instead
-- [ ] #2 All existing tests in notectl-search/src/search.rs pass without modification to their assertions
-- [ ] #3 nix develop -c cargo test -p notectl-search --all-features passes
-- [ ] #4 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
+- [x] #1 notectl-search/src/search.rs::search() no longer calls .clone() on raw_vectors; the Ok(qvec) arm moves raw_vectors directly into the tuple instead
+- [x] #2 All existing tests in notectl-search/src/search.rs pass without modification to their assertions
+- [x] #3 nix develop -c cargo test -p notectl-search --all-features passes
+- [x] #4 nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -59,3 +60,15 @@ change pinned dependency versions.
 5. Run: nix develop -c cargo clippy -p notectl-search --all-features --all-targets -- -D warnings
    Fix any warnings (there should be none expected from this change).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation: Changed raw_vectors.clone() to raw_vectors (move) in search.rs line 293 (Ok(qvec) arm of embed_single match). This eliminates an unnecessary deep-copy of Vec<Vec<f32>> on every successful Dense/Hybrid query. All quality gates pass: cargo check, cargo test (154 passed), cargo clippy (-D warnings).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One-line fix: replaced raw_vectors.clone() with raw_vectors (move) in search.rs Ok(qvec) arm. Eliminates unnecessary deep-copy of dense vector matrix on every successful Dense/Hybrid query. All 154 tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->

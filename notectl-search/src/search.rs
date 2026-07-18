@@ -290,7 +290,7 @@ pub async fn search(
                     .embed_single(query, None, TaskType::RetrievalQuery)
                     .await
                 {
-                    Ok(qvec) => Some((qvec, raw_vectors.clone())),
+                    Ok(qvec) => Some((qvec, raw_vectors)),
                     Err(e) => {
                         tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
                         None
