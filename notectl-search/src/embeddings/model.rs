@@ -833,6 +833,58 @@ mod tests {
     }
 
     #[test]
+    fn test_mean_pooling_respects_attention_mask() {
+        // hidden_states: (1, 4, 2) — batch=1, seq_len=4, hidden_dim=2
+        // Positions 0,1 are real tokens with values [1.0, 1.0] and [3.0, 3.0]
+        // Positions 2,3 are padding with deliberately large outlier values [100.0, 100.0] and [200.0, 200.0]
+        let hidden_states = Tensor::new(
+            &[[
+                [1.0f32, 1.0],  // pos 0: real token
+                [3.0, 3.0],     // pos 1: real token
+                [100.0, 100.0], // pos 2: padding (outlier)
+                [200.0, 200.0], // pos 3: padding (outlier)
+            ]],
+            &Device::Cpu,
+        )
+        .unwrap();
+
+        // pad_mask: (1, 4) — first 2 are real (1.0), last 2 are padding (0.0)
+        let pad_mask = Tensor::new(&[[1.0f32, 1.0, 0.0, 0.0]], &Device::Cpu).unwrap();
+
+        let result = mean_pooling(&hidden_states, &pad_mask).unwrap();
+        let pooled: Vec<f32> = result.squeeze(0).unwrap().to_vec1().unwrap();
+
+        // Mean of only real positions: ([1.0]+[3.0])/2 = [2.0, 2.0]
+        assert_eq!(pooled.len(), 2);
+        assert!(
+            (pooled[0] - 2.0).abs() < 1e-6,
+            "Expected 2.0, got {}",
+            pooled[0]
+        );
+        assert!(
+            (pooled[1] - 2.0).abs() < 1e-6,
+            "Expected 2.0, got {}",
+            pooled[1]
+        );
+
+        // Contrast: if an all-ones mask were used, padding positions would corrupt the result.
+        // This documents why the fix matters.
+        let ones_mask = Tensor::ones(pad_mask.shape().clone(), DType::F32, &Device::Cpu).unwrap();
+        let wrong_result = mean_pooling(&hidden_states, &ones_mask).unwrap();
+        let wrong_pooled: Vec<f32> = wrong_result.squeeze(0).unwrap().to_vec1().unwrap();
+        // With all-ones mask: ([1+3+100+200]/4, same) = [76.0, 76.0] — very different!
+        assert!(
+            (wrong_pooled[0] - 76.0).abs() < 1e-6,
+            "All-ones mask should give 76.0, got {}",
+            wrong_pooled[0]
+        );
+        assert!(
+            (pooled[0] - wrong_pooled[0]).abs() > 10.0,
+            "Results must differ significantly between correct and incorrect masks"
+        );
+    }
+
+    #[test]
     fn test_padding_bias_excludes_padded_positions() {
         // pad_mask: [1, 4] — first 2 are real tokens (1.0), last 2 are padding (0.0)
         let pad_mask = Tensor::new(&[[1.0f32, 1.0, 0.0, 0.0]], &Device::Cpu).unwrap();
@@ -992,9 +1044,8 @@ mod integration_tests {
             loaded.config.hidden_size, dims[2]
         );
 
-        // Mean pool + project.
-        let pooling_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &device).unwrap();
-        let pooled = mean_pooling(&hidden_states, &pooling_mask).expect("Mean pooling failed");
+        // Mean pool + project — use pad_tensor so padding positions are excluded from the average.
+        let pooled = mean_pooling(&hidden_states, &pad_tensor).expect("Mean pooling failed");
         let projected = loaded
             .projection_head
             .forward(&pooled)

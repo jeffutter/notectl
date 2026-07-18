@@ -3,9 +3,11 @@ id: TASK-33
 title: >-
   Fix: mean_pooling is called with an all-ones mask, never excluding padding
   tokens from the pooled average
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 18:18'
+updated_date: '2026-07-18 19:48'
 labels:
   - review-followup
 milestone: Active
@@ -23,11 +25,11 @@ Found while reviewing TASK-27 (notectl-search/src/embeddings/model.rs:915, and t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 embed.rs::inner_embed_text passes the existing pad_tensor (not a freshly-constructed all-ones tensor) as the attention_mask argument to mean_pooling
-- [ ] #2 model.rs::integration_tests::get_embedding passes the existing pad_tensor (not a freshly-constructed all-ones tensor) as the attention_mask argument to mean_pooling, keeping it mirrored with inner_embed_text per the doc comment TASK-27 added
-- [ ] #3 A new unit test calls mean_pooling directly with a synthetic hidden_states tensor and a pad_mask containing both real (1.0) and padding (0.0) positions, and asserts the result equals the mean of only the real-token positions (i.e. padding positions do not affect the output)
-- [ ] #4 nix develop -c cargo test -p notectl-search --features integration passes
-- [ ] #5 nix develop -c cargo clippy -p notectl-search --features integration --all-targets -- -D warnings passes
+- [x] #1 embed.rs::inner_embed_text passes the existing pad_tensor (not a freshly-constructed all-ones tensor) as the attention_mask argument to mean_pooling
+- [x] #2 model.rs::integration_tests::get_embedding passes the existing pad_tensor (not a freshly-constructed all-ones tensor) as the attention_mask argument to mean_pooling, keeping it mirrored with inner_embed_text per the doc comment TASK-27 added
+- [x] #3 A new unit test calls mean_pooling directly with a synthetic hidden_states tensor and a pad_mask containing both real (1.0) and padding (0.0) positions, and asserts the result equals the mean of only the real-token positions (i.e. padding positions do not affect the output)
+- [x] #4 nix develop -c cargo test -p notectl-search --features integration passes
+- [x] #5 nix develop -c cargo clippy -p notectl-search --features integration --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -65,3 +67,15 @@ SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline,
 
 9. In the task's Implementation Notes, note that this fix is independent of and complementary to TASK-32 (which fixes attention-level padding exclusion) — both are needed for padding to be fully excluded from the final embedding: TASK-32 ensures padded positions don't distort what real tokens attend to, this ticket ensures padded positions themselves don't get averaged into the final pooled vector.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation notes: This fix is independent of and complementary to TASK-32 (which fixes attention-level padding exclusion). Both are needed for padding to be fully excluded from the final embedding: TASK-32 ensures padded positions don't distort what real tokens attend to, this ticket ensures padded positions themselves don't get averaged into the final pooled vector.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed mean_pooling call sites in embed.rs and model.rs integration test to pass pad_tensor (with 0.0 for padding) instead of a freshly-constructed all-ones mask. Added unit test verifying padding exclusion. All tests and clippy pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

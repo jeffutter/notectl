@@ -337,12 +337,9 @@ fn inner_embed_text(
         .forward(&input_ids, Some(&pad_tensor))
         .map_err(|e| EmbedError::Inference(format!("Encoder forward failed: {e}")))?;
 
-    // Create a simple attention mask for mean pooling (all 1s).
-    let pooling_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &model.device)
-        .map_err(|e| EmbedError::Inference(format!("Failed to create pooling mask: {e}")))?;
-
-    // Apply mean pooling over the sequence dimension.
-    let pooled = super::model::mean_pooling(&hidden_states, &pooling_mask)
+    // Apply mean pooling over the sequence dimension, using pad_tensor so that
+    // padding positions (0.0) are excluded from the average.
+    let pooled = super::model::mean_pooling(&hidden_states, &pad_tensor)
         .map_err(|e| EmbedError::Inference(format!("Mean pooling failed: {e}")))?;
 
     // Apply Dense projection head (2_Dense tanh → 3_Dense linear).
