@@ -831,6 +831,10 @@ mod integration_tests {
         0.0_f32, 0.0, 0.0, 0.0, 0.0,
     ];
 
+    /// Flip to `true` in the same commit that populates REFERENCE_EMBEDDING with real values.
+    /// See TASK-1.14.2.1.
+    const REFERENCE_EMBEDDING_POPULATED: bool = false;
+
     /// Reference embedding for "title: My Note | text: hello world"
     /// (document-text prefix path).
     ///
@@ -839,6 +843,10 @@ mod integration_tests {
         // TODO: Fill in reference values from a TEI run.
         0.0_f32, 0.0, 0.0, 0.0, 0.0,
     ];
+
+    /// Flip to `true` in the same commit that populates DOC_REFERENCE_EMBEDDING with real values.
+    /// See TASK-1.14.2.1.
+    const DOC_REFERENCE_EMBEDDING_POPULATED: bool = false;
 
     const QUERY_TEST_INPUT: &str = "task: search result | query: hello world";
     const DOC_TEST_INPUT: &str = "title: My Note | text: hello world";
@@ -973,12 +981,12 @@ mod integration_tests {
         assert_embedding_properties(&embedding, "Query embedding");
 
         // Numerical check against reference (when populated).
-        if !REFERENCE_EMBEDDING.is_empty() && REFERENCE_EMBEDDING[0] != 0.0 {
+        if REFERENCE_EMBEDDING_POPULATED {
             assert_matches_reference(&embedding, REFERENCE_EMBEDDING, "Query embedding");
         } else {
             eprintln!(
                 "Query embedding: shape/dim/norm verified, but REFERENCE_EMBEDDING not populated. \
-                 Populate REFERENCE_EMBEDDING in model.rs to enable numerical validation."
+                 Populate REFERENCE_EMBEDDING and set REFERENCE_EMBEDDING_POPULATED = true to enable numerical validation."
             );
         }
     }
@@ -994,12 +1002,12 @@ mod integration_tests {
         assert_embedding_properties(&embedding, "Document embedding");
 
         // Numerical check against reference (when populated).
-        if !DOC_REFERENCE_EMBEDDING.is_empty() && DOC_REFERENCE_EMBEDDING[0] != 0.0 {
+        if DOC_REFERENCE_EMBEDDING_POPULATED {
             assert_matches_reference(&embedding, DOC_REFERENCE_EMBEDDING, "Document embedding");
         } else {
             eprintln!(
                 "Document embedding: shape/dim/norm verified, but DOC_REFERENCE_EMBEDDING not populated. \
-                 Populate DOC_REFERENCE_EMBEDDING in model.rs to enable numerical validation."
+                 Populate DOC_REFERENCE_EMBEDDING and set DOC_REFERENCE_EMBEDDING_POPULATED = true to enable numerical validation."
             );
         }
     }

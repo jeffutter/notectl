@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-16 22:09'
-updated_date: '2026-07-18 15:04'
+updated_date: '2026-07-18 15:05'
 labels:
   - review-followup
 milestone: Active
@@ -73,3 +73,9 @@ change pinned dependency versions.
 <!-- SECTION:NOTES:BEGIN -->
 rmcp deserializes tool arguments via serde_json::from_value on the arguments JsonObject directly (see rmcp-2.2.0/src/handler/server/tool.rs:186). A missing required String field produces a 'missing field' serde error wrapped in ErrorData::invalid_params with message prefix 'failed to deserialize parameters:'. This means MCP clients that omit 'query' get an invalid_params JSON-RPC error — matching HTTP/CLI behavior where SearchRequest.query is clap-required and serde-required.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Changed McpSearchParams.query from Option<String> to String in src/mcp.rs, removing the .unwrap_or_default() call. Added two unit tests confirming: (1) deserialization rejects empty JSON object (missing query), (2) deserialization accepts query present. Verified rmcp uses serde_json::from_value directly on arguments — missing required field produces invalid_params error. All pre-push gates passed (audit, clippy, docs, rustfmt, test).
+<!-- SECTION:FINAL_SUMMARY:END -->

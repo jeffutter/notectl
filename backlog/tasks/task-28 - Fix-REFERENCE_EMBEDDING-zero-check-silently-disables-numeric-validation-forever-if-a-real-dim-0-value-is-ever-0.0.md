@@ -3,10 +3,11 @@ id: TASK-28
 title: >-
   Fix: REFERENCE_EMBEDDING zero-check silently disables numeric validation
   forever if a real dim-0 value is ever 0.0
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 07:10'
-updated_date: '2026-07-18 14:20'
+updated_date: '2026-07-18 16:09'
 labels:
   - review-followup
 milestone: Active
