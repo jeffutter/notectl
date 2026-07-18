@@ -767,6 +767,19 @@ pub fn normalize_embedding(vec: &[f32], target_dim: usize) -> Vec<f32> {
     result
 }
 
+/// Truncate token IDs to `max_len` and pad with `pad_id`.
+///
+/// Mirrors the truncation+padding logic in `inner_embed_text` (embed.rs) so that
+/// test helpers never panic on oversized input via usize underflow.
+#[allow(dead_code)] // Used by integration_tests module and unit tests
+pub(crate) fn truncate_and_pad(token_ids: Vec<u32>, max_len: usize, pad_id: u32) -> Vec<u32> {
+    let actual_len = token_ids.len().min(max_len);
+    let mut padded = Vec::with_capacity(max_len);
+    padded.extend_from_slice(&token_ids[..actual_len]);
+    padded.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
+    padded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,6 +945,24 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_truncate_and_pad_over_length_does_not_panic() {
+        // Input longer than max_len must truncate without usize underflow panic
+        let input = vec![1u32; 2049];
+        let result = truncate_and_pad(input, 2048, 0);
+        assert_eq!(result.len(), 2048);
+        assert!(result.iter().all(|&x| x == 1));
+    }
+
+    #[test]
+    fn test_truncate_and_pad_under_length_pads() {
+        let input = vec![1u32; 10];
+        let result = truncate_and_pad(input, 2048, 50256);
+        assert_eq!(result.len(), 2048);
+        assert!(result[..10].iter().all(|&x| x == 1));
+        assert!(result[10..].iter().all(|&x| x == 50256));
+    }
 }
 
 /// Integration test: numerically validates the encoder against a known reference.
@@ -1007,8 +1038,7 @@ mod integration_tests {
 
         let max_len = embedding_config.max_seq_len;
         let pad_id = loaded.pad_token_id;
-        let mut padded = token_ids;
-        padded.extend(std::iter::repeat_n(pad_id, max_len - padded.len()));
+        let padded = truncate_and_pad(token_ids, max_len, pad_id);
 
         let attention_mask: Vec<f32> = padded
             .iter()

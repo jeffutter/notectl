@@ -3,12 +3,14 @@ id: TASK-31
 title: >-
   Fix: integration test get_embedding() lacks token truncation, risks usize
   underflow panic and contradicts its own 'mirrors production' doc comment
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 17:33'
-updated_date: '2026-07-18 17:33'
+updated_date: '2026-07-18 21:29'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-27
@@ -34,43 +36,74 @@ Found while reviewing TASK-27 (notectl-search/src/embeddings/model.rs:854-878, g
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust CLI workspace (notectl-core, notectl-outline, notectl-search, notectl-files, notectl-tags, notectl-tasks, notectl-daily-notes, plus the main notectl binary). ALL commands must run inside the Nix dev shell: either run 'direnv allow' once, or prefix every command with 'nix develop -c'. Work from the repository root unless told otherwise. Do not change pinned dependency versions.
+Fix usize underflow in integration test get_embedding() when token_ids exceed max_seq_len (2048).
 
-1. Open notectl-search/src/embeddings/model.rs, integration_tests module, get_embedding() (around line 856-925). Locate the tokenize/pad block (around line 872-878):
-   let encoding = tokenizer.encode(input, false).expect("Tokenization failed");
-   let token_ids: Vec<u32> = encoding.get_ids().to_vec();
-   let max_len = embedding_config.max_seq_len;
-   let pad_id = loaded.pad_token_id;
-   let mut padded = token_ids;
-   padded.extend(std::iter::repeat_n(pad_id, max_len - padded.len()));
+## Changes (single file: notectl-search/src/embeddings/model.rs)
 
-2. Compare against the production reference in notectl-search/src/embeddings/embed.rs, inner_embed_text (around line 298-316):
-   let token_ids = encoding.get_ids();
-   let actual_len = token_ids.len().min(model.embedding_config.max_seq_len);
-   (warn! if token_ids.len() > max_seq_len)
-   let mut padded_ids = Vec::with_capacity(max_len);
-   padded_ids.extend_from_slice(&token_ids[..actual_len]);
-   padded_ids.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
+### 1. Fix truncation in get_embedding() (~line 998-999)
 
-3. Change get_embedding()'s block to match this truncation logic exactly, e.g.:
-   let token_ids: Vec<u32> = encoding.get_ids().to_vec();
-   let max_len = embedding_config.max_seq_len;
-   let pad_id = loaded.pad_token_id;
-   let actual_len = token_ids.len().min(max_len);
-   let mut padded = Vec::with_capacity(max_len);
-   padded.extend_from_slice(&token_ids[..actual_len]);
-   padded.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
-   Keep the rest of the function (attention_mask construction, tensors, forward pass, pooling, projection, normalize_embedding) unchanged -- it already operates on the local variable 'padded' correctly once this fix is applied.
+Replace the unsafe padding block:
+  let mut padded = token_ids;
+  padded.extend(std::iter::repeat_n(pad_id, max_len - padded.len()));
 
-4. Re-read the doc comment above get_embedding() (around line 854-855) to confirm it still accurately describes the mirrored steps after this fix; no change should be needed.
+With production-mirrored truncation+padding (matching embed.rs inner_embed_text):
+  let actual_len = token_ids.len().min(max_len);
+  let mut padded = Vec::with_capacity(max_len);
+  padded.extend_from_slice(&token_ids[..actual_len]);
+  padded.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
 
-5. Add a unit test proving the truncation is safe. Because get_embedding() itself requires a downloaded model (gated behind feature = "integration" and skip_if_model_not_ready()), extract the truncate+pad token logic into a small pure helper function (e.g. fn truncate_and_pad(token_ids: Vec<u32>, max_len: usize, pad_id: u32) -> Vec<u32>) that get_embedding() calls, and add a plain #[cfg(test)] test (not gated behind the integration feature) that calls this helper with a token_ids Vec longer than max_len and asserts: (a) it does not panic, (b) the result length equals max_len, (c) the first max_len tokens match the input's first max_len tokens.
+This eliminates the "max_len - padded.len()" underflow when token_ids.len() > max_len.
 
-6. Run: nix develop -c cargo test -p notectl-search (confirm the new pure-function test passes without needing the integration feature or a downloaded model).
+### 2. Extract pure helper for testability
 
-7. Run: nix develop -c cargo test -p notectl-search --features integration -- integration_tests (confirm both integration tests still pass with graceful skip messages, unchanged behavior for the existing short QUERY_TEST_INPUT/DOC_TEST_INPUT).
+Extract the truncate+pad logic into a standalone pure function near the top of the file (outside the integration_tests module):
+  pub(crate) fn truncate_and_pad(token_ids: Vec<u32>, max_len: usize, pad_id: u32) -> Vec<u32> {
+      let actual_len = token_ids.len().min(max_len);
+      let mut padded = Vec::with_capacity(max_len);
+      padded.extend_from_slice(&token_ids[..actual_len]);
+      padded.extend(std::iter::repeat_n(pad_id, max_len - actual_len));
+      padded
+  }
 
-8. Run: nix develop -c cargo clippy -p notectl-search --features integration --all-targets -- -D warnings.
+Call this from get_embedding() instead of inline logic. This keeps the integration test behavior correct while enabling a plain unit test.
 
-9. Run: nix develop -c cargo fmt -p notectl-search -- --check (fix formatting if needed).
+### 3. Add unit test (plain #[cfg(test)], no integration feature gate)
+
+In the existing #[cfg(test)] mod (not inside integration_tests), add two tests:
+  - test_truncate_and_pad_over_length_does_not_panic: vec![1u32; 2049], assert result.len() == 2048
+  - test_truncate_and_pad_under_length_pads: vec![1u32; 10], assert result.len() == 2048, first 10 are 1, rest are pad_id
+
+These tests run without the integration feature or downloaded model.
+
+### 4. Quality gates
+
+Run all commands inside nix dev shell:
+  cargo test -p notectl-search (new unit tests pass, no integration feature needed)
+  cargo test -p notectl-search --features integration -- integration_tests (integration tests still skip gracefully)
+  cargo clippy -p notectl-search --features integration --all-targets -- -D warnings
+  cargo fmt -p notectl-search -- --check
+
+### Why no sub-tickets
+
+All changes are in a single function (+ pure extraction) in one file. The truncate fix and unit test are tightly coupled — extracting the helper IS how we enable the test. Total change is ~15 lines of code + ~15 lines of tests.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Implementation Notes
+
+Fixed in single commit (582b988). Changes in notectl-search/src/embeddings/model.rs:
+
+1. **Extracted truncate_and_pad()** as pub(crate) pure helper (~line 774) that mirrors inner_embed_text's truncation+padding logic from embed.rs. Eliminates usize underflow risk.
+
+2. **Updated get_embedding()** (~line 1028) to call truncate_and_pad() instead of inline padding. Now safely handles oversized token input.
+
+3. **Added two unit tests** in plain #[cfg(test)] mod (no integration feature needed):
+   - test_truncate_and_pad_over_length_does_not_panic: 2049 tokens → 2048 output, no panic
+   - test_truncate_and_pad_under_length_pads: 10 tokens → 2048 output with correct pad values
+
+4. **Quality gates passed**: cargo test (154 tests), cargo clippy (-D warnings), cargo fmt --check
+
+All acceptance criteria met.
+<!-- SECTION:NOTES:END -->
