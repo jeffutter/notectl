@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-16 22:09'
-updated_date: '2026-07-18 23:15'
+updated_date: '2026-07-18 23:16'
 labels:
   - review-followup
 milestone: Active
@@ -67,3 +67,9 @@ change pinned dependency versions.
 11. Run: nix develop -c cargo clippy --features search --all-targets -- -D warnings — fix any warnings.
 12. Run: nix develop -c cargo test -p notectl-search --all-features — confirm no regressions (this change is purely in the top-level notectl crate, notectl-search tests are unaffected but should still pass).
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Removed duplicate McpSearchResponse and McpIndexResponse structs from src/mcp.rs (search_tools module). Replaced with direct use of notectl_search::SearchResponse and notectl_search::IndexResponse as MCP tool output types. Simplified SearchTool::invoke and IndexTool::invoke to return the capability response directly instead of manual field-by-field reconstruction. Also removed now-unused RankedChunk import. All builds (with/without search feature) and tests pass, clippy clean.
+<!-- SECTION:FINAL_SUMMARY:END -->
