@@ -258,8 +258,9 @@ impl Embedder {
             let title_chunk: Vec<Option<&str>> =
                 titles[start..end].iter().map(|t| t.as_deref()).collect();
 
-            // Each item in the chunk gets its own spawn_blocking call so that
-            // multiple CPU cores can be utilized via rayon's thread pool.
+            // Each item in the chunk gets its own spawn_blocking call. Items within a
+            // batch are awaited sequentially; parallelism comes from overlapping
+            // batches across different spawn_blocking threads on the tokio runtime.
             for (i, text) in chunk.iter().enumerate() {
                 let title = title_chunk.get(i).copied().flatten();
                 let embedding = self.embed_single(text, title, task).await?;
