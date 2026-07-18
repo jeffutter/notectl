@@ -1,10 +1,11 @@
 ---
 id: TASK-22
 title: 'Fix: remove duplicate McpSearchResponse/McpIndexResponse types in mcp.rs'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-16 22:09'
-updated_date: '2026-07-18 14:20'
+updated_date: '2026-07-18 23:15'
 labels:
   - review-followup
 milestone: Active
@@ -22,10 +23,10 @@ Found while reviewing TASK-1.12 (src/mcp.rs:227-232, 288-295). McpSearchResponse
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 SearchTool::Output is notectl_search::SearchResponse and IndexTool::Output is notectl_search::IndexResponse (no McpSearchResponse/McpIndexResponse types remain in mcp.rs)
-- [ ] #2 SearchTool::invoke and IndexTool::invoke return the capability's response value directly (no manual field-by-field reconstruction)
-- [ ] #3 nix develop -c cargo build --features search succeeds and nix develop -c cargo build succeeds (feature-off build still compiles)
-- [ ] #4 nix develop -c cargo clippy --features search --all-targets -- -D warnings passes
+- [x] #1 SearchTool::Output is notectl_search::SearchResponse and IndexTool::Output is notectl_search::IndexResponse (no McpSearchResponse/McpIndexResponse types remain in mcp.rs)
+- [x] #2 SearchTool::invoke and IndexTool::invoke return the capability's response value directly (no manual field-by-field reconstruction)
+- [x] #3 nix develop -c cargo build --features search succeeds and nix develop -c cargo build succeeds (feature-off build still compiles)
+- [x] #4 nix develop -c cargo clippy --features search --all-targets -- -D warnings passes
 <!-- AC:END -->
 
 ## Implementation Plan

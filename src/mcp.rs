@@ -206,9 +206,9 @@ impl TaskSearchService {
 #[cfg(feature = "search")]
 mod search_tools {
     use super::*;
-    use notectl_search::{RankedChunk, SearchMode};
+    use notectl_search::{IndexResponse, SearchMode, SearchResponse};
     use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
 
     // --- search tool ---
 
@@ -224,18 +224,11 @@ mod search_tools {
         pub no_reindex: Option<bool>,
     }
 
-    #[derive(Debug, Serialize, JsonSchema)]
-    pub struct McpSearchResponse {
-        pub results: Vec<RankedChunk>,
-        pub total_count: usize,
-        pub mode_used: String,
-    }
-
     pub struct SearchTool;
 
     impl ToolBase for SearchTool {
         type Parameter = McpSearchParams;
-        type Output = McpSearchResponse;
+        type Output = SearchResponse;
         type Error = ErrorData;
 
         fn name() -> Cow<'static, str> {
@@ -264,11 +257,7 @@ mod search_tools {
                     params.no_reindex.unwrap_or(false),
                 )
                 .await?;
-            Ok(McpSearchResponse {
-                results: response.results,
-                total_count: response.total_count,
-                mode_used: response.mode_used,
-            })
+            Ok(response)
         }
     }
 
@@ -284,20 +273,11 @@ mod search_tools {
         pub dim: Option<u32>,
     }
 
-    #[derive(Debug, Serialize, JsonSchema)]
-    pub struct McpIndexResponse {
-        pub files_indexed: usize,
-        pub chunks_produced: usize,
-        pub has_embeddings: bool,
-        pub content_hash: String,
-        pub duration_ms: u128,
-    }
-
     pub struct IndexTool;
 
     impl ToolBase for IndexTool {
         type Parameter = McpIndexParams;
-        type Output = McpIndexResponse;
+        type Output = IndexResponse;
         type Error = ErrorData;
 
         fn name() -> Cow<'static, str> {
@@ -321,13 +301,7 @@ mod search_tools {
                 .search()
                 .build_index(params.reindex.unwrap_or(false), params.model, params.dim)
                 .await?;
-            Ok(McpIndexResponse {
-                files_indexed: response.files_indexed,
-                chunks_produced: response.chunks_produced,
-                has_embeddings: response.has_embeddings,
-                content_hash: response.content_hash,
-                duration_ms: response.duration_ms,
-            })
+            Ok(response)
         }
     }
 
