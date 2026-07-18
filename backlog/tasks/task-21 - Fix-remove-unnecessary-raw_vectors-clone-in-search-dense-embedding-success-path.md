@@ -3,7 +3,7 @@ id: TASK-21
 title: >-
   Fix: remove unnecessary raw_vectors clone in search() dense-embedding success
   path
-status: To Do
+status: Needs Plan
 assignee: []
 created_date: '2026-07-16 17:20'
 updated_date: '2026-07-18 14:20'
