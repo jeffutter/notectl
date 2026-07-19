@@ -206,12 +206,9 @@ notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-leve
 
 ### Search Operations
 
-Semantic and keyword search across indexed notes. Build with `--features search` for sparse (BM25) search, or `--features search-dense` for hybrid (dense + sparse) search with embeddings.
+Semantic and keyword search across indexed notes. Build with `--features search` for hybrid search (dense embeddings + sparse BM25 fused via RRF).
 
-**Feature flags:**
-
-- `search` — sparse BM25 keyword search only (lightweight, no ML dependencies)
-- `search-dense` — enables dense embeddings on top of `search` for hybrid search via RRF fusion
+Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs) with ONNX Runtime. If the embedding model is unavailable, searches degrade gracefully to keyword-only (BM25) with no configuration needed.
 
 Build or update the search index:
 
@@ -247,6 +244,21 @@ Each result includes: `id`, `source_file`, `score`, `heading` (optional), and `p
 The response also includes `mode_used` which reflects the actual mode that ran — if you request `dense` but embeddings are unavailable, it auto-degrades to `sparse` and reports this in the response.
 
 The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
+
+### Supported Embedding Models
+
+Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs) with ONNX Runtime. The following models are available:
+
+| Model | Config `model_id` | Dimension | Notes |
+|-------|-------------------|-----------|-------|
+| EmbeddingGemma-300M (default) | `google/embedding-gemma-300m` | 768 (Matryoshka) | Google's encoder; requires HF_TOKEN + accepted license |
+| BGE Small v1.5 | `BAAI/bge-small-en-v1.5` | 384 | Lightweight, fast inference |
+| BGE Base v1.5 | `BAAI/bge-base-en-v1.5` | 768 | Better quality, larger model |
+| BGE Large v1.5 | `BAAI/bge-large-en-v1.5` | 1024 | Highest quality among BGE family |
+
+Models download automatically on first index build. Set `model_id` in your `[search]` config block or via `NOTECTL_SEARCH_MODEL_ID` env var to switch models. Changing the model triggers a full reindex.
+
+If any model is unavailable (network issues, missing `HF_TOKEN`, etc.), searches degrade gracefully to keyword-only (BM25) with no configuration needed.
 
 ### MCP Server Mode
 

@@ -47,13 +47,8 @@ tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Dense embedding deps (optional, gated behind 'embeddings' feature)
-candle-core = "0.8"
-candle-transformers = "0.8"
-candle-nn = "0.8"
-dirs = "6"
-hf-hub = "0.4"
-tokenizers = "0.21"
+# Dense embedding deps (via fastembed ONNX runtime)
+fastembed = { version = "5.17", features = ["qwen3"] }
 
 # Workspace members
 notectl-core = { path = "notectl-core" }
@@ -101,11 +96,10 @@ notectl-outline.workspace = true
 notectl-search = { path = "notectl-search", optional = true }
 
 [features]
-# Enable semantic search capability.
-# Without embeddings: sparse BM25 search only (lightweight).
-# With embeddings: dense + sparse hybrid search via RRF fusion (requires ML deps).
+# Enable semantic search capability (dense + sparse hybrid via RRF fusion).
+# Dense search uses fastembed with EmbeddingGemma-300M by default.
+# Degrades gracefully to sparse-only if model is unavailable.
 search = ["notectl-search"]
-search-dense = ["notectl-search/embeddings"]
 
 [dev-dependencies]
 tempfile.workspace = true

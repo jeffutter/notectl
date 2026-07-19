@@ -18,8 +18,7 @@ use crate::storage::{
     chrono_now_rfc3339, compute_overall_content_hash,
 };
 
-#[cfg(feature = "embeddings")]
-use crate::embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
+use crate::embeddings::{Embedder, EmbeddingConfig, TaskType};
 
 /// Build summary returned by [`IndexBuilder::build`].
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -45,9 +44,7 @@ pub struct IndexBuilder<'a> {
     index: &'a mut SearchIndex,
     /// Text splitter configured from search config.
     chunker: &'a Chunker,
-    /// Optional dense embedder (None when `embeddings` feature is disabled).
-    #[allow(dead_code)]
-    #[cfg(feature = "embeddings")]
+    /// Optional dense embedder (None to skip embeddings).
     embedder: Option<&'a mut Embedder>,
 }
 
@@ -57,7 +54,6 @@ impl<'a> IndexBuilder<'a> {
     ///
     /// This constructor does **not** create or open the index on disk —
     /// callers should do that first via [`SearchIndex::open_or_create`].
-    #[cfg(feature = "embeddings")]
     pub fn new(
         index: &'a mut SearchIndex,
         chunker: &'a Chunker,
@@ -68,12 +64,6 @@ impl<'a> IndexBuilder<'a> {
             chunker,
             embedder,
         }
-    }
-
-    /// Create without an embedder (no embeddings feature).
-    #[cfg(not(feature = "embeddings"))]
-    pub fn new(index: &'a mut SearchIndex, chunker: &'a Chunker) -> Self {
-        Self { index, chunker }
     }
 
     /// Run the full build pipeline: walk -> diff -> chunk -> embed -> persist.
@@ -274,7 +264,6 @@ impl<'a> IndexBuilder<'a> {
     /// vector array because chunk IDs may shift and the binary format is positional.
     ///
     /// Returns `true` if embeddings were computed, `false` otherwise.
-    #[cfg(feature = "embeddings")]
     async fn embed_chunks(&mut self, chunks: &[Chunk]) -> Result<bool, SearchError> {
         let embedder = match &mut self.embedder {
             Some(e) => e,
@@ -320,11 +309,6 @@ impl<'a> IndexBuilder<'a> {
 
         Ok(true)
     }
-
-    #[cfg(not(feature = "embeddings"))]
-    async fn embed_chunks(&mut self, _chunks: &[Chunk]) -> Result<bool, SearchError> {
-        Ok(false)
-    }
 }
 
 /// Get modification time in seconds since epoch for a file.
@@ -341,10 +325,6 @@ fn metadata_mtime_secs(path: &Path) -> std::io::Result<u64> {
 /// Opens or creates the SearchIndex, builds the Chunker, and optionally
 /// creates an Embedder. Callers can then invoke `.build()` directly.
 pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSummary, SearchError> {
-    let index_dir = config.search.resolve_index_dir(base_path);
-    #[cfg(feature = "embeddings")]
-    let model_cache_dir = index_dir.join("models");
-
     let chunk_config = ChunkConfigSnapshot {
         max_tokens: config.search.max_seq_tokens,
         overlap_tokens: config.search.chunk_overlap_tokens,
@@ -353,7 +333,7 @@ pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSumma
     };
 
     let mut index = SearchIndex::open_or_create(
-        &index_dir,
+        &config.search.resolve_index_dir(base_path),
         config.search.model_id.clone(),
         config.search.embedding_dim,
         chunk_config.clone(),
@@ -363,21 +343,9 @@ pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSumma
         &config.search,
     ));
 
-    #[cfg(feature = "embeddings")]
-    {
-        let mut embedder = Embedder::new(
-            model_cache_dir,
-            EmbeddingConfig::from_search_config(&config.search),
-        );
-        let mut builder = IndexBuilder::new(&mut index, &chunker, Some(&mut embedder));
-        builder.build(base_path, config).await
-    }
-
-    #[cfg(not(feature = "embeddings"))]
-    {
-        let mut builder = IndexBuilder::new(&mut index, &chunker);
-        builder.build(base_path, config).await
-    }
+    let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
+    let mut builder = IndexBuilder::new(&mut index, &chunker, Some(&mut embedder));
+    builder.build(base_path, config).await
 }
 
 // ---------------------------------------------------------------------------
@@ -409,39 +377,7 @@ mod tests {
         Chunker::new(crate::chunker::ChunkerConfig::from_search_config(&sc))
     }
 
-    /// Helper: run build_index in a test environment (with embeddings).
-    #[cfg(feature = "embeddings")]
-    async fn run_build(_tmp: &TempDir, base: &Path, config: &Config) -> BuildSummary {
-        let index_dir = config.search.resolve_index_dir(base);
-        let model_cache_dir = index_dir.join("models");
-        let chunk_config = ChunkConfigSnapshot {
-            max_tokens: config.search.max_seq_tokens,
-            overlap_tokens: config.search.chunk_overlap_tokens,
-            min_chunk_size: config.search.min_chunk_tokens,
-            merge_threshold: config.search.merge_threshold,
-        };
-
-        let mut index = SearchIndex::open_or_create(
-            &index_dir,
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            chunk_config,
-        )
-        .unwrap();
-
-        let chunker = test_chunker();
-        let mut embedder = Some(Embedder::new(
-            model_cache_dir,
-            EmbeddingConfig::from_search_config(&config.search),
-        ));
-
-        let mut builder = IndexBuilder::new(&mut index, &chunker, embedder.as_mut());
-
-        builder.build(base, config).await.unwrap()
-    }
-
-    /// Helper: run build_index in a test environment (without embeddings).
-    #[cfg(not(feature = "embeddings"))]
+    /// Helper: run build_index in a test environment.
     async fn run_build(_tmp: &TempDir, base: &Path, config: &Config) -> BuildSummary {
         let index_dir = config.search.resolve_index_dir(base);
         let chunk_config = ChunkConfigSnapshot {
@@ -460,7 +396,8 @@ mod tests {
         .unwrap();
 
         let chunker = test_chunker();
-        let mut builder = IndexBuilder::new(&mut index, &chunker);
+        let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
+        let mut builder = IndexBuilder::new(&mut index, &chunker, Some(&mut embedder));
 
         builder.build(base, config).await.unwrap()
     }

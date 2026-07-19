@@ -4,7 +4,7 @@
 //! - [`crate::storage`] — manifest, vectors, chunk texts on disk
 //! - [`crate::sparse`] — BM25 indexing and scoring
 //! - [`crate::fusion`] — cosine top-k and RRF fusion
-//! - [`crate::embeddings`] — query embedding (feature-gated)
+//! - [`crate::embeddings`] — query embedding via fastembed
 //! - [`crate::index`] — reindex pipeline for stale indexes
 
 use std::path::Path;
@@ -20,8 +20,7 @@ use crate::{RankedChunk, SearchError, SearchResult};
 /// Default empty string for fallback when chunk text is missing.
 const EMPTY_STR: &str = "";
 
-#[cfg(feature = "embeddings")]
-use crate::embeddings::{Embedder, EmbeddingConfig, embed::TaskType};
+use crate::embeddings::{Embedder, EmbeddingConfig, TaskType};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -233,14 +232,7 @@ pub async fn search(
     // Read dense vectors ONCE if the requested mode could use them.
     // For Sparse mode, skip entirely — has_vectors cannot affect the outcome.
     let raw_vectors: Vec<Vec<f32>> = if options.mode.needs_dense() {
-        #[cfg(feature = "embeddings")]
-        {
-            index.read_vectors().unwrap_or_default()
-        }
-        #[cfg(not(feature = "embeddings"))]
-        {
-            Vec::new()
-        }
+        index.read_vectors().unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -274,34 +266,22 @@ pub async fn search(
 
     // Embed query + read vectors when the mode needs dense scoring.
     let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense() {
-        #[cfg(feature = "embeddings")]
-        {
-            let model_cache_dir = index_dir.join("models");
-            let mut embedder = Embedder::new(
-                model_cache_dir,
-                EmbeddingConfig::from_search_config(&config.search),
-            );
+        let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
 
-            if !embedder.is_ready() {
-                tracing::warn!("Model not downloaded yet. Degrading to sparse-only search.");
-                None
-            } else {
-                match embedder
-                    .embed_single(query, None, TaskType::RetrievalQuery)
-                    .await
-                {
-                    Ok(qvec) => Some((qvec, raw_vectors)),
-                    Err(e) => {
-                        tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
-                        None
-                    }
+        if !embedder.is_ready() {
+            tracing::warn!("Model not loaded yet. Degrading to sparse-only search.");
+            None
+        } else {
+            match embedder
+                .embed_single(query, None, TaskType::RetrievalQuery)
+                .await
+            {
+                Ok(qvec) => Some((qvec, raw_vectors)),
+                Err(e) => {
+                    tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
+                    None
                 }
             }
-        }
-        #[cfg(not(feature = "embeddings"))]
-        {
-            // Unreachable: without the embeddings feature, effective_mode is always Sparse.
-            None
         }
     } else {
         None
@@ -844,44 +824,12 @@ mod tests {
         }
     }
 
-    /// Test auto-degradation: dense mode with no vectors falls back to sparse.
-    #[cfg(not(feature = "embeddings"))]
-    #[tokio::test]
-    async fn test_auto_degrade_to_sparse_without_embeddings() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path().join("vault");
-        std::fs::create_dir_all(&base).unwrap();
-
-        std::fs::write(
-            base.join("hello.md"),
-            "# Hello World\n\nA simple greeting document.",
-        )
-        .unwrap();
-
-        let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
-
-        // Even though we can't do dense without the feature,
-        // the search() function should still work in sparse mode.
-        let options = SearchOptions {
-            mode: SearchMode::Sparse,
-            max_results: 10,
-            ..Default::default()
-        };
-
-        let outcome = search(&base, &config, "greeting", options).await.unwrap();
-        // May or may not find "greeting" depending on tokenization, but should not error.
-        // The important thing is it doesn't panic or return an error.
-        let _ = outcome.results;
-    }
-
     /// Test that Dense mode degrades to Sparse when embedding is unavailable at query time.
     ///
     /// Reproduces TASK-10: vectors.bin exists on disk (simulating a previous indexing run),
     /// but the model cache is missing so Embedder::is_ready() returns false.
     /// search() with SearchMode::Dense should degrade to sparse-only and return Ok,
     /// NOT Err(SearchError::Other("Inconsistent search state...")).
-    #[cfg(feature = "embeddings")]
     #[tokio::test]
     async fn test_dense_mode_degrades_to_sparse_when_embedding_unavailable() {
         let tmp = TempDir::new().unwrap();

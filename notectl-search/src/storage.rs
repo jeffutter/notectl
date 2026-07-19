@@ -309,7 +309,6 @@ pub(crate) fn atomic_write_json(path: &Path, data: &str) -> Result<(), SearchErr
 }
 
 /// Write binary data atomically using a temp file + rename.
-#[cfg(feature = "embeddings")]
 pub(crate) fn atomic_write_binary(path: &Path, data: &[u8]) -> Result<(), SearchError> {
     let dir = path
         .parent()
@@ -494,7 +493,6 @@ impl SearchIndex {
     /// Write dense embedding vectors to disk (flat f32 binary format).
     ///
     /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
-    #[cfg(feature = "embeddings")]
     pub fn write_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), SearchError> {
         let vectors_path = self.base_dir.join("vectors.bin");
 
@@ -527,7 +525,6 @@ impl SearchIndex {
     /// Read dense embedding vectors from disk.
     ///
     /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
-    #[cfg(feature = "embeddings")]
     pub fn read_vectors(&self) -> Result<Vec<Vec<f32>>, SearchError> {
         let vectors_path = self.base_dir.join("vectors.bin");
         if !vectors_path.exists() {

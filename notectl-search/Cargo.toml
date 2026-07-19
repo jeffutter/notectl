@@ -22,26 +22,14 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-# Dense embedding deps - gated behind 'embeddings' feature
-candle-core = { workspace = true, optional = true }
-candle-transformers = { workspace = true, optional = true }
-candle-nn = { workspace = true, optional = true }
-dirs = { workspace = true, optional = true }
-hf-hub = { workspace = true, optional = true }
-tokenizers = { workspace = true, optional = true }
+# Dense embedding deps (always included)
+fastembed.workspace = true
+
 [features]
-embeddings = [
-  "candle-core",
-  "candle-transformers",
-  "candle-nn",
-  "dirs",
-  "hf-hub",
-  "tokenizers",
-]
 # Integration tests that download and run the actual model.
 # Requires HF_TOKEN with accepted license for google/embeddinggemma-300m.
 # Not enabled by default — these tests are slow and require network access.
-integration = ["embeddings"]
+integration = []
 
 [dev-dependencies]
 tempfile.workspace = true

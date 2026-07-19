@@ -79,11 +79,7 @@ cargo build
 cargo build --release
 
 # Build with search support
-# Sparse (BM25) only — lightweight, no ML deps
 cargo build --features search
-
-# Dense + sparse hybrid — includes embedding model dependencies
-cargo build --features search-dense
 
 # Run task search with arguments
 cargo run -- tasks path/to/file.md
@@ -98,7 +94,7 @@ cargo run -- serve http path/to/vault --port 8000
 # Search operations (requires --features search)
 cargo run --features search -- index path/to/vault
 cargo run --features search -- search path/to/vault "query text"
-cargo run --features search-dense -- search path/to/vault "query text" --mode dense
+cargo run --features search -- search path/to/vault "query text" --mode dense
 
 # Test the tool manually
 echo "- [ ] Test task #tag 📅 2025-12-10" > test.md
@@ -151,7 +147,7 @@ The `[search]` section in `.notectl.toml` controls indexing and search behavior:
 
 ```toml
 [search]
-model_id = "google/embedding-gemma-300m"   # Embedding model ID
+model_id = "google/embedding-gemma-300m"   # Embedding model (see README for supported models)
 embedding_dim = 256                          # Embedding dimension (matryoshka truncation)
 max_seq_tokens = 512                         # Max sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
@@ -286,7 +282,7 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 - **`notectl-files`**: File tree listing and content reading
 - **`notectl-daily-notes`**: Daily note lookup by date pattern
 - **`notectl-outline`**: Heading hierarchy extraction
-- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, optional dense embeddings via candle, RRF fusion, persistent index storage). Feature-gated behind `search` (sparse only) and `search-dense` (dense + sparse hybrid).
+- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, dense embeddings via fastembed/ONNX, RRF fusion, persistent index storage). Feature-gated behind `search`.
 
 ### Task Extraction Pipeline
 
