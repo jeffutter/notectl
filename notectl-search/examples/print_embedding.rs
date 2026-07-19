@@ -49,7 +49,7 @@ fn get_embedding(
         .forward(&input_ids, Some(&pad_tensor))
         .expect("Encoder forward failed");
 
-    let pooling_mask = Tensor::ones(input_ids.shape().clone(), DType::F32, &loaded.device).unwrap();
+    let pooling_mask = pad_tensor.clone();
     let pooled = mean_pooling(&hidden_states, &pooling_mask).expect("Mean pooling failed");
     let projected = loaded
         .projection_head
