@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 23:36'
-updated_date: '2026-07-19 00:38'
+updated_date: '2026-07-19 00:39'
 labels:
   - review-followup
 milestone: Active
@@ -60,3 +60,9 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 <!-- SECTION:NOTES:BEGIN -->
 Fixed two misleading comments in notectl-search/src/embeddings/embed.rs: (1) embed_batch function doc comment no longer claims batching provides memory/reactor benefits — accurately describes fully sequential processing. (2) Inline comment inside batch loop no longer claims cross-batch parallelism — accurately states all spawn_blocking calls run strictly sequentially. Verified via cargo clippy (clean) and cargo test (123 tests pass).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced two misleading comments in notectl-search/src/embeddings/embed.rs with accurate descriptions of embed_batch's fully sequential behavior. Both the function doc comment and inline loop comment now correctly state that all spawn_blocking calls run one at a time — no concurrency within or across batches. Clippy clean, 410 tests pass, pushed to origin.
+<!-- SECTION:FINAL_SUMMARY:END -->
