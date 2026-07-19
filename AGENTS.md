@@ -26,6 +26,7 @@ This project uses Backlog.md MCP for all task and project management activities.
 - **When to read it**: BEFORE creating tasks, or when you're unsure whether to track work
 
 These guides cover:
+
 - Decision framework for when to create tasks
 - Search-first workflow to avoid duplicates
 - Links to detailed guides for task creation, execution, and finalization
@@ -47,6 +48,7 @@ You MUST read the overview resource to understand the complete workflow. The inf
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update task status** - Complete finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
+
    ```bash
    git add backlog/
    git commit -m "Update tasks"
@@ -54,17 +56,18 @@ You MUST read the overview resource to understand the complete workflow. The inf
    git push
    git status  # MUST show "up to date with origin"
    ```
+
 5. **Clean up** - Clear stashes, prune remote branches
 6. **Verify** - All changes committed AND pushed
 7. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
+
 - Work is NOT complete until `git push` succeeds
 - Tickets are stored in `.tickets/` as markdown files and must be committed to git
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
-
 
 ## Build and Development Commands
 
@@ -75,6 +78,13 @@ cargo build
 # Build release version
 cargo build --release
 
+# Build with search support
+# Sparse (BM25) only — lightweight, no ML deps
+cargo build --features search
+
+# Dense + sparse hybrid — includes embedding model dependencies
+cargo build --features search-dense
+
 # Run task search with arguments
 cargo run -- tasks path/to/file.md
 cargo run -- tasks path/to/vault --status incomplete --tags work --limit 20
@@ -84,6 +94,11 @@ cargo run -- serve stdio path/to/vault
 
 # Start HTTP server
 cargo run -- serve http path/to/vault --port 8000
+
+# Search operations (requires --features search)
+cargo run --features search -- index path/to/vault
+cargo run --features search -- search path/to/vault "query text"
+cargo run --features search-dense -- search path/to/vault "query text" --mode dense
 
 # Test the tool manually
 echo "- [ ] Test task #tag 📅 2025-12-10" > test.md
@@ -121,6 +136,7 @@ cargo run -- --mcp-stdio /path/to/vault
 ```
 
 **How it works:**
+
 - The configuration is loaded automatically from the base path when the server starts or CLI runs
 - Environment variables are merged with TOML config (both sources are combined)
 - Exclusion patterns support both:
@@ -128,6 +144,27 @@ cargo run -- --mcp-stdio /path/to/vault
   - **Glob patterns**: Standard glob patterns like `**/folder/**`, `*.backup`, etc.
 - Excluded paths are skipped during directory traversal in `extract_tasks_from_dir`
 - No MCP parameter needed - this is a server-side configuration only
+
+### Search Configuration
+
+The `[search]` section in `.notectl.toml` controls indexing and search behavior:
+
+```toml
+[search]
+model_id = "google/embedding-gemma-300m"   # Embedding model ID
+embedding_dim = 256                          # Embedding dimension (matryoshka truncation)
+max_seq_tokens = 512                         # Max sequence tokens for chunking
+chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
+min_chunk_tokens = 32                        # Min tokens per chunk before merging forward
+rrf_k = 60.0                                 # RRF k parameter
+rrf_bm25_weight = 1.0                        # BM25 weight in RRF fusion
+rrf_cosine_weight = 1.0                      # Cosine weight in RRF fusion
+max_results = 50                             # Max results per query
+merge_threshold = 30                         # Merge tiny sections below this token count
+cache_dir = ".notectl/search"                # Index/model cache directory
+```
+
+All `[search]` keys can be overridden via `NOTECTL_SEARCH_<KEY>` environment variables (e.g., `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_RRF_K`). See README.md for the full table.
 
 ## Architecture
 
@@ -249,6 +286,7 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 - **`notectl-files`**: File tree listing and content reading
 - **`notectl-daily-notes`**: Daily note lookup by date pattern
 - **`notectl-outline`**: Heading hierarchy extraction
+- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, optional dense embeddings via candle, RRF fusion, persistent index storage). Feature-gated behind `search` (sparse only) and `search-dense` (dense + sparse hybrid).
 
 ### Task Extraction Pipeline
 
@@ -275,17 +313,20 @@ The cleaning step is critical: content is extracted first with all metadata inta
 ## Supported Metadata Formats
 
 **Task Statuses**:
+
 - `- [ ]` → `"incomplete"`
 - `- [x]` or `- [X]` → `"completed"`
 - `- [-]` → `"cancelled"`
 - `- [?]` or any other char → `"other_?"` (the char is embedded in the status string)
 
 **Dates** (YYYY-MM-DD format):
+
 - Due: `📅 2025-12-10`, `due: 2025-12-10`, `@due(2025-12-10)`
 - Created: `➕ 2025-12-10`, `created: 2025-12-10`
 - Completed: `✅ 2025-12-10`, `completed: 2025-12-10`
 
 **Priority**:
+
 - Emojis: `⏫` (urgent), `🔼` (high), `🔽` (low), `⏬` (lowest)
 - Text: `priority: high/medium/low`
 
@@ -317,6 +358,7 @@ To add a new capability (e.g., for bookmarks):
    - `src/capability.rs`: implement the capability struct and `Operation` structs
 
 2. **Capability pattern** (see `notectl-files/src/capability.rs` for reference):
+
    ```rust
    use notectl_core::{CapabilityResult, config::Config};
    use notectl_core::error::{internal_error, invalid_params};
@@ -353,6 +395,7 @@ To add a new capability (e.g., for bookmarks):
    - Add operation to `create_operations()`
 
 5. **Add MCP tool in `src/mcp.rs`**:
+
    ```rust
    #[tool(description = "...")]
    async fn do_thing(&self, Parameters(req): Parameters<Request>) -> Result<Json<Response>, ErrorData> {
@@ -375,12 +418,14 @@ Build with `--features search` to include search functionality.
 ### Adding New Metadata Types or Task Statuses
 
 In `notectl-tasks/src/extractor.rs`:
+
 - Add regex pattern to `TaskExtractor::new()`
 - Add extraction method and call it in `create_task()`
 - Add cleaning logic to `clean_content()`
 - Add field to `Task` struct
 
 If filtering is needed, in `notectl-tasks/src/`:
+
 - Add field to `FilterOptions` in `filter.rs`
 - Add filter logic in `filter_tasks()` in `filter.rs`
 - Update `SearchTasksRequest` in `capability.rs`
@@ -404,6 +449,7 @@ pub struct ListTagsRequest {
 ```
 
 In `execute_from_args`, if a path is provided, create a temporary capability with that path:
+
 ```rust
 async fn execute_from_args(&self, matches: &clap::ArgMatches) -> Result<String, Box<dyn Error>> {
     let request = ListTagsRequest::from_arg_matches(matches)?;
@@ -419,6 +465,7 @@ async fn execute_from_args(&self, matches: &clap::ArgMatches) -> Result<String, 
 ```
 
 **Testing**:
+
 ```bash
 # Test the command
 cargo run -- list-tags /path/to/vault --min-count 2

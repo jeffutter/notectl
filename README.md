@@ -31,9 +31,9 @@ A Rust CLI tool to extract todo items and manage content in Markdown files withi
 
 ### Cargo
 
-* Install the rust toolchain in order to have cargo installed by following
+- Install the rust toolchain in order to have cargo installed by following
   [this](https://www.rust-lang.org/tools/install) guide.
-* run `cargo install notectl`
+- run `cargo install notectl`
 
 ### Build from source
 
@@ -48,11 +48,13 @@ All operations are available as subcommands. Run `notectl --help` to see the ful
 ### Task Search
 
 Extract all tasks from a file:
+
 ```bash
 notectl tasks path/to/file.md
 ```
 
 Extract all tasks from a directory (recursive):
+
 ```bash
 notectl tasks path/to/vault
 ```
@@ -60,6 +62,7 @@ notectl tasks path/to/vault
 #### Filtering Options
 
 Filter by status:
+
 ```bash
 notectl tasks path/to/vault --status incomplete
 notectl tasks path/to/vault --status completed
@@ -67,6 +70,7 @@ notectl tasks path/to/vault --status cancelled
 ```
 
 Filter by due date:
+
 ```bash
 # Tasks due on a specific date
 notectl tasks path/to/vault --due-on 2025-12-10
@@ -79,6 +83,7 @@ notectl tasks path/to/vault --due-after 2025-12-01
 ```
 
 Filter by completed date:
+
 ```bash
 # Tasks completed on a specific date
 notectl tasks path/to/vault --completed-on 2025-12-01
@@ -91,6 +96,7 @@ notectl tasks path/to/vault --completed-after 2025-12-01
 ```
 
 Filter by tags:
+
 ```bash
 # Tasks with specific tags (must have all specified tags)
 notectl tasks path/to/vault --tags work,urgent
@@ -100,6 +106,7 @@ notectl tasks path/to/vault --exclude-tags archive,done
 ```
 
 Limit results:
+
 ```bash
 # Return at most 10 tasks (default: 50, configurable via NOTECTL_DEFAULT_LIMIT)
 notectl tasks path/to/vault --limit 10
@@ -118,18 +125,21 @@ notectl tasks path/to/vault \
 ### Tag Operations
 
 Extract all unique tags from YAML frontmatter:
+
 ```bash
 notectl extract-tags path/to/vault
 notectl extract-tags path/to/vault --subpath Notes/
 ```
 
 List tags with document counts:
+
 ```bash
 notectl list-tags path/to/vault
 notectl list-tags path/to/vault --min-count 2 --limit 50
 ```
 
 Search files by tags (AND/OR logic):
+
 ```bash
 # Files with any of the specified tags (OR)
 notectl search-by-tags path/to/vault --tags work,personal
@@ -141,12 +151,14 @@ notectl search-by-tags path/to/vault --tags work,urgent --match-all
 ### File Operations
 
 List the vault directory tree:
+
 ```bash
 notectl list-files path/to/vault
 notectl list-files path/to/vault --subpath Notes/ --max-depth 2 --include-sizes
 ```
 
 Read one or more markdown files:
+
 ```bash
 notectl read-files path/to/vault Notes/my-note.md
 notectl read-files path/to/vault Notes/a.md,Notes/b.md
@@ -156,11 +168,13 @@ notectl read-files path/to/vault Notes/a.md --continue-on-error
 ### Daily Note Operations
 
 Get a specific daily note:
+
 ```bash
 notectl get-daily-note path/to/vault --date 2025-12-10
 ```
 
 Search daily notes by date range:
+
 ```bash
 notectl search-daily-notes path/to/vault
 notectl search-daily-notes path/to/vault --start-date 2025-12-01 --end-date 2025-12-31
@@ -170,18 +184,21 @@ notectl search-daily-notes path/to/vault --include-content --sort asc --limit 7
 ### Document Outline Operations
 
 Get the heading outline of a file:
+
 ```bash
 notectl get-outline path/to/vault --file-path Notes/my-note.md
 notectl get-outline path/to/vault --file-path Notes/my-note.md --hierarchical
 ```
 
 Get the content of a specific section:
+
 ```bash
 notectl get-section path/to/vault --file-path Notes/my-note.md --heading "Introduction"
 notectl get-section path/to/vault --file-path Notes/my-note.md --heading "Setup" --include-subsections
 ```
 
 Search headings across the vault:
+
 ```bash
 notectl search-headings path/to/vault --pattern "TODO"
 notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-level 3
@@ -189,9 +206,15 @@ notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-leve
 
 ### Search Operations
 
-Semantic and keyword search across indexed notes. Requires the `search` feature flag.
+Semantic and keyword search across indexed notes. Build with `--features search` for sparse (BM25) search, or `--features search-dense` for hybrid (dense + sparse) search with embeddings.
+
+**Feature flags:**
+
+- `search` — sparse BM25 keyword search only (lightweight, no ML dependencies)
+- `search-dense` — enables dense embeddings on top of `search` for hybrid search via RRF fusion
 
 Build or update the search index:
+
 ```bash
 # Build index (incremental by default)
 notectl index path/to/vault
@@ -204,11 +227,12 @@ notectl index path/to/vault --model google/embedding-gemma-300m --dim 256
 ```
 
 Search across indexed notes:
+
 ```bash
-# Hybrid search (dense + sparse BM25 fused via RRF)
+# Hybrid search (dense + sparse BM25 fused via RRF) — default mode
 notectl search path/to/vault "project timeline"
 
-# Dense vector search only
+# Dense vector search only (auto-degrades to sparse if embeddings unavailable)
 notectl search path/to/vault "deployment steps" --mode dense --limit 10
 
 # Sparse (BM25) keyword search only
@@ -219,6 +243,8 @@ notectl search path/to/vault "architecture" --no-reindex true
 ```
 
 Each result includes: `id`, `source_file`, `score`, `heading` (optional), and `preview` text.
+
+The response also includes `mode_used` which reflects the actual mode that ran — if you request `dense` but embeddings are unavailable, it auto-degrades to `sparse` and reports this in the response.
 
 The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
 
@@ -236,6 +262,7 @@ notectl serve http path/to/vault --port 8080
 ```
 
 The HTTP server exposes:
+
 - `GET/POST /api/tasks` - task search
 - `GET/POST /api/tags/extract` - tag extraction
 - `GET/POST /api/tags` - tag listing
@@ -245,6 +272,8 @@ The HTTP server exposes:
 - `GET/POST /api/daily-notes` - daily note lookup
 - `GET/POST /api/daily-notes/search` - daily note search
 - `GET/POST /api/outline` - outline extraction
+- `GET/POST /api/search/index` - build/update search index
+- `GET/POST /api/search` - search indexed notes
 - `GET /tools` - list all available tools with schemas
 - `POST /mcp` - MCP protocol endpoint
 
@@ -273,6 +302,7 @@ The task search outputs JSON with the following structure:
 ```
 
 Notes:
+
 - `content` has metadata markers removed but preserves `#tags`
 - `status` is `"incomplete"`, `"completed"`, `"cancelled"`, or `"other_X"` for custom checkbox chars
 - Results are limited to 50 by default (override with `--limit` or `NOTECTL_DEFAULT_LIMIT`)
@@ -292,6 +322,7 @@ Given a markdown file:
 ```
 
 Running:
+
 ```bash
 notectl tasks file.md --status incomplete --tags work
 ```
@@ -322,6 +353,44 @@ export NOTECTL_EXCLUDE_PATHS="Template,Recipes,**/Archive/**"
 ```
 
 Both sources are merged; patterns support substring matching and standard globs.
+
+### Search Configuration
+
+Search behavior can be tuned via `.notectl.toml`:
+
+```toml
+[search]
+model_id = "google/embedding-gemma-300m"   # Embedding model ID
+embedding_dim = 256                          # Embedding dimension (matryoshka truncation)
+max_seq_tokens = 512                         # Maximum sequence tokens for chunking
+chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
+min_chunk_tokens = 32                        # Minimum tokens per chunk before merging forward
+rrf_k = 60.0                                 # RRF k parameter for reciprocal rank fusion
+rrf_bm25_weight = 1.0                        # Weight for BM25 scores in RRF fusion
+rrf_cosine_weight = 1.0                      # Weight for cosine scores in RRF fusion
+max_results = 50                             # Maximum results returned per query
+merge_threshold = 30                         # Merge tiny sections below this token count
+cache_dir = ".notectl/search"                # Index and model cache directory
+```
+
+All search config values can also be overridden via environment variables:
+
+| Environment Variable             | Config Key           |
+|----------------------------------|----------------------|
+| `NOTECTL_SEARCH_MODEL_ID`        | `search.model_id`    |
+| `NOTECTL_SEARCH_MODEL_REVISION`  | `search.model_revision` |
+| `NOTECTL_SEARCH_EMBEDDING_DIM`   | `search.embedding_dim` |
+| `NOTECTL_SEARCH_MAX_SEQ_TOKENS`  | `search.max_seq_tokens` |
+| `NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS` | `search.chunk_overlap_tokens` |
+| `NOTECTL_SEARCH_MIN_CHUNK_TOKENS` | `search.min_chunk_tokens` |
+| `NOTECTL_SEARCH_MERGE_THRESHOLD` | `search.merge_threshold` |
+| `NOTECTL_SEARCH_RRF_K`           | `search.rrf_k`       |
+| `NOTECTL_SEARCH_RRF_BM25_WEIGHT` | `search.rrf_bm25_weight` |
+| `NOTECTL_SEARCH_RRF_COSINE_WEIGHT` | `search.rrf_cosine_weight` |
+| `NOTECTL_SEARCH_DENSE_WEIGHTS`   | `search.dense_weights` |
+| `NOTECTL_SEARCH_SPARSE_WEIGHTS`  | `search.sparse_weights` |
+| `NOTECTL_SEARCH_CACHE_DIR`       | `search.cache_dir`   |
+| `NOTECTL_SEARCH_MAX_RESULTS`     | `search.max_results` |
 
 ### Environment Variables
 
