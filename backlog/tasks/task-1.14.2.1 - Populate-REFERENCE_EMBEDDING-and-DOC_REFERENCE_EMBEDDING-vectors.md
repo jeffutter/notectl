@@ -1,11 +1,11 @@
 ---
 id: TASK-1.14.2.1
 title: Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING vectors
-status: To Do
+status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 05:30'
-updated_date: '2026-07-18 21:19'
+updated_date: '2026-07-19 14:38'
 labels:
   - planned
 dependencies:
@@ -45,68 +45,26 @@ Requires: `HF_TOKEN` environment variable set with accepted license for `google/
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-Single file edit: notectl-search/src/embeddings/model.rs
+## Implementation Plan (Already Complete)
 
-### Goal
-Replace zero-stub constants REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING with real f32 values from Google EmbeddingGemma-300M, enabling numerical validation in integration tests.
+### Status Verification
+All acceptance criteria verified as of 2026-07-19:
 
-### Approach: In-process capture via get_embedding() (NOT TEI)
-Use the Candle inference path directly — the test module's get_embedding() function mirrors production (embed.rs::inner_embed_text). Research confirms TEI produces *different* vectors from the same model weights (first ~10 dims diverge significantly), so capturing via TEI would produce references that fail the 1e-4 tolerance against our own implementation.
+- [x] REFERENCE_EMBEDDING populated with real 768-dim f32 values (not zeros)
+- [x] DOC_REFERENCE_EMBEDDING populated with real 768-dim f32 values (not zeros)
+- [x] REFERENCE_EMBEDDING_POPULATED = true
+- [x] DOC_REFERENCE_EMBEDDING_POPULATED = true
+- [x] Integration tests assert numerically against reference vectors (not skipping)
+- [x] cargo test -p notectl-search --features integration passes both tests (~210s)
 
-### Step 1: Capture Query Embedding
-Add temporary debug output to print the embedding vector, then run the test:
+### How Values Were Captured
+Values were captured using the in-process Candle inference path (test module get_embedding() mirroring production inner_embed_text), NOT TEI container. This matches the approach documented in the original plan — TEI produces different first ~10 dimensions due to internal preprocessing differences.
 
-```rust
-// Temporarily add before the assertion in test_encoder_produces_correct_dimension:
-eprintln!("Query embedding (first 50): {:?}", &embedding[..50]);
-```
+### Files Modified
+- notectl-search/src/embeddings/model.rs — REFERENCE_EMBEDDING (line ~1014, 768 dims), DOC_REFERENCE_EMBEDDING (line ~1794, 768 dims), both _POPULATED flags set to true
 
-```bash
-HF_TOKEN=<token> cargo test -p notectl-search --features integration \
-    -- integration_tests::test_encoder_produces_correct_dimension --nocapture
-```
-
-Copy first ~50 f32 dimensions into REFERENCE_EMBEDDING constant.
-
-### Step 2: Capture Document Embedding
-Similarly add debug output to test_document_embedding_matches_reference:
-
-```rust
-eprintln!("Doc embedding (first 50): {:?}", &embedding[..50]);
-```
-
-```bash
-HF_TOKEN=<token> cargo test -p notectl-search --features integration \
-    -- integration_tests::test_document_embedding_matches_reference --nocapture
-```
-
-Copy first ~50 f32 dimensions into DOC_REFERENCE_EMBEDDING constant.
-
-### Step 3: Update Constants and Flags
-In model.rs, replace the zero stubs with captured values and flip both boolean sentinels:
-
-```rust
-const REFERENCE_EMBEDDING: &[f32] = &[/* captured values */];
-const REFERENCE_EMBEDDING_POPULATED: bool = true;
-const DOC_REFERENCE_EMBEDDING: &[f32] = &[/* captured values */];
-const DOC_REFERENCE_EMBEDDING_POPULATED: bool = true;
-```
-
-Remove temporary eprintln! calls.
-
-### Step 4: Verify
-Run both integration tests — they should now assert numerically (not skip):
-
-```bash
-cargo test -p notectl-search --features integration -- integration_tests
-```
-
-Both must pass with numerical assertions active (no "not populated" warning messages).
-
-### Requirements
-- HF_TOKEN env var with accepted license for google/embeddinggemma-300m (see TASK-30)
-- Model weights (~600MB) downloaded on first run via hf-hub cache
-- CPU inference takes several minutes per embedding
+### Note on TASK-29
+TASK-29 appears to be a duplicate/parallel ticket for the same work. Since this work is complete via TASK-1.14.2.1, TASK-29 should also be marked Done or deprecated.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes

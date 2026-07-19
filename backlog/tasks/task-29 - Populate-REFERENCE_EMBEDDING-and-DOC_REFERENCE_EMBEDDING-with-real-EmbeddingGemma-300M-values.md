@@ -3,15 +3,16 @@ id: TASK-29
 title: >-
   Populate REFERENCE_EMBEDDING and DOC_REFERENCE_EMBEDDING with real
   EmbeddingGemma-300M values
-status: To Do
+status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:47'
-updated_date: '2026-07-18 18:18'
+updated_date: '2026-07-19 14:38'
 labels:
   - search
   - embeddings
   - integration-test
+  - planned
 dependencies:
   - TASK-30
   - TASK-32
