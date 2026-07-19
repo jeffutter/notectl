@@ -1,11 +1,14 @@
 ---
 id: TASK-37
 title: 'Fix: remove non-functional batch chunking in embed_batch'
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-19 00:46'
+updated_date: '2026-07-19 01:04'
 labels:
   - review-followup
+  - planned
 milestone: Active
 dependencies:
   - TASK-36
@@ -27,54 +30,97 @@ Found while reviewing TASK-36 (notectl-search/src/embeddings/embed.rs:243-273). 
 - [ ] #4 The embed_batch_prefixed test helper and its batch-boundary-specific tests (test_embed_batch_multi_batch_title_pairing, test_embed_batch_multi_batch_exact_boundary) are collapsed into a single title-pairing test that has no batch_size parameter, since there is no batch boundary left to test; test_embed_batch_multi_batch_with_none_titles is updated the same way and kept
 - [ ] #5 nix develop -c cargo test -p notectl-search --all-features passes
 - [ ] #6 nix develop -c cargo clippy -p notectl-search -- -D warnings passes
+- [ ] #7 #1 EmbeddingConfig no longer has a batch_size field (removed from the struct at embed.rs:50-59, its Default impl at 61-70, and from_search_config at 72-82)=done
+- [ ] #8 #2 Embedder::embed_batch (embed.rs:243-273) is a single flat loop over texts.iter().zip(titles.iter()) with no chunking, no batch_idx/start/end arithmetic, and no config.batch_size reference=done
+- [ ] #9 #3 The doc comment and inline comment on embed_batch describe the flat sequential loop only — no mention of batching, chunk boundaries, or batch_size=done
+- [ ] #10 #4 The embed_batch_prefixed test helper and its batch-boundary-specific tests (test_embed_batch_multi_batch_title_pairing, test_embed_batch_multi_batch_exact_boundary) are collapsed into a single title-pairing test that has no batch_size parameter, since there is no batch boundary left to test; test_embed_batch_multi_batch_with_none_titles is updated the same way and kept=done
+- [ ] #11 #5 nix develop -c cargo test -p notectl-search --all-features passes=done
+- [ ] #12 #6 nix develop -c cargo clippy -p notectl-search -- -D warnings passes=done
 <!-- AC:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
-SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a TypeScript/React web app (web/). ALL commands must run inside the Nix dev shell: either run 'direnv allow' once, or prefix every command with 'nix develop -c'. Work from the repository root unless told otherwise. Do not change pinned dependency versions.
+All changes are confined to a single file: `notectl-search/src/embeddings/embed.rs`. No other files reference `batch_size` — callers construct `EmbeddingConfig` via `default()` or `from_search_config()` and only access `output_dim`, `max_seq_len`, and `dtype`. Build inside the Nix dev shell (`nix develop -c <command>`).
 
-1. Open notectl-search/src/embeddings/embed.rs.
+### Step 1: Remove `batch_size` from `EmbeddingConfig`
 
-2. In the EmbeddingConfig struct (currently lines 48-59), delete the 'batch_size' field and its doc comment (line 57-58).
+1. Delete the `batch_size` field and its doc comment from the struct (lines 57–58):
+   ```rust
+   // REMOVE THESE TWO LINES:
+   /// Batch size for embedding (higher = faster but more memory)
+   pub batch_size: usize,
+   ```
 
-3. In 'impl Default for EmbeddingConfig' (currently lines 61-70), delete the 'batch_size: 32,' line (line 67).
+2. Delete `batch_size: 32,` from `impl Default for EmbeddingConfig` (line 67).
 
-4. In 'EmbeddingConfig::from_search_config' (currently lines 72-82), delete the 'batch_size: 32,' line (line 79).
+3. Delete `batch_size: 32,` from `EmbeddingConfig::from_search_config` (line 79).
 
-5. Replace the embed_batch method body (currently lines 237-273) with:
-   '/// Async entry point: embed a batch of texts with the specified task type.
-   ///
-   /// Each text is embedded via its own spawn_blocking call, awaited to completion
-   /// before the next begins — processing is fully sequential. Returns a vector of
-   /// embedding vectors in the same order as the input.
-   pub async fn embed_batch(
-       &mut self,
-       texts: &[String],
-       titles: &[Option<String>],
-       task: TaskType,
-   ) -> Result<Vec<Vec<f32>>, EmbedError> {
-       if texts.len() != titles.len() {
-           return Err(EmbedError::Inference(
-               "texts and titles must have the same length".to_string(),
-           ));
-       }
+### Step 2: Remove dead `EmbedError::BatchExceeded` variant
 
-       let mut results = Vec::with_capacity(texts.len());
-       for (text, title) in texts.iter().zip(titles.iter()) {
-           let embedding = self.embed_single(text, title.as_deref(), task).await?;
-           results.push(embedding);
-       }
+The `BatchExceeded` variant (line 98) and its `Display` arm (lines 115–117) are never constructed anywhere in the codebase. Remove them:
 
-       Ok(results)
-   }'
+4. Delete `BatchExceeded(usize),` from the enum (line 98).
 
-6. In the '#[cfg(test)] mod tests' block, update 'test_default_embedding_config' (currently around line 389-395) to remove the 'assert_eq!(config.batch_size, 32);' line.
+5. Delete the corresponding match arm from `impl Display for EmbedError` (lines 115–117):
+   ```rust
+   // REMOVE THIS ARM:
+   EmbedError::BatchExceeded(size) => {
+       write!(f, "Batch size {size} exceeds maximum")
+   }
+   ```
 
-7. Update 'test_embedding_config_from_search_config' (currently around line 421-436) to remove the 'assert_eq!(ec.batch_size, 32);' line.
+### Step 3: Flatten `embed_batch`
 
-8. Replace the 'embed_batch_prefixed' test helper (currently lines 457-486) with a version that drops the batch_size parameter and chunking loop:
-   '/// Test helper: simulate embed_batch's text/title pairing and return prefixed strings.
+Replace the entire `embed_batch` method (lines 234–273) with a flat sequential loop:
+
+```rust
+/// Async entry point: embed a batch of texts with the specified task type.
+///
+/// Each text is embedded via its own `spawn_blocking` call, awaited to completion
+/// before the next begins — processing is fully sequential. Returns a vector of
+/// embedding vectors in the same order as the input.
+pub async fn embed_batch(
+    &mut self,
+    texts: &[String],
+    titles: &[Option<String>],
+    task: TaskType,
+) -> Result<Vec<Vec<f32>>, EmbedError> {
+    if texts.len() != titles.len() {
+        return Err(EmbedError::Inference(
+            "texts and titles must have the same length".to_string(),
+        ));
+    }
+
+    let mut results = Vec::with_capacity(texts.len());
+    for (text, title) in texts.iter().zip(titles.iter()) {
+        let embedding = self.embed_single(text, title.as_deref(), task).await?;
+        results.push(embedding);
+    }
+
+    Ok(results)
+}
+```
+
+Key structural change: `texts.iter().zip(titles.iter())` replaces the two-level `chunks(batch_size)` + `start/end` index arithmetic. This structurally eliminates the whole class of title/text pairing bugs (TASK-1.16, TASK-2, TASK-36).
+
+### Step 4: Update config tests
+
+6. In `test_default_embedding_config` (~line 389–395), delete:
+   ```rust
+   assert_eq!(config.batch_size, 32);
+   ```
+
+7. In `test_embedding_config_from_search_config` (~line 421–436), delete:
+   ```rust
+   assert_eq!(ec.batch_size, 32);
+   ```
+
+### Step 5: Simplify test helper and tests
+
+8. Replace `embed_batch_prefixed` (~lines 457–486) — drop the `batch_size` parameter and flatten to a simple iterator chain:
+   ```rust
+   /// Test helper: simulate embed_batch's text/title pairing and return prefixed strings.
    /// This lets us verify title-to-text pairing without loading the model.
    fn embed_batch_prefixed(
        texts: &[String],
@@ -92,21 +138,30 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
            .zip(titles.iter())
            .map(|(text, title)| task.apply_prefix(text, title.as_deref()))
            .collect()
-   }'
+   }
+   ```
 
-9. Update all call sites of embed_batch_prefixed to drop the trailing batch_size argument (currently in test_embed_batch_single_batch_no_title_swap ~line 498, test_embed_batch_multi_batch_title_pairing ~line 525, test_embed_batch_multi_batch_exact_boundary ~line 549, test_embed_batch_multi_batch_with_none_titles ~line 564).
+9. Update ALL call sites of `embed_batch_prefixed` to drop the trailing `batch_size` argument (currently passed as `32` or `2`).
 
-10. Delete test_embed_batch_multi_batch_exact_boundary entirely (currently lines 538-556) — it only exercised chunk-boundary arithmetic that no longer exists, and is now redundant with the pairing test from step 11.
+10. **Delete** `test_embed_batch_multi_batch_exact_boundary` entirely (~lines 538–556). It only exercised chunk-boundary arithmetic that no longer exists.
 
-11. Rename test_embed_batch_multi_batch_title_pairing (currently lines 506-536) to test_embed_batch_title_pairing and update its comment to describe pairing correctness generally (drop the 'force multiple batches with batch_size=2' framing since there is no batch_size parameter anymore) — keep its 5-text/5-title assertions as-is, they still validate correct index-wise pairing.
+11. **Rename** `test_embed_batch_multi_batch_title_pairing` → `test_embed_batch_title_pairing`. Update the comment to drop the "force multiple batches with batch_size=2" framing. Keep the 5-text/5-title assertions — they still validate correct index-wise pairing.
 
-12. Update the comment in test_embed_batch_multi_batch_with_none_titles (currently line 559-561) to drop the 'multi-batch' framing.
+12. Update the comment in `test_embed_batch_multi_batch_with_none_titles` to drop the "multi-batch" framing. The test itself is fine — it verifies `None` titles get the `"none"` fallback.
 
-13. Read the full embed.rs test module afterward to confirm no remaining reference to batch_size or chunk/batch framing outside of what's needed.
+### Step 6: Verify
 
-14. Run: nix develop -c cargo test -p notectl-search --all-features (verify all tests pass, including the renamed/updated ones).
+13. Scan the full file for any remaining references to `batch_size`, `chunk`, `batch_idx`, `BatchExceeded`, or misleading batching language.
 
-15. Run: nix develop -c cargo clippy -p notectl-search -- -D warnings (verify clean).
+14. Run: `nix develop -c cargo test -p notectl-search --all-features`
 
-16. Run: nix develop -c cargo build && nix develop -c cargo build --features search (verify both build configurations still compile, since EmbeddingConfig is constructed elsewhere via from_search_config).
+15. Run: `nix develop -c cargo clippy -p notectl-search -- -D warnings`
+
+16. Run: `nix develop -c cargo build && nix develop -c cargo build --features search` (verifies both build configurations compile, since `EmbeddingConfig::from_search_config` is called from `index.rs` and `search.rs`)
 <!-- SECTION:PLAN:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Flattened Embedder::embed_batch into a single texts.iter().zip(titles.iter()) loop, removing the non-functional two-level chunking structure that caused title/text pairing bugs across TASK-1.16, TASK-2, and TASK-36. Removed batch_size field from EmbeddingConfig (struct, Default, from_search_config), dead EmbedError::BatchExceeded variant, and collapsed batch-boundary-specific tests into concise title-pairing verification tests. Net change: -93 lines +17 lines in embed.rs.
+<!-- SECTION:FINAL_SUMMARY:END -->
