@@ -79,11 +79,63 @@ impl From<std::io::Error> for DownloadError {
     }
 }
 
+/// Resolve the hf-hub repo directory name from a repo ID (e.g. "google/model" -> "models--google--model").
+fn repo_dir_name(repo_id: &str) -> String {
+    format!("{}--{}", "models", repo_id.replace('/', "--"))
+}
+
+/// Resolve the snapshot directory inside an hf-hub cache given a cache root and repo ID.
+///
+/// hf-hub stores files under:
+///   <span><code>cache</code></span>/<span><code>repo-dir</code></span>/snapshots/<span><code>commit-hash</code></span>/
+/// The commit hash is read from <span><code>cache</code></span>/<span><code>repo-dir</code></span>/refs/main.
+fn resolve_snapshot_dir(cache_dir: &Path, repo_id: &str) -> Option<PathBuf> {
+    let repo_dir = cache_dir.join(repo_dir_name(repo_id));
+    let refs_main = repo_dir.join("refs").join("main");
+    let commit_hash = std::fs::read_to_string(&refs_main).ok()?;
+    let commit_hash = commit_hash.trim();
+    Some(repo_dir.join("snapshots").join(commit_hash))
+}
+
+/// Create symlinks from flat layout (<cache_dir>/file) to hf-hub snapshot directory.
+///
+/// hf-hub stores downloaded files in a nested structure:
+///   <span><code>cache</code></span>/models--author--repo/snapshots/<span><code>hash</code></span>/file
+/// But load_model and is_model_ready expect a flat layout:
+///   <span><code>cache</code></span>/file
+/// This bridges the gap by creating symlinks.
+fn link_flat_layout(cache_dir: &Path, snapshot_dir: &Path) -> Result<(), DownloadError> {
+    for file in REQUIRED_FILES {
+        let target = snapshot_dir.join(file);
+        let link = cache_dir.join(file);
+
+        // Ensure parent directory exists (e.g. for "1_Pooling/config.json")
+        if let Some(parent) = link.parent() {
+            std::fs::create_dir_all(parent).map_err(DownloadError::IoError)?;
+        }
+
+        // Remove existing file/link and create fresh symlink
+        if link.exists() || link.is_symlink() {
+            std::fs::remove_file(&link).map_err(DownloadError::IoError)?;
+        }
+
+        // Use absolute symlink for reliability across platforms
+        let target_path = target.to_string_lossy().to_string();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_path, &link).map_err(DownloadError::IoError)?;
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target_path, &link).map_err(DownloadError::IoError)?;
+
+        tracing::debug!("Linked {file} <- {target_path}");
+    }
+    Ok(())
+}
+
 /// Download model weights and configs to the specified cache directory.
 ///
 /// Uses hf-hub to download required files. On success, returns the path to the
 /// downloaded model directory. Subsequent calls with the same cache_dir will
-/// be fast (files already present).
+/// be fast (files already present in hf-hub cache).
 pub async fn download_model(cache_dir: &Path) -> Result<PathBuf, DownloadError> {
     // Create cache directory if it doesn't exist
     std::fs::create_dir_all(cache_dir).map_err(DownloadError::IoError)?;
@@ -93,8 +145,10 @@ pub async fn download_model(cache_dir: &Path) -> Result<PathBuf, DownloadError> 
         cache_dir.display()
     );
 
-    // Use hf-hub to download all required files
-    let api = hf_hub::api::sync::Api::new()
+    // Use hf-hub with our custom cache directory
+    let api = hf_hub::api::sync::ApiBuilder::new()
+        .with_cache_dir(cache_dir.to_path_buf())
+        .build()
         .map_err(|e| DownloadError::Network(format!("Failed to create HF client: {e}")))?;
     let api_repo = api.model(MODEL_REPO.to_string());
 
@@ -131,7 +185,16 @@ pub async fn download_model(cache_dir: &Path) -> Result<PathBuf, DownloadError> 
         }
     }
 
-    // Verify all required files are present
+    // Resolve hf-hub's snapshot directory and create flat-layout symlinks
+    let snapshot_dir = resolve_snapshot_dir(cache_dir, MODEL_REPO).ok_or_else(|| {
+        DownloadError::Incomplete(
+            "Could not resolve hf-hub snapshot directory. Check refs/main.".to_string(),
+        )
+    })?;
+
+    link_flat_layout(cache_dir, &snapshot_dir)?;
+
+    // Verify all required files are accessible via flat layout
     for file in REQUIRED_FILES {
         let expected = cache_dir.join(file);
         if !expected.exists() {
