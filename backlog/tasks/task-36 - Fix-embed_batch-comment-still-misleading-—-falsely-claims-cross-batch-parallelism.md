@@ -3,9 +3,11 @@ id: TASK-36
 title: >-
   Fix: embed_batch comment still misleading — falsely claims cross-batch
   parallelism
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@ralph'
 created_date: '2026-07-18 23:36'
+updated_date: '2026-07-19 00:38'
 labels:
   - review-followup
 milestone: Active
@@ -24,9 +26,9 @@ Found while reviewing TASK-2 (notectl-search/src/embeddings/embed.rs:239-240,261
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The doc comment on embed_batch (currently lines 239-240) does not claim batching provides memory or reactor-responsiveness benefits it does not actually provide
-- [ ] #2 The inline comment inside embed_batch (currently lines 261-263) does not claim any parallelism or overlap occurs between batches or between items — accurately states that all spawn_blocking calls in embed_batch run strictly sequentially, one at a time
-- [ ] #3 nix develop -c cargo clippy -p notectl-search passes
+- [x] #1 The doc comment on embed_batch (currently lines 239-240) does not claim batching provides memory or reactor-responsiveness benefits it does not actually provide
+- [x] #2 The inline comment inside embed_batch (currently lines 261-263) does not claim any parallelism or overlap occurs between batches or between items — accurately states that all spawn_blocking calls in embed_batch run strictly sequentially, one at a time
+- [x] #3 nix develop -c cargo clippy -p notectl-search passes
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -52,3 +54,9 @@ SETUP (read first): This is a Rust+WebAssembly core (crates/gql-core) with a Typ
 5. Run: nix develop -c cargo clippy -p notectl-search (verify clean)
 6. Run: nix develop -c cargo test -p notectl-search (verify existing tests still pass)
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed two misleading comments in notectl-search/src/embeddings/embed.rs: (1) embed_batch function doc comment no longer claims batching provides memory/reactor benefits — accurately describes fully sequential processing. (2) Inline comment inside batch loop no longer claims cross-batch parallelism — accurately states all spawn_blocking calls run strictly sequentially. Verified via cargo clippy (clean) and cargo test (123 tests pass).
+<!-- SECTION:NOTES:END -->

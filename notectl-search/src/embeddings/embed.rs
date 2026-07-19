@@ -236,8 +236,10 @@ impl Embedder {
 
     /// Async entry point: embed a batch of texts with the specified task type.
     ///
-    /// Processes in batches via `spawn_blocking` to manage both memory and reactor
-    /// responsiveness. Returns a vector of embedding vectors.
+    /// Each text is embedded via its own `spawn_blocking` call, awaited to completion
+    /// before the next begins — processing is fully sequential, both within a batch and
+    /// across batches. `batch_size` only controls how many titles are sliced per
+    /// iteration; it does not introduce concurrency. Returns a vector of embedding vectors.
     pub async fn embed_batch(
         &mut self,
         texts: &[String],
@@ -258,9 +260,8 @@ impl Embedder {
             let title_chunk: Vec<Option<&str>> =
                 titles[start..end].iter().map(|t| t.as_deref()).collect();
 
-            // Each item in the chunk gets its own spawn_blocking call. Items within a
-            // batch are awaited sequentially; parallelism comes from overlapping
-            // batches across different spawn_blocking threads on the tokio runtime.
+            // Each item gets its own spawn_blocking call, but every call is awaited here
+            // before the next starts — there is no concurrency within or across batches.
             for (i, text) in chunk.iter().enumerate() {
                 let title = title_chunk.get(i).copied().flatten();
                 let embedding = self.embed_single(text, title, task).await?;
