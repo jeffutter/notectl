@@ -820,6 +820,37 @@ async function buildFinalSummary(cwd: string, state: RalphState): Promise<string
   return lines.join("\n");
 }
 
+/**
+ * Fires an OS-level desktop notification (with sound) via `herdr notification show` so a stop
+ * that needs a human isn't just sitting quietly in `ctx.ui.notify`, easy to miss if nobody's
+ * looking at this pane. `status === "stopped"` for any reason other than the user's own
+ * `/ralph-stop` means something needs attention (a failure streak, a ticket stuck cycling
+ * through choose, an unexpected error) — that gets the urgent "request" sound; a clean `done`
+ * gets a calmer "done" ping. Best-effort: failures here must never break loop shutdown.
+ */
+async function notifyHuman(
+  pi: ExtensionAPI,
+  cwd: string,
+  state: RalphState,
+): Promise<void> {
+  if (state.status === "stopped" && state.stopRequested) return;
+  const needsAttention = state.status === "stopped";
+  await execCapture(
+    pi,
+    "herdr",
+    [
+      "notification",
+      "show",
+      needsAttention ? "ralph needs you" : "ralph finished",
+      "--body",
+      `${state.currentStep ?? ""} (${state.loopCount}/${state.iterations} iterations)`,
+      "--sound",
+      needsAttention ? "request" : "done",
+    ],
+    { cwd, timeout: 10_000 },
+  ).catch(() => undefined);
+}
+
 async function runLoop(
   pi: ExtensionAPI,
   ctx: ExtensionCommandContext,
@@ -893,6 +924,7 @@ async function runLoop(
       await buildFinalSummary(cwd, state),
       state.status === "done" ? "info" : "warn",
     );
+    await notifyHuman(pi, cwd, state);
   }
 }
 
