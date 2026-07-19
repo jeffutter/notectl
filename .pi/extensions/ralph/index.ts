@@ -1215,6 +1215,25 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("ralph-clear", {
+    description: "Clear the ralph status widget once the loop has finished",
+    handler: async (_args, ctx) => {
+      if (!activeState) {
+        ctx.ui.notify("ralph has not been run in this session.", "info");
+        return;
+      }
+      if (activeState.status === "running" || activeState.status === "stopping") {
+        ctx.ui.notify(
+          "ralph is still running — use /ralph-stop first, then /ralph-clear.",
+          "warn",
+        );
+        return;
+      }
+      ctx.ui.setWidget("ralph", undefined);
+      ctx.ui.notify("Cleared the ralph status widget.", "info");
+    },
+  });
+
   pi.on("session_shutdown", async () => {
     stopWidgetTicker();
     if (
