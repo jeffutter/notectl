@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:59'
-updated_date: '2026-07-18 23:33'
+updated_date: '2026-07-19 00:03'
 labels:
   - infra
   - blocker
@@ -61,4 +61,8 @@ Re-checked 2026-07-18 18:11: HF_TOKEN still absent from all locations. Cannot au
 2026-07-18: Re-executed. HF_TOKEN still absent from all locations (env, shell configs, .envrc, .netrc, ~/.huggingface/). Cannot automate HF login/license acceptance/token generation due to anti-bot HTTP 403. Remains blocked on manual human action. Reverted to To Do per backlog-execute guidelines.
 
 2026-07-18 re-execution: HF_TOKEN still absent from all locations (env, shell configs, .envrc, .netrc, ~/.huggingface/). Cannot automate HF login/license acceptance/token generation due to anti-bot HTTP 403. Remains blocked on manual human action. Reverted to To Do per backlog-execute guidelines.
+
+2026-07-19 re-execution: HF_TOKEN still absent from all locations (env, shell configs, .envrc, .netrc, ~/.huggingface/, cache). Cannot automate HF login/license acceptance/token generation due to anti-bot HTTP 403. Remains blocked on manual human action. Reverted to To Do per backlog-execute guidelines.
+
+2026-07-19 re-execution: HF_TOKEN still absent from all locations (env, shell configs, .envrc, .netrc, ~/.huggingface/, cache). Cannot automate HF login/license acceptance/token generation due to anti-bot HTTP 403. Remains blocked on manual human action. Reverted to To Do per backlog-execute guidelines.
 <!-- SECTION:NOTES:END -->
