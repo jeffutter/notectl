@@ -1,11 +1,11 @@
 ---
 id: TASK-30
 title: Set up HF_TOKEN for EmbeddingGemma-300M model access
-status: To Do
+status: Done
 assignee:
   - '@ralph'
 created_date: '2026-07-18 16:59'
-updated_date: '2026-07-19 01:51'
+updated_date: '2026-07-19 13:27'
 labels:
   - infra
   - blocker
@@ -78,3 +78,15 @@ Re-checked 2026-07-18 18:11: HF_TOKEN still absent from all locations. Cannot au
 
 2026-07-19 re-execution: Comprehensive scan confirmed HF_TOKEN still absent from all locations (env, shell configs, .envrc, .netrc, ~/.huggingface/, cache). huggingface-cli not installed. Cannot automate HF login/license acceptance/token generation due to anti-bot HTTP 403. Remains blocked on manual human action. Reverted to To Do per backlog-execute guidelines.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+HF_TOKEN was already set in `.envrc`. Ran `cargo run --features embeddings -p notectl-search --example print_embedding` to generate real 768-dim embeddings from EmbeddingGemma-300M. Updated `notectl-search/src/embeddings/model.rs` with:
+
+- `REFERENCE_EMBEDDING`: query-text embedding for "task: search result | query: hello world"
+- `DOC_REFERENCE_EMBEDDING`: document-text embedding for "title: My Note | text: hello world"  
+- Both `_POPULATED` flags set to `true` to enable numerical validation in integration tests
+
+Fixed clippy `excessive_precision` warnings by rounding all f32 literals to 7 significant digits.
+<!-- SECTION:FINAL_SUMMARY:END -->
