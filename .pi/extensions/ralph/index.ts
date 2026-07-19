@@ -33,10 +33,12 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "@earendil-works/pi-ai";
 import { Box, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 // --- Types & constants ---------------------------------------------------
@@ -1081,7 +1083,36 @@ function parsePositiveInt(token: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+/**
+ * Lets the LLM answer questions about the running ralph loop on demand, since nothing about
+ * ralph's progress otherwise enters this session's context — `setCurrentStep`/`renderWidget`
+ * only touch the UI widget, which the model never sees. Reads `activeState` directly (the same
+ * live object `/ralph-progress` renders) rather than `.pi/ralph/state.json`, which only gets
+ * rewritten at specific checkpoints and can lag behind what's actually happening mid-step.
+ */
+const ralphStatusTool = defineTool({
+  name: "ralph_status",
+  label: "Ralph Status",
+  description:
+    "Reports the live status of the autonomous ralph backlog loop (plan/execute/review tickets) " +
+    "running in this pi session, if any: current step, iteration progress, and recent history.",
+  promptSnippet: "Check live status of the running ralph autonomous backlog loop",
+  promptGuidelines: [
+    "Use ralph_status when the user asks what ralph is doing, whether it's running or stuck, " +
+      "or wants a progress update on the autonomous backlog loop.",
+  ],
+  parameters: Type.Object({}),
+  async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+    const text = activeState
+      ? renderDashboardLines(activeState, plainTheme).join("\n")
+      : "ralph has not been run in this session (use /ralph to start it).";
+    return { content: [{ type: "text", text }], details: {} };
+  },
+});
+
 export default function (pi: ExtensionAPI) {
+  pi.registerTool(ralphStatusTool);
+
   pi.registerMessageRenderer("ralph-status", (message, _options, theme) => {
     const details = message.details as { level: "info" | "warn" } | undefined;
     const level = details?.level ?? "info";
