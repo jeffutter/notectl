@@ -107,6 +107,13 @@ type RalphState = {
   history: RalphHistoryEntry[];
   /** Consecutive failures of the same (kind, ticket) step — see MAX_CONSECUTIVE_FAILURES. */
   failureStreak?: { key: string; count: number };
+  /** Consecutive `choose` picks that landed on the same ticket — see MAX_CONSECUTIVE_FAILURES.
+   * `choose` only runs once nothing is In Progress/Dev Ready/Needs Plan, so re-picking the same
+   * ticket means it cycled all the way back to unblocked `To Do` without completing: a real
+   * (often environmental, e.g. blocked on a manual step) block that `execute`'s own "ok" outcome
+   * won't surface, since backlog-execute correctly reports success for documenting the blocker
+   * and reverting status. */
+  repeatedChoiceStreak?: { ticketId: string; count: number };
 };
 
 /** Records outcome `ok` under `key`; returns true once the streak hits the cap. */
@@ -147,6 +154,7 @@ function createState(iterations: number, reviewEvery: number): RalphState {
     startedAt: new Date().toISOString(),
     history: [],
     failureStreak: undefined,
+    repeatedChoiceStreak: undefined,
   };
 }
 
@@ -705,6 +713,30 @@ function stoppedByFailureStreak(
   return true;
 }
 
+/** True if `choose` just picked the same ticket MAX_CONSECUTIVE_FAILURES times in a row;
+ * `finish()`s the state with an explanatory reason. See `repeatedChoiceStreak` on RalphState
+ * for why a ticket cycling back to `choose` repeatedly needs its own detection, separate from
+ * failureStreak — each individual execute can report "ok" while making zero real progress. */
+function stoppedByRepeatedChoice(
+  state: RalphState,
+  ticketId: string | undefined,
+): boolean {
+  if (!ticketId) return false;
+  state.repeatedChoiceStreak =
+    state.repeatedChoiceStreak?.ticketId === ticketId
+      ? { ticketId, count: state.repeatedChoiceStreak.count + 1 }
+      : { ticketId, count: 1 };
+  if (state.repeatedChoiceStreak.count < MAX_CONSECUTIVE_FAILURES) return false;
+  finish(
+    state,
+    "stopped",
+    `stopping: ${ticketId} was chosen ${MAX_CONSECUTIVE_FAILURES} times in a row without completing — it ` +
+      "keeps cycling back to unblocked To Do, which usually means it's blocked on something outside pi's " +
+      "control (check its Implementation Notes). Resolve it manually or reprioritize before restarting.",
+  );
+  return true;
+}
+
 /**
  * Runs one courtesy review after the loop has already decided to exit, if any executed
  * tickets since the last review haven't been covered by one yet. Skipped when the loop is
@@ -845,6 +877,8 @@ async function runLoop(
       await persist(cwd, state);
       renderWidget(ctx, state);
       if (stoppedByFailureStreak(state, "choose", ok)) break;
+      const chosenTicketId = state.history[state.history.length - 1]?.ticket;
+      if (stoppedByRepeatedChoice(state, chosenTicketId)) break;
     }
 
     await runFinalReviewIfNeeded(pi, ctx, cwd, state);
