@@ -435,6 +435,37 @@ impl SearchIndex {
         atomic_write_json(&manifest_path, &data)
     }
 
+    /// Produce a filesystem-safe filename from an arbitrary chunk ID.
+    ///
+    /// Chunk IDs can contain any characters (EJS templates, unicode, etc.), so we
+    /// hash the full ID with blake3 and attach a short sanitized suffix for
+    /// human readability. The resulting name stays well under the 255-byte limit
+    /// on ext4/APFS.
+    fn chunk_filename(id: &str) -> String {
+        // Hash prefix: first 12 hex chars of blake3 digest (6 bytes)
+        let hash = blake3::hash(id.as_bytes());
+        let prefix: String = hash
+            .as_bytes()
+            .iter()
+            .take(6)
+            .map(|b| format!("{:02x}", b))
+            .collect();
+
+        // Sanitized suffix: keep only alphanumeric, dash, underscore; truncate to ~180 chars
+        let suffix: String = id
+            .chars()
+            .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
+            .take(180)
+            .collect();
+
+        // If the suffix is empty (all special chars), just use the hash
+        if suffix.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{}_{}", prefix, suffix)
+        }
+    }
+
     /// Write chunk texts to disk (one file per chunk in a flat directory).
     pub fn write_chunks(&self, chunks: &[Chunk]) -> Result<(), SearchError> {
         let chunks_dir = self.base_dir.join("chunks");
@@ -442,8 +473,8 @@ impl SearchIndex {
             .map_err(|e| SearchError::Storage(format!("Failed to create chunks directory: {e}")))?;
 
         for chunk in chunks {
-            let safe_id = chunk.id.replace(['/', '\\', ':'], "_");
-            let chunk_path = chunks_dir.join(format!("{safe_id}.txt"));
+            let fname = Self::chunk_filename(&chunk.id);
+            let chunk_path = chunks_dir.join(format!("{fname}.txt"));
             atomic_write_json(&chunk_path, &chunk.text).map_err(|e| {
                 SearchError::Storage(format!("Failed to write chunk {}: {e}", chunk.id))
             })?;
@@ -454,8 +485,8 @@ impl SearchIndex {
 
     /// Read a chunk's text from disk by its ID.
     pub fn read_chunk(&self, chunk_id: &str) -> Result<String, SearchError> {
-        let safe_id = chunk_id.replace(['/', '\\', ':'], "_");
-        let chunk_path = self.base_dir.join("chunks").join(format!("{safe_id}.txt"));
+        let fname = Self::chunk_filename(chunk_id);
+        let chunk_path = self.base_dir.join("chunks").join(format!("{fname}.txt"));
         fs::read_to_string(&chunk_path)
             .map_err(|e| SearchError::Storage(format!("Failed to read chunk {}: {e}", chunk_id)))
     }
@@ -566,8 +597,8 @@ impl SearchIndex {
         }
 
         for id in chunk_ids {
-            let safe_id = id.replace(['/', '\\', ':'], "_");
-            let chunk_path = chunks_dir.join(format!("{safe_id}.txt"));
+            let fname = Self::chunk_filename(id);
+            let chunk_path = chunks_dir.join(format!("{fname}.txt"));
             if chunk_path.exists() {
                 fs::remove_file(&chunk_path).map_err(|e| {
                     SearchError::Storage(format!("Failed to remove chunk {id}: {e}"))
