@@ -37,7 +37,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 
 // --- Types & constants ---------------------------------------------------
 
@@ -821,13 +821,27 @@ async function buildFinalSummary(cwd: string, state: RalphState): Promise<string
 }
 
 /**
- * Fires an OS-level desktop notification (with sound) via `herdr notification show` so a stop
- * that needs a human isn't just sitting quietly in `ctx.ui.notify`, easy to miss if nobody's
- * looking at this pane. `status === "stopped"` for any reason other than the user's own
- * `/ralph-stop` means something needs attention (a failure streak, a ticket stuck cycling
- * through choose, an unexpected error) — that gets the urgent "request" sound; a clean `done`
- * gets a calmer "done" ping. Best-effort: failures here must never break loop shutdown.
+ * Posts a "ralph-status" custom message into the pi session transcript via `pi.sendMessage()`.
+ * Unlike a regular user/assistant message, this doesn't trigger an LLM turn (no `triggerTurn`,
+ * default delivery) — it just renders inline, distinctly styled, and sits inertly in history
+ * until whatever the user's next real prompt is. That gets ralph's status a permanent, visible
+ * record in the transcript itself, complementing the ephemeral `ctx.ui.notify` toast and the
+ * OS-level `notifyHuman` alert below. Requires the "ralph-status" renderer registered in the
+ * extension's default export.
  */
+function postStatusMessage(
+  pi: ExtensionAPI,
+  text: string,
+  level: "info" | "warn",
+): void {
+  pi.sendMessage({
+    customType: "ralph-status",
+    content: text,
+    display: true,
+    details: { level },
+  });
+}
+
 async function notifyHuman(
   pi: ExtensionAPI,
   cwd: string,
@@ -920,10 +934,10 @@ async function runLoop(
     await persist(cwd, state);
     renderWidget(ctx, state);
     stopWidgetTicker();
-    ctx.ui.notify(
-      await buildFinalSummary(cwd, state),
-      state.status === "done" ? "info" : "warn",
-    );
+    const summary = await buildFinalSummary(cwd, state);
+    const level = state.status === "done" ? "info" : "warn";
+    ctx.ui.notify(summary, level);
+    postStatusMessage(pi, summary, level);
     await notifyHuman(pi, cwd, state);
   }
 }
@@ -1068,6 +1082,16 @@ function parsePositiveInt(token: string): number | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.registerMessageRenderer("ralph-status", (message, _options, theme) => {
+    const details = message.details as { level: "info" | "warn" } | undefined;
+    const level = details?.level ?? "info";
+    const color = level === "warn" ? "warning" : "success";
+    const prefix = theme.fg(color, `[ralph ${level === "warn" ? "needs you" : "done"}]`);
+    const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
+    box.addChild(new Text(`${prefix} ${message.content}`, 0, 0));
+    return box;
+  });
+
   pi.registerCommand("ralph", {
     description:
       "Start the autonomous backlog loop (plan/execute/review tickets until done or iteration limit)",
