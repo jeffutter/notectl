@@ -1,7 +1,7 @@
 use glob::Pattern;
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn default_daily_note_patterns() -> Vec<String> {
     vec![
@@ -15,7 +15,7 @@ pub fn default_cache_dir() -> String {
 }
 
 pub fn default_embedding_dim() -> u32 {
-    256
+    1024
 }
 
 pub fn default_max_seq_tokens() -> usize {
@@ -115,7 +115,7 @@ pub struct SearchConfig {
 }
 
 fn default_model_id() -> String {
-    "google/embedding-gemma-300m".to_string()
+    "Qwen/Qwen3-Embedding-0.6B".to_string()
 }
 
 impl SearchConfig {
@@ -183,27 +183,155 @@ impl Default for Config {
     }
 }
 
+/// Partial config structs — every field is Option so we can distinguish
+/// "not set" from "set to default value" when merging layers.
+#[derive(Debug, Clone, Deserialize)]
+struct PartialSearchConfig {
+    model_id: Option<String>,
+    model_revision: Option<Option<String>>,
+    embedding_dim: Option<u32>,
+    max_seq_tokens: Option<usize>,
+    chunk_overlap_tokens: Option<usize>,
+    min_chunk_tokens: Option<usize>,
+    rrf_k: Option<f64>,
+    rrf_bm25_weight: Option<f64>,
+    rrf_cosine_weight: Option<f64>,
+    dense_weights: Option<String>,
+    sparse_weights: Option<String>,
+    cache_dir: Option<String>,
+    max_results: Option<usize>,
+    merge_threshold: Option<usize>,
+    exclude_headings: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct PartialConfig {
+    exclude_paths: Option<Vec<String>>,
+    daily_note_patterns: Option<Vec<String>>,
+    search: Option<PartialSearchConfig>,
+}
+
 impl Config {
-    /// Load configuration from a file at the specified path
-    /// Falls back to default config if file doesn't exist or can't be read
-    pub fn load_from_file(config_path: &Path) -> Self {
-        if !config_path.exists() {
-            return Config::default();
+    /// Resolve the global config path: $XDG_CONFIG_HOME/notectl/config.toml
+    /// or ~/.config/notectl/config.toml as a fallback.
+    fn global_config_path() -> Option<PathBuf> {
+        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            return Some(Path::new(&xdg).join("notectl/config.toml"));
         }
 
-        match fs::read_to_string(config_path) {
-            Ok(content) => toml::from_str(&content).unwrap_or_default(),
-            Err(_) => Config::default(),
+        dirs::home_dir().map(|h| h.join(".config/notectl/config.toml"))
+    }
+
+    /// Load configuration from a file at the specified path.
+    /// Returns None if the file doesn't exist or can't be parsed.
+    fn load_partial(path: &Path) -> Option<PartialConfig> {
+        if !path.exists() {
+            return None;
+        }
+
+        match fs::read_to_string(path) {
+            Ok(content) => toml::from_str(&content).ok(),
+            Err(_) => None,
         }
     }
 
-    /// Load configuration from the base path (looks for .notectl.toml)
-    /// Also merges configuration from environment variables
-    pub fn load_from_base_path(base_path: &Path) -> Self {
-        let config_path = base_path.join(".notectl.toml");
-        let mut config = Self::load_from_file(&config_path);
+    /// Merge a partial config onto this one, only overriding fields that were set.
+    fn apply_partial(&mut self, partial: &PartialConfig) {
+        if let Some(ref paths) = partial.exclude_paths {
+            self.exclude_paths.extend(paths.clone());
+        }
 
-        // Merge in environment variable configuration
+        if let Some(ref patterns) = partial.daily_note_patterns {
+            self.daily_note_patterns.extend(patterns.clone());
+        }
+
+        if let Some(ref s) = partial.search {
+            if let Some(ref v) = s.model_id {
+                self.search.model_id = v.clone();
+            }
+            if let Some(Some(ref v)) = s.model_revision {
+                self.search.model_revision = Some(v.clone());
+            }
+            if let Some(v) = s.embedding_dim {
+                self.search.embedding_dim = v;
+            }
+            if let Some(v) = s.max_seq_tokens {
+                self.search.max_seq_tokens = v;
+            }
+            if let Some(v) = s.chunk_overlap_tokens {
+                self.search.chunk_overlap_tokens = v;
+            }
+            if let Some(v) = s.min_chunk_tokens {
+                self.search.min_chunk_tokens = v;
+            }
+            if let Some(v) = s.rrf_k {
+                self.search.rrf_k = v;
+            }
+            if let Some(v) = s.rrf_bm25_weight {
+                self.search.rrf_bm25_weight = v;
+            }
+            if let Some(v) = s.rrf_cosine_weight {
+                self.search.rrf_cosine_weight = v;
+            }
+            if let Some(ref v) = s.dense_weights {
+                self.search.dense_weights = Some(v.clone());
+            }
+            if let Some(ref v) = s.sparse_weights {
+                self.search.sparse_weights = Some(v.clone());
+            }
+            if let Some(ref v) = s.cache_dir {
+                self.search.cache_dir = v.clone();
+            }
+            if let Some(v) = s.max_results {
+                self.search.max_results = v;
+            }
+            if let Some(v) = s.merge_threshold {
+                self.search.merge_threshold = v;
+            }
+            if let Some(ref headings) = s.exclude_headings {
+                self.search.exclude_headings.extend(headings.clone());
+            }
+        }
+    }
+
+    /// Load configuration from a file at the specified path.
+    /// Falls back to default config if file doesn't exist or can't be read.
+    #[deprecated(since = "0.10.1", note = "Use load_from_base_path instead")]
+    pub fn load_from_file(config_path: &Path) -> Self {
+        if let Some(partial) = Self::load_partial(config_path) {
+            let mut config = Config::default();
+            config.apply_partial(&partial);
+            config
+        } else {
+            Config::default()
+        }
+    }
+
+    /// Load configuration with three-layer precedence:
+    /// 1. Hardcoded defaults
+    /// 2. Global config ($XDG_CONFIG_HOME/notectl/config.toml or ~/.config/notectl/config.toml)
+    /// 3. Vault config (<base_path>/.notectl.toml)
+    /// 4. Environment variables (applied after return via merge_from_env)
+    pub fn load_from_base_path(base_path: &Path) -> Self {
+        // Start with defaults
+        let mut config = Config::default();
+
+        // Layer 2: global user config
+        if let Some(global_path) = Self::global_config_path()
+            && let Some(partial) = Self::load_partial(&global_path)
+        {
+            tracing::debug!(path = %global_path.display(), "loaded global config");
+            config.apply_partial(&partial);
+        }
+
+        // Layer 3: vault-level config
+        let vault_config_path = base_path.join(".notectl.toml");
+        if let Some(partial) = Self::load_partial(&vault_config_path) {
+            tracing::debug!(path = %vault_config_path.display(), "loaded vault config");
+            config.apply_partial(&partial);
+        }
+
+        // Layer 4: environment variables
         config.merge_from_env();
 
         config
@@ -464,8 +592,8 @@ mod tests {
     #[test]
     fn test_search_config_default() {
         let config = Config::default();
-        assert_eq!(config.search.model_id, "google/embedding-gemma-300m");
-        assert_eq!(config.search.embedding_dim, 256);
+        assert_eq!(config.search.model_id, "Qwen/Qwen3-Embedding-0.6B");
+        assert_eq!(config.search.embedding_dim, 1024);
         assert_eq!(config.search.max_seq_tokens, 512);
         assert_eq!(config.search.chunk_overlap_tokens, 64);
         assert_eq!(config.search.min_chunk_tokens, 32);
@@ -649,6 +777,181 @@ cache_dir = "/tmp/search-cache"
 
         unsafe {
             std::env::remove_var("NOTECTL_SEARCH_EXCLUDE_HEADINGS");
+        }
+    }
+
+    #[test]
+    fn test_global_config_path_xdg_set() {
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", "/custom/xdg/config");
+        }
+
+        let path = Config::global_config_path();
+        assert_eq!(
+            path,
+            Some(PathBuf::from("/custom/xdg/config/notectl/config.toml"))
+        );
+
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    #[test]
+    fn test_global_config_path_fallback_to_home() {
+        // Clear XDG_CONFIG_HOME to test fallback
+        unsafe {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+
+        let path = Config::global_config_path();
+        // Should fall back to ~/.config/notectl/config.toml
+        assert!(path.is_some());
+        let p = path.unwrap();
+        assert!(p.to_string_lossy().ends_with(".config/notectl/config.toml"));
+    }
+
+    #[test]
+    fn test_load_partial_none_for_missing_file() {
+        let result = Config::load_partial(&PathBuf::from("/nonexistent/.notectl.toml"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_apply_partial_only_sets_provided_fields() {
+        let mut config = Config {
+            exclude_paths: vec!["Template".to_string()],
+            daily_note_patterns: default_daily_note_patterns(),
+            search: SearchConfig {
+                model_id: "default/model".to_string(),
+                embedding_dim: 1024,
+                ..Default::default()
+            },
+        };
+
+        // Parse a partial config that only sets model_id
+        let toml_str = r#"
+[search]
+model_id = "custom/model"
+"#;
+        let partial: PartialConfig = toml::from_str(toml_str).unwrap();
+        config.apply_partial(&partial);
+
+        // model_id should be overridden
+        assert_eq!(config.search.model_id, "custom/model");
+        // Other fields should remain unchanged
+        assert_eq!(config.search.embedding_dim, 1024);
+        assert_eq!(config.exclude_paths, vec!["Template"]);
+    }
+
+    #[test]
+    fn test_load_from_base_path_layering() {
+        // Save and restore env vars to avoid interference from parallel tests
+        let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let saved_model = std::env::var("NOTECTL_SEARCH_MODEL_ID").ok();
+        unsafe {
+            std::env::remove_var("NOTECTL_SEARCH_MODEL_ID");
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_dir = temp_dir.path();
+
+        // Create a vault-level config with only model_id
+        let vault_config = vault_dir.join(".notectl.toml");
+        fs::write(
+            &vault_config,
+            r#"
+[search]
+model_id = "vault/model"
+"#,
+        )
+        .unwrap();
+
+        // Create a global config directory and file
+        let global_dir = temp_dir.path().join("global_config");
+        fs::create_dir_all(&global_dir).unwrap();
+        let global_file = global_dir.join("notectl/config.toml");
+        fs::create_dir_all(global_file.parent().unwrap()).unwrap();
+        fs::write(
+            &global_file,
+            r#"
+[search]
+embedding_dim = 512
+max_seq_tokens = 256
+"#,
+        )
+        .unwrap();
+
+        // Set XDG_CONFIG_HOME to point to our test global config
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", global_dir.to_str().unwrap());
+        }
+
+        let config = Config::load_from_base_path(vault_dir);
+
+        // Vault-level model_id should override global defaults
+        assert_eq!(config.search.model_id, "vault/model");
+        // Global-level settings should be inherited
+        assert_eq!(config.search.embedding_dim, 512);
+        assert_eq!(config.search.max_seq_tokens, 256);
+        // Default values for unset fields
+        assert_eq!(config.search.cache_dir, ".notectl/search");
+
+        // Restore env vars
+        unsafe {
+            match saved_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            if let Some(v) = saved_model {
+                std::env::set_var("NOTECTL_SEARCH_MODEL_ID", v);
+            } else {
+                std::env::remove_var("NOTECTL_SEARCH_MODEL_ID");
+            }
+        }
+    }
+
+    #[test]
+    fn test_env_overrides_vault_and_global() {
+        // Save and restore env vars to avoid interference from parallel tests
+        let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let saved_model = std::env::var("NOTECTL_SEARCH_MODEL_ID").ok();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vault_dir = temp_dir.path();
+
+        // Vault config sets model_id
+        fs::write(
+            vault_dir.join(".notectl.toml"),
+            r#"
+[search]
+model_id = "vault/model"
+embedding_dim = 512
+"#,
+        )
+        .unwrap();
+
+        // Env var should override both
+        unsafe {
+            std::env::set_var("NOTECTL_SEARCH_MODEL_ID", "env/model");
+        }
+
+        let config = Config::load_from_base_path(vault_dir);
+
+        assert_eq!(config.search.model_id, "env/model");
+        assert_eq!(config.search.embedding_dim, 512); // From vault, not overridden by env
+
+        // Restore env vars
+        unsafe {
+            match saved_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            if let Some(v) = saved_model {
+                std::env::set_var("NOTECTL_SEARCH_MODEL_ID", v);
+            } else {
+                std::env::remove_var("NOTECTL_SEARCH_MODEL_ID");
+            }
         }
     }
 }

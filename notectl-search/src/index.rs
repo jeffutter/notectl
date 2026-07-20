@@ -7,8 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::IsTerminal;
 use std::path::Path;
 
+use indicatif::{ProgressBar, ProgressStyle};
 use notectl_core::config::Config;
 
 use crate::SearchError;
@@ -275,13 +277,25 @@ impl<'a> IndexBuilder<'a> {
             return Ok(false);
         }
 
-        // If model isn't downloaded yet, skip embeddings gracefully.
+        let num_chunks = chunks.len();
+
+        // Try to load the model if it hasn't been loaded yet.
         if !embedder.is_ready() {
-            tracing::info!(
-                "Model not downloaded yet. Indexing without embeddings. \
-                 Run index after downloading the model for dense search."
-            );
-            return Ok(false);
+            tracing::info!("Downloading embedding model: {}", embedder.model_id());
+            match embedder.load() {
+                Ok(()) => {
+                    tracing::info!("Model downloaded and ready");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to load embedding model '{}': {}. \
+                         Indexing without dense embeddings (BM25 keyword search still works).",
+                        embedder.model_id(),
+                        e
+                    );
+                    return Ok(false);
+                }
+            }
         }
 
         // Derive titles from heading paths.
@@ -301,12 +315,55 @@ impl<'a> IndexBuilder<'a> {
             })
             .collect();
 
-        let vectors = embedder
-            .embed_batch(&texts, &titles, TaskType::RetrievalDocument)
-            .await
-            .map_err(|e| SearchError::Other(format!("Embedding failed: {e}")))?;
+        // Create progress bar for embedding (only on TTY).
+        let pb = if std::io::stdout().is_terminal() {
+            let bar = ProgressBar::new(num_chunks as u64);
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed}] {bar:40} {percent}% ({pos}/{len})")
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
+            bar.set_message("Generating embeddings");
+            Some(bar)
+        } else {
+            None
+        };
 
-        self.index.write_vectors(&vectors)?;
+        // Process in batches of 128 for progress updates.
+        const BATCH_SIZE: usize = 128;
+        let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(num_chunks);
+
+        for (i, chunk) in texts.chunks(BATCH_SIZE).enumerate() {
+            let start = i * BATCH_SIZE;
+            let end = (start + chunk.len()).min(num_chunks);
+            let batch_texts = &texts[start..end];
+            let batch_titles = &titles[start..end];
+
+            let vectors = embedder
+                .embed_batch_in_batches(
+                    batch_texts,
+                    batch_titles,
+                    TaskType::RetrievalDocument,
+                    batch_texts.len(),
+                )
+                .await
+                .map_err(|e| SearchError::Other(format!("Embedding failed: {e}")))?;
+
+            all_vectors.extend(vectors);
+
+            if let Some(ref bar) = pb {
+                bar.set_position(end as u64);
+            } else {
+                tracing::info!("Embedded {}/{} chunks", end, num_chunks);
+            }
+        }
+
+        if let Some(bar) = pb {
+            bar.finish_with_message("Embeddings complete");
+        }
+
+        self.index.write_vectors(&all_vectors)?;
 
         Ok(true)
     }

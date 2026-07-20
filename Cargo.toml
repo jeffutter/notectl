@@ -43,11 +43,14 @@ tokio = { version = "1", features = [
 ] }
 tokio-util = { version = "0.7" }
 blake3 = "1"
+dirs = "5"
+indicatif = "0.17"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Dense embedding deps (via fastembed ONNX runtime)
+# Dense embedding deps (via fastembed ONNX + Candle runtimes)
+candle-core = "0.11"
 fastembed = { version = "5.17", features = ["qwen3"] }
 
 # Workspace members
@@ -96,6 +99,9 @@ notectl-outline.workspace = true
 notectl-search = { path = "notectl-search", optional = true }
 
 [features]
+# Search is enabled by default; opt out with --no-default-features
+default = ["search"]
+
 # Enable semantic search capability (dense + sparse hybrid via RRF fusion).
 # Dense search uses fastembed with EmbeddingGemma-300M by default.
 # Degrades gracefully to sparse-only if model is unavailable.

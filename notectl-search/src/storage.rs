@@ -67,7 +67,7 @@ pub struct ChunkEntry {
 pub struct SearchManifest {
     /// Format version (bump to 2)
     pub version: u32,
-    /// e.g. "google/embedding-gemma-300m"
+    /// e.g. "Qwen/Qwen3-Embedding-0.6B"
     pub model_id: String,
     /// Embedding dimension (for matryoshka truncation)
     pub embedding_dim: u32,
@@ -839,8 +839,8 @@ mod tests {
         // (the kind left behind by pre-TASK-6 binaries).
         let old_manifest = serde_json::json!({
             "version": 2,
-            "model_id": "google/embedding-gemma-300m",
-            "embedding_dim": 256,
+            "model_id": "Qwen/Qwen3-Embedding-0.6B",
+            "embedding_dim": 1024,
             "chunk_config": {
                 "max_tokens": 512,
                 "overlap_tokens": 64,
@@ -905,8 +905,8 @@ mod tests {
         // Write a v2-format manifest (stale version).
         let old_manifest = serde_json::json!({
             "version": 2,
-            "model_id": "google/embedding-gemma-300m",
-            "embedding_dim": 256,
+            "model_id": "Qwen/Qwen3-Embedding-0.6B",
+            "embedding_dim": 1024,
             "chunk_config": {
                 "max_tokens": 512,
                 "overlap_tokens": 64,
@@ -1158,8 +1158,8 @@ mod tests {
     /// Helper: create an empty manifest matching the default test config.
     fn empty_manifest() -> SearchManifest {
         SearchManifest::new_empty(
-            "google/embedding-gemma-300m".to_string(),
-            256, // matches default_embedding_dim()
+            "Qwen/Qwen3-Embedding-0.6B".to_string(),
+            1024, // matches default_embedding_dim()
             ChunkConfigSnapshot {
                 max_tokens: 512,
                 overlap_tokens: 64,

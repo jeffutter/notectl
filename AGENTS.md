@@ -147,8 +147,8 @@ The `[search]` section in `.notectl.toml` controls indexing and search behavior:
 
 ```toml
 [search]
-model_id = "google/embedding-gemma-300m"   # Embedding model (see README for supported models)
-embedding_dim = 256                          # Embedding dimension (matryoshka truncation)
+model_id = "Qwen/Qwen3-Embedding-0.6B"      # Embedding model (see README for supported models)
+embedding_dim = 1024                         # Embedding dimension (matryoshka truncation)
 max_seq_tokens = 512                         # Max sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Min tokens per chunk before merging forward

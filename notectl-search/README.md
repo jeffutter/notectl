@@ -5,16 +5,16 @@ Semantic search over markdown notes using hybrid BM25 + dense vector retrieval.
 ## Features
 
 - **Sparse retrieval**: BM25 scoring via lightweight in-memory indexer (no external dependencies)
-- **Dense retrieval**: EmbeddingGemma-300M encoder via candle (requires `--features embeddings`)
+- **Dense retrieval**: Qwen3-Embedding-0.6B via candle (default), with ONNX Runtime fallback for BGE/EmbeddingGemma models
 - **Hybrid ranking**: Weighted Reciprocal Rank Fusion (RRF) merges sparse + dense results
 - **Incremental indexing**: Only re-processes changed files on subsequent index builds
-- **Matryoshka embeddings**: Supports truncating 768-dim vectors to 512, 256, or 128 dimensions
+- **Matryoshka embeddings**: Supports truncating 1024-dim vectors to 512, 256, or 128 dimensions
 
 ## Cargo Features
 
 | Feature | Description |
 |---------|-------------|
-| `embeddings` | Enable dense vector search (candle + Gemma-3 encoder) |
+| `qwen3` | Enable Qwen3 embedding models via candle backend (enabled by default) |
 | `integration` | Run integration tests that require model download + inference |
 
 ## Smoke Test
@@ -36,8 +36,8 @@ cargo run --bin notectl --features search -- search /path/to/vault "query" | jq 
 # Unit tests (no model required)
 cargo test -p notectl-search
 
-# Unit tests with embeddings feature
-cargo test -p notectl-search --features embeddings
+# Unit tests (all features)
+cargo test -p notectl-search
 
 # Doc-tests
 cargo test -p notectl-search --doc
@@ -61,11 +61,11 @@ HF_TOKEN=<token> cargo test -p notectl-search --features integration
 │  bm25    │  sparse   │  fusion                  │
 │ (scoring)│ (wrapper) │(cosine + RRF)            │
 ├──────────┴───────────┴──────────────────────────┤
-│           embeddings/ (feature-gated)            │
-│  ┌─────────┬──────────┬───────────────────────┐ │
-│  │ download │  embed   │       model           │ │
-│  │ (hf-hub) │ (batch)  │  (gemma3 encoder)     │ │
-│  └─────────┴──────────┴───────────────────────┘ │
+│              embeddings/                        │
+│  ┌────────────┬────────────┬─────────────────┐ │
+│  │ candle     │  onnx      │    config       │ │
+│  │ (qwen3*)   │ (bge, etc) │  (model_id)     │ │
+│  └────────────┴────────────┴─────────────────┘ │
 └─────────────────────────────────────────────────┘
 ```
 

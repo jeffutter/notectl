@@ -23,7 +23,9 @@ tokio.workspace = true
 tracing.workspace = true
 
 # Dense embedding deps (always included)
+candle-core.workspace = true
 fastembed.workspace = true
+indicatif.workspace = true
 
 [features]
 # Integration tests that download and run the actual model.

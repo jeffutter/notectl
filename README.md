@@ -219,8 +219,8 @@ notectl index path/to/vault
 # Force full rebuild, wiping existing index artifacts
 notectl index path/to/vault --reindex true
 
-# Use a specific embedding model
-notectl index path/to/vault --model google/embedding-gemma-300m --dim 256
+# Use a specific embedding model (default: Qwen/Qwen3-Embedding-0.6B)
+notectl index path/to/vault --model BAAI/bge-small-en-v1.5 --dim 384
 ```
 
 Search across indexed notes:
@@ -247,11 +247,21 @@ The index is stored in `.notectl/search/` within the vault. This directory shoul
 
 ### Supported Embedding Models
 
-Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs) with ONNX Runtime. The following models are available:
+Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs). Two backends are available:
+
+**Candle backend** (requires `qwen3` feature, enabled by default):
 
 | Model | Config `model_id` | Dimension | Notes |
 |-------|-------------------|-----------|-------|
-| EmbeddingGemma-300M (default) | `google/embedding-gemma-300m` | 768 (Matryoshka) | Google's encoder; requires HF_TOKEN + accepted license |
+| Qwen3-Embedding-0.6B (default) | `Qwen/Qwen3-Embedding-0.6B` | 1024 (Matryoshka) | Compact, high-quality multilingual embeddings |
+| Qwen3-Embedding-4B | `Qwen/Qwen3-Embedding-4B` | 4096 (Matryoshka) | Higher capacity |
+| Qwen3-Embedding-8B | `Qwen/Qwen3-Embedding-8B` | 4096 (Matryoshka) | Largest Qwen3 model |
+
+**ONNX Runtime backend**:
+
+| Model | Config `model_id` | Dimension | Notes |
+|-------|-------------------|-----------|-------|
+| EmbeddingGemma-300M | `google/embedding-gemma-300m` | 768 (Matryoshka) | Requires HF_TOKEN + accepted license |
 | BGE Small v1.5 | `BAAI/bge-small-en-v1.5` | 384 | Lightweight, fast inference |
 | BGE Base v1.5 | `BAAI/bge-base-en-v1.5` | 768 | Better quality, larger model |
 | BGE Large v1.5 | `BAAI/bge-large-en-v1.5` | 1024 | Highest quality among BGE family |
@@ -372,8 +382,8 @@ Search behavior can be tuned via `.notectl.toml`:
 
 ```toml
 [search]
-model_id = "google/embedding-gemma-300m"   # Embedding model ID
-embedding_dim = 256                          # Embedding dimension (matryoshka truncation)
+model_id = "Qwen/Qwen3-Embedding-0.6B"      # Embedding model ID
+embedding_dim = 1024                         # Embedding dimension (matryoshka truncation)
 max_seq_tokens = 512                         # Maximum sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Minimum tokens per chunk before merging forward

@@ -1,9 +1,10 @@
 //! Dense embedding support via [fastembed](https://github.com/Anush008/fastembed-rs).
 //!
-//! Uses ONNX Runtime for inference. Supported models:\n\
-//! - EmbeddingGemma-300M (default, with quantized variants)\n\
-//! - BGE-Small/Base/Large v1.5\n\
-//! - Qwen3-Embedding (0.6B, 4B, 8B)
+//! Supports two backends:\n\
+//! - **ONNX Runtime** (via [`TextEmbedding`]): EmbeddingGemma-300M, BGE, Snowflake Arctic, etc.
+//! - **Candle** (via [`Qwen3TextEmbedding`]): Qwen3-Embedding (0.6B, 4B, 8B)
+//!
+//! Default model: **Qwen3-Embedding-0.6B** (candle backend).
 //!
 //! Handles:\n\
 //! - Automatic model download and caching on first use\n\
@@ -11,7 +12,8 @@
 //! - L2 normalization and Matryoshka dimension truncation\n\
 //! - Graceful degradation when model is unavailable
 
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
+use candle_core::{DType, Device};
+use fastembed::{EmbeddingModel, Qwen3TextEmbedding, TextEmbedding, TextInitOptions};
 use notectl_core::config::SearchConfig;
 
 /// Task type for prefix injection.
@@ -26,7 +28,7 @@ pub enum TaskType {
 /// Configuration for embedding generation.
 #[derive(Debug, Clone)]
 pub struct EmbeddingConfig {
-    /// Model identifier (e.g., "google/embedding-gemma-300m").
+    /// Model identifier (e.g., "Qwen/Qwen3-Embedding-0.6B").
     pub model_id: String,
     /// Output dimension (for Matryoshka truncation).
     pub embedding_dim: usize,
@@ -37,8 +39,8 @@ pub struct EmbeddingConfig {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            model_id: "google/embedding-gemma-300m".to_string(),
-            embedding_dim: 768,
+            model_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
+            embedding_dim: 1024,
             max_seq_len: 512,
         }
     }
@@ -74,8 +76,34 @@ impl std::fmt::Display for EmbedError {
 
 impl std::error::Error for EmbedError {}
 
-/// Map a model_id string to a fastembed `EmbeddingModel` variant.
-fn resolve_model(model_id: &str) -> EmbeddingModel {
+/// Backend used by the embedder.
+enum Backend {
+    /// ONNX Runtime backend (TextEmbedding)
+    Onnx(TextEmbedding),
+    /// Candle backend (Qwen3TextEmbedding)
+    Candle(Qwen3TextEmbedding),
+}
+
+impl Backend {
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        match self {
+            Backend::Onnx(model) => model
+                .embed(texts, None)
+                .map_err(|e| EmbedError::Embed(format!("Failed to generate embeddings: {e}"))),
+            Backend::Candle(model) => model
+                .embed(&texts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+                .map_err(|e| EmbedError::Embed(format!("Failed to generate embeddings: {e}"))),
+        }
+    }
+}
+
+/// Check if a model_id refers to a Qwen3 model (candle backend).
+fn is_qwen3_model(model_id: &str) -> bool {
+    model_id.starts_with("Qwen/Qwen3-Embedding") || model_id.starts_with("Qwen/qwen3-embedding")
+}
+
+/// Map a model_id string to a fastembed `EmbeddingModel` variant (ONNX backend).
+fn resolve_onnx_model(model_id: &str) -> EmbeddingModel {
     match model_id {
         "google/embeddinggemma-300m" | "google/embedding-gemma-300m" => {
             EmbeddingModel::EmbeddingGemma300M
@@ -83,7 +111,7 @@ fn resolve_model(model_id: &str) -> EmbeddingModel {
         "BAAI/bge-small-en-v1.5" => EmbeddingModel::BGESmallENV15,
         "BAAI/bge-base-en-v1.5" => EmbeddingModel::BGEBaseENV15,
         "BAAI/bge-large-en-v1.5" => EmbeddingModel::BGELargeENV15,
-        _ => EmbeddingModel::EmbeddingGemma300M, // Default fallback
+        _ => EmbeddingModel::EmbeddingGemma300M, // Default fallback for ONNX
     }
 }
 
@@ -120,9 +148,9 @@ fn truncate(embedding: Vec<f32>, dim: usize) -> Vec<f32> {
     }
 }
 
-/// Dense embedder backed by fastembed's ONNX runtime.
+/// Dense embedder backed by fastembed (ONNX or Candle backends).
 pub struct Embedder {
-    model: Option<TextEmbedding>,
+    model: Option<Backend>,
     config: EmbeddingConfig,
 }
 
@@ -140,32 +168,70 @@ impl Embedder {
         self.model.is_some()
     }
 
+    /// Return the configured model ID.
+    pub fn model_id(&self) -> &str {
+        &self.config.model_id
+    }
+
+    /// Attempt to load the embedding model.
+    ///
+    /// Returns `Ok(())` if the model was already loaded or loaded successfully.
+    /// Returns `Err` with a detailed reason if loading failed (network error,
+    /// missing license, invalid model ID, etc.).
+    pub fn load(&mut self) -> Result<(), EmbedError> {
+        self.ensure_loaded()
+    }
+
     /// Ensure the model is loaded. Downloads on first call if needed.
     fn ensure_loaded(&mut self) -> Result<(), EmbedError> {
         if self.model.is_some() {
             return Ok(());
         }
 
-        let embedding_model = resolve_model(&self.config.model_id);
+        if is_qwen3_model(&self.config.model_id) {
+            tracing::info!(
+                "Loading Qwen3 embedding model: {} (dim={}, seq_len={})",
+                self.config.model_id,
+                self.config.embedding_dim,
+                self.config.max_seq_len
+            );
 
-        tracing::info!(
-            "Loading embedding model: {:?} (dim={})",
-            embedding_model,
-            self.config.embedding_dim
-        );
+            let device = Device::Cpu;
+            let model = Qwen3TextEmbedding::from_hf(
+                &self.config.model_id,
+                &device,
+                DType::F32,
+                self.config.max_seq_len,
+            )
+            .map_err(|e| {
+                EmbedError::Init(format!(
+                    "Failed to load Qwen3 model '{}': {}",
+                    self.config.model_id, e
+                ))
+            })?;
 
-        let options = TextInitOptions::new(embedding_model);
+            self.model = Some(Backend::Candle(model));
+        } else {
+            let embedding_model = resolve_onnx_model(&self.config.model_id);
 
-        let model = TextEmbedding::try_new(options).map_err(|e| {
-            EmbedError::Init(format!(
-                "Failed to load model '{}': {}\n\
-                 Make sure HF_TOKEN is set and license is accepted at \
-                 https://huggingface.co/google/embeddinggemma-300m",
-                self.config.model_id, e
-            ))
-        })?;
+            tracing::info!(
+                "Loading ONNX embedding model: {:?} (dim={})",
+                embedding_model,
+                self.config.embedding_dim
+            );
 
-        self.model = Some(model);
+            let options = TextInitOptions::new(embedding_model);
+
+            let model = TextEmbedding::try_new(options).map_err(|e| {
+                EmbedError::Init(format!(
+                    "Failed to load model '{}': {}",
+                    self.config.model_id, e
+                ))
+            })?;
+
+            self.model = Some(Backend::Onnx(model));
+        }
+
         Ok(())
     }
 
@@ -182,9 +248,7 @@ impl Embedder {
         let input = apply_prefix(text, title, task);
         let texts = vec![input];
 
-        let embeddings = model
-            .embed(&texts, None)
-            .map_err(|e| EmbedError::Embed(format!("Failed to generate embedding: {e}")))?;
+        let embeddings = model.embed(&texts)?;
 
         let embedding = embeddings.first().cloned().unwrap_or_default();
         let truncated = truncate(embedding, self.config.embedding_dim);
@@ -198,26 +262,45 @@ impl Embedder {
         titles: &[Option<String>],
         task: TaskType,
     ) -> Result<Vec<Vec<f32>>, EmbedError> {
+        // Delegate to batched version with a single batch
+        self.embed_batch_in_batches(texts, titles, task, texts.len())
+            .await
+    }
+
+    /// Generate embeddings in smaller batches, calling `on_progress` after each batch.
+    ///
+    /// This allows callers to show progress bars or status updates during long runs.
+    /// `batch_size` controls how many texts are processed per inner call to the model.
+    pub async fn embed_batch_in_batches(
+        &mut self,
+        texts: &[String],
+        titles: &[Option<String>],
+        task: TaskType,
+        batch_size: usize,
+    ) -> Result<Vec<Vec<f32>>, EmbedError> {
         self.ensure_loaded()?;
         let model = self.model.as_mut().unwrap();
 
-        let inputs: Vec<String> = texts
-            .iter()
-            .zip(titles.iter())
-            .map(|(text, title)| apply_prefix(text, title.as_deref(), task))
-            .collect();
+        let mut result = Vec::with_capacity(texts.len());
+        let effective_batch = batch_size.max(1);
 
-        let embeddings = model
-            .embed(&inputs, None)
-            .map_err(|e| EmbedError::Embed(format!("Failed to generate batch embeddings: {e}")))?;
+        for chunk in texts.chunks(effective_batch) {
+            let start = result.len();
+            let chunk_titles = &titles[start..start + chunk.len()];
 
-        let result: Vec<Vec<f32>> = embeddings
-            .into_iter()
-            .map(|emb| {
+            let inputs: Vec<String> = chunk
+                .iter()
+                .zip(chunk_titles.iter())
+                .map(|(text, title)| apply_prefix(text, title.as_deref(), task))
+                .collect();
+
+            let embeddings = model.embed(&inputs)?;
+
+            for emb in embeddings {
                 let truncated = truncate(emb, self.config.embedding_dim);
-                normalize(&truncated)
-            })
-            .collect();
+                result.push(normalize(&truncated));
+            }
+        }
 
         Ok(result)
     }
@@ -266,8 +349,8 @@ mod tests {
     #[test]
     fn test_default_embedding_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.model_id, "google/embedding-gemma-300m");
-        assert_eq!(config.embedding_dim, 768);
+        assert_eq!(config.model_id, "Qwen/Qwen3-Embedding-0.6B");
+        assert_eq!(config.embedding_dim, 1024);
         assert_eq!(config.max_seq_len, 512);
     }
 
@@ -300,23 +383,32 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_model_defaults_to_gemma() {
+    fn test_resolve_onnx_model_defaults_to_gemma() {
         assert!(matches!(
-            resolve_model("unknown/model"),
+            resolve_onnx_model("unknown/model"),
             EmbeddingModel::EmbeddingGemma300M
         ));
     }
 
     #[test]
-    fn test_resolve_model_gemma_variants() {
+    fn test_resolve_onnx_model_gemma_variants() {
         assert!(matches!(
-            resolve_model("google/embeddinggemma-300m"),
+            resolve_onnx_model("google/embeddinggemma-300m"),
             EmbeddingModel::EmbeddingGemma300M
         ));
         assert!(matches!(
-            resolve_model("google/embedding-gemma-300m"),
+            resolve_onnx_model("google/embedding-gemma-300m"),
             EmbeddingModel::EmbeddingGemma300M
         ));
+    }
+
+    #[test]
+    fn test_is_qwen3_model() {
+        assert!(is_qwen3_model("Qwen/Qwen3-Embedding-0.6B"));
+        assert!(is_qwen3_model("Qwen/Qwen3-Embedding-4B"));
+        assert!(is_qwen3_model("Qwen/qwen3-embedding-0.6B"));
+        assert!(!is_qwen3_model("google/embedding-gemma-300m"));
+        assert!(!is_qwen3_model("BAAI/bge-small-en-v1.5"));
     }
 
     #[test]
