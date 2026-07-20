@@ -84,7 +84,7 @@ enum ScoreInputs {
 }
 
 /// Options controlling search behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct SearchOptions {
     /// Which scoring paths to use.
     pub mode: SearchMode,
@@ -98,6 +98,9 @@ pub struct SearchOptions {
     pub rrf_cosine_weight: f64,
     /// Skip staleness check and reindexing; use existing index as-is.
     pub no_reindex: bool,
+    /// Filter results to only chunks whose file has ALL specified tags (AND logic).
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 impl Default for SearchOptions {
@@ -110,6 +113,7 @@ impl Default for SearchOptions {
             rrf_bm25_weight: sc.rrf_bm25_weight,
             rrf_cosine_weight: sc.rrf_cosine_weight,
             no_reindex: false,
+            tags: Vec::new(),
         }
     }
 }
@@ -124,6 +128,7 @@ impl SearchOptions {
             rrf_bm25_weight: config.rrf_bm25_weight,
             rrf_cosine_weight: config.rrf_cosine_weight,
             no_reindex: false,
+            tags: Vec::new(),
         }
     }
 }
@@ -307,14 +312,24 @@ pub async fn search(
             .chunks
             .iter()
             .zip(chunk_texts.iter())
-            .map(|(entry, text)| Chunk {
-                id: entry.id.clone(),
-                source_file: entry.source_file.clone(),
-                line_start: entry.line_start,
-                line_end: entry.line_end,
-                heading: entry.heading.clone(),
-                heading_path: entry.heading_path.clone(),
-                text: text.clone(),
+            .map(|(entry, text)| {
+                // Inject tags into the indexed text so they're searchable by BM25.
+                let indexed_text = if entry.tags.is_empty() {
+                    text.clone()
+                } else {
+                    let tags_str = "tags: ".to_string() + &entry.tags.join(" ");
+                    format!("{}\n{}", tags_str, text)
+                };
+                Chunk {
+                    id: entry.id.clone(),
+                    source_file: entry.source_file.clone(),
+                    line_start: entry.line_start,
+                    line_end: entry.line_end,
+                    heading: entry.heading.clone(),
+                    heading_path: entry.heading_path.clone(),
+                    tags: entry.tags.clone(),
+                    text: indexed_text,
+                }
             })
             .collect();
         Some(SparseIndexer::index_chunks(&chunks_for_bm25))
@@ -395,10 +410,22 @@ pub async fn search(
     let top_results: Vec<(usize, f64)> = fused.into_iter().take(options.max_results).collect();
 
     // ---- Step 5: Map chunk indices to RankedChunk ----
+    // Normalize requested tags to lowercase for case-insensitive matching.
+    let filter_tags: Vec<String> = options.tags.iter().map(|t| t.to_lowercase()).collect();
+
     let results: Vec<RankedChunk> = top_results
         .into_iter()
         .filter_map(|(chunk_idx, score)| {
             let entry = manifest.chunks.get(chunk_idx)?;
+
+            // Filter by tags (AND logic: must match all specified tags)
+            if !filter_tags.is_empty() {
+                let chunk_tags: Vec<String> = entry.tags.iter().map(|t| t.to_lowercase()).collect();
+                if !filter_tags.iter().all(|ft| chunk_tags.contains(ft)) {
+                    return None;
+                }
+            }
+
             let text = chunk_texts
                 .get(chunk_idx)
                 .map(|s| s.as_str())
@@ -415,6 +442,7 @@ pub async fn search(
                 source_file: entry.source_file.clone(),
                 score,
                 heading,
+                tags: entry.tags.clone(),
                 preview,
             })
         })

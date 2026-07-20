@@ -19,6 +19,7 @@ use crate::chunker::Chunk;
 ///         line_end: 10,
 ///         heading: None,
 ///         heading_path: Vec::new(),
+///         tags: vec![],
 ///         text: "Rust is a systems programming language".to_string(),
 ///     },
 /// ];
@@ -82,6 +83,7 @@ mod tests {
             line_end: 0,
             heading: None,
             heading_path: Vec::new(),
+            tags: vec![],
             text: text.to_string(),
         }
     }

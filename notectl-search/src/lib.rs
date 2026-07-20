@@ -75,6 +75,9 @@ pub struct RankedChunk {
     pub score: f64,
     /// Optional heading context
     pub heading: Option<String>,
+    /// YAML frontmatter tags from the source file
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Preview of the matching text
     pub preview: String,
 }

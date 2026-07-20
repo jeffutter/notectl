@@ -63,13 +63,17 @@
       "Skill(rust-best-practices)",
       "mcp__backlog__task_view",
       "mcp__backlog__task_create",
-      "mcp__backlog__task_edit"
+      "mcp__backlog__task_edit",
+      "WebFetch(domain:worktrunk.dev)",
+      "Bash(wt --version)",
+      "Bash(git -C /home/jeffutter/src/notectl check-ignore -v .envrc)",
+      "Bash(git -C /home/jeffutter/src/notectl ls-files .envrc)"
     ],
     "deny": [],
     "ask": []
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "backlog"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }

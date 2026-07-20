@@ -18,6 +18,8 @@ pub struct Chunk {
     pub heading: Option<String>,
     /// Full heading path (e.g., "Title > Section 1 > Subsection")
     pub heading_path: Vec<String>,
+    /// YAML frontmatter tags extracted from the source file
+    pub tags: Vec<String>,
     /// The raw text content of this chunk
     pub text: String,
 }
@@ -77,19 +79,77 @@ impl Chunker {
         Self::new(ChunkerConfig::default())
     }
 
+    /// Extract YAML frontmatter tags from markdown content.
+    ///
+    /// Looks for `---\ntags: [...]\n---` or `---\ntags: tag1, tag2\n---` at the start
+    /// of the file. Returns an empty vec if no frontmatter or tags are found.
+    fn extract_frontmatter_tags(content: &str) -> Vec<String> {
+        let mut lines = content.lines();
+        let first_line = lines.next().map(|s| s.trim());
+        if first_line != Some("---") {
+            return Vec::new();
+        }
+
+        let mut frontmatter = String::new();
+        for line in lines {
+            if line.trim() == "---" {
+                break;
+            }
+            frontmatter.push_str(line);
+            frontmatter.push('\n');
+        }
+
+        for line in frontmatter.lines() {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("tags:") {
+                let value = value.trim();
+
+                // Array format: [tag1, tag2, tag3]
+                if value.starts_with('[') && value.ends_with(']') {
+                    let inner = &value[1..value.len() - 1];
+                    return inner
+                        .split(',')
+                        .map(|t| t.trim().trim_matches(['"', '\'']).to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect();
+                }
+
+                // Comma-separated format: tag1, tag2, tag3
+                if value.contains(',') {
+                    return value
+                        .split(',')
+                        .map(|t| t.trim().trim_matches(['"', '\'']).to_string())
+                        .filter(|t| !t.is_empty())
+                        .collect();
+                }
+
+                // Single tag
+                let tag = value.trim_matches(['"', '\'']).trim().to_string();
+                if !tag.is_empty() {
+                    return vec![tag];
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
     /// Chunk a single markdown file's contents
     pub fn chunk_file(&self, path: &Path, content: &str) -> Vec<Chunk> {
+        // Extract file-level tags from frontmatter once
+        let tags = Self::extract_frontmatter_tags(content);
+
         let sections = match self.extractor.extract_sections_from_content(content) {
             Ok(sections) => sections,
             Err(_) => {
                 // Fallback to simple size-based chunking if section extraction fails
-                return self.chunk_by_size(content, path.to_string_lossy().to_string());
+                return self.chunk_by_size(content, path.to_string_lossy().to_string(), &tags);
             }
         };
 
         // If no real headings were found, fall back to size-based chunking.
         if sections.iter().all(|s| s.heading.title.is_empty()) {
-            return self.chunk_by_size(content, path.to_string_lossy().to_string());
+            return self.chunk_by_size(content, path.to_string_lossy().to_string(), &tags);
         }
 
         let mut chunks = Vec::new();
@@ -204,6 +264,7 @@ impl Chunker {
                             line_end,
                             heading: Some(section.heading.title.clone()),
                             heading_path: heading_path.clone(),
+                            tags: tags.clone(),
                             text: part.clone(),
                         });
                     }
@@ -262,6 +323,7 @@ impl Chunker {
                     line_end,
                     heading: Some(section.heading.title.clone()),
                     heading_path: heading_path.clone(),
+                    tags: tags.clone(),
                     text: part.clone(),
                 });
             }
@@ -310,7 +372,7 @@ impl Chunker {
     }
 
     /// Split text into fixed-size word chunks without overlap.
-    fn chunk_by_size(&self, content: &str, file_name: String) -> Vec<Chunk> {
+    fn chunk_by_size(&self, content: &str, file_name: String, tags: &[String]) -> Vec<Chunk> {
         // Pre-compute character spans of each whitespace-delimited word in the original content.
         let word_spans = Self::word_spans(content);
         let mut chunks = Vec::new();
@@ -333,6 +395,7 @@ impl Chunker {
                     line_end,
                     heading: None,
                     heading_path: Vec::new(),
+                    tags: tags.to_vec(),
                     text,
                 });
             }
@@ -357,6 +420,48 @@ impl Chunker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_extract_frontmatter_tags_array() {
+        let content = "---\ntags: [project, idea, urgent]\n---\n# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert_eq!(tags, vec!["project", "idea", "urgent"]);
+    }
+
+    #[test]
+    fn test_extract_frontmatter_tags_comma_separated() {
+        let content = "---\ntags: project, idea, urgent\n---\n# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert_eq!(tags, vec!["project", "idea", "urgent"]);
+    }
+
+    #[test]
+    fn test_extract_frontmatter_tags_single() {
+        let content = "---\ntags: note\n---\n# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert_eq!(tags, vec!["note"]);
+    }
+
+    #[test]
+    fn test_extract_frontmatter_tags_quoted() {
+        let content = "---\ntags: [\"my-tag\", 'another']\n---\n# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert_eq!(tags, vec!["my-tag", "another"]);
+    }
+
+    #[test]
+    fn test_extract_frontmatter_tags_no_frontmatter() {
+        let content = "# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn test_extract_frontmatter_tags_no_tags_key() {
+        let content = "---\ntitle: My Note\n---\n# Title\nContent";
+        let tags = Chunker::extract_frontmatter_tags(content);
+        assert!(tags.is_empty());
+    }
 
     #[test]
     fn test_chunk_file_basic() {
@@ -397,6 +502,23 @@ Different content here for section two.
                 .iter()
                 .all(|c| !c.heading_path.is_empty() || c.heading.is_some())
         );
+    }
+
+    #[test]
+    fn test_chunk_file_preserves_tags() {
+        let config = ChunkerConfig {
+            min_chunk_size: 3,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+        let content =
+            "---\ntags: [project, idea]\n---\n# Title\nSome content here for testing tags.";
+        let chunks = chunker.chunk_file(Path::new("test.md"), content);
+
+        assert!(!chunks.is_empty());
+        for chunk in &chunks {
+            assert_eq!(chunk.tags, vec!["project", "idea"]);
+        }
     }
 
     #[test]

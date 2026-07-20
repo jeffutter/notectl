@@ -181,6 +181,7 @@ impl<'a> IndexBuilder<'a> {
                 line_end: c.line_end,
                 heading: c.heading.clone(),
                 heading_path: c.heading_path.clone(),
+                tags: c.tags.clone(),
             })
             .collect();
 

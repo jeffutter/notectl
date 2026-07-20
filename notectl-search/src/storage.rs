@@ -57,6 +57,9 @@ pub struct ChunkEntry {
     pub line_end: usize,
     pub heading: Option<String>,
     pub heading_path: Vec<String>,
+    /// YAML frontmatter tags from the source file
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Richer manifest stored as `.notectl/search/manifest.json`.
@@ -745,6 +748,7 @@ mod tests {
             line_end: 5,
             heading: Some("Intro".to_string()),
             heading_path: vec!["Intro".to_string()],
+            tags: vec!["test".to_string()],
         });
         manifest.content_hash = "deadbeef".to_string();
         manifest.has_embeddings = true;
@@ -1079,6 +1083,7 @@ mod tests {
                 line_end: 5,
                 heading: Some("Intro".to_string()),
                 heading_path: vec!["Intro".to_string()],
+                tags: vec![],
                 text: "Hello world. This is a test chunk.".to_string(),
             },
             Chunk {
@@ -1088,6 +1093,7 @@ mod tests {
                 line_end: 10,
                 heading: Some("Section 1".to_string()),
                 heading_path: vec!["Section 1".to_string()],
+                tags: vec![],
                 text: "More content here for testing.".to_string(),
             },
         ];
@@ -1125,6 +1131,7 @@ mod tests {
             line_end: 3,
             heading: None,
             heading_path: Vec::new(),
+            tags: vec![],
             text: "chunk one".to_string(),
         }];
 
@@ -1577,6 +1584,7 @@ mod tests {
             line_end: 5,
             heading: None,
             heading_path: Vec::new(),
+            tags: vec![],
             text: "Hello world.".to_string(),
         }];
         index.write_chunks(&chunks).unwrap();

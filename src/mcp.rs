@@ -222,6 +222,9 @@ mod search_tools {
         pub mode: Option<SearchMode>,
         /// If true, skip the staleness check and use the existing index without rebuilding
         pub no_reindex: Option<bool>,
+        /// Filter results by tags (AND logic — must match all specified tags)
+        #[serde(default)]
+        pub tags: Vec<String>,
     }
 
     pub struct SearchTool;
@@ -255,6 +258,7 @@ mod search_tools {
                     params.limit.unwrap_or(50),
                     params.mode.unwrap_or_default(),
                     params.no_reindex.unwrap_or(false),
+                    params.tags,
                 )
                 .await?;
             Ok(response)

@@ -102,6 +102,13 @@ pub struct SearchRequest {
         description = "If true, skip the staleness check and use the existing index without rebuilding"
     )]
     pub no_reindex: Option<bool>,
+
+    /// Filter results by tags (AND logic — must match all specified tags)
+    #[arg(long, num_args = 1.., value_delimiter = ',', help = "Filter by tags (comma-separated)")]
+    #[schemars(
+        description = "Filter results to only chunks whose file has ALL specified tags (case-insensitive)"
+    )]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Response from the search operation
@@ -204,6 +211,7 @@ impl SearchCapability {
         limit: usize,
         mode: SearchMode,
         no_reindex: bool,
+        tags: Vec<String>,
     ) -> CapabilityResult<SearchResponse> {
         let options = crate::search::SearchOptions {
             mode,
@@ -212,6 +220,7 @@ impl SearchCapability {
             rrf_bm25_weight: self.config.search.rrf_bm25_weight,
             rrf_cosine_weight: self.config.search.rrf_cosine_weight,
             no_reindex,
+            tags,
         };
 
         let outcome = crate::search::search(&self.base_path, &self.config, query, options)
@@ -390,6 +399,13 @@ impl notectl_core::operation::Operation for SearchOperation {
                     .value_parser(clap::value_parser!(bool))
                     .help("Skip reindexing"),
             )
+            .arg(
+                clap::Arg::new("tags")
+                    .long("tags")
+                    .num_args(1..)
+                    .value_delimiter(',')
+                    .help("Filter by tags (comma-separated, AND logic)"),
+            )
     }
 
     async fn execute_json(
@@ -405,6 +421,7 @@ impl notectl_core::operation::Operation for SearchOperation {
                 request.limit.unwrap_or(50),
                 request.mode.unwrap_or_default(),
                 request.no_reindex.unwrap_or(false),
+                request.tags.unwrap_or_default(),
             )
             .await?;
         Ok(serde_json::to_value(response).unwrap())
@@ -425,6 +442,7 @@ impl notectl_core::operation::Operation for SearchOperation {
                     request.limit.unwrap_or(50),
                     request.mode.unwrap_or_default(),
                     request.no_reindex.unwrap_or(false),
+                    request.tags.clone().unwrap_or_default(),
                 )
                 .await?
         } else {
@@ -434,6 +452,7 @@ impl notectl_core::operation::Operation for SearchOperation {
                     request.limit.unwrap_or(50),
                     request.mode.unwrap_or_default(),
                     request.no_reindex.unwrap_or(false),
+                    request.tags.clone().unwrap_or_default(),
                 )
                 .await?
         };
@@ -464,6 +483,12 @@ impl notectl_core::operation::Operation for SearchOperation {
         }
         if let Some(v) = matches.get_one::<bool>("no_reindex") {
             obj.insert("no_reindex".into(), serde_json::Value::Bool(*v));
+        }
+        if let Some(v) = matches.get_many::<String>("tags") {
+            obj.insert(
+                "tags".into(),
+                serde_json::json!(v.cloned().collect::<Vec<_>>()),
+            );
         }
         Ok(serde_json::Value::Object(obj))
     }
