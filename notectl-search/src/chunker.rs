@@ -35,6 +35,8 @@ pub struct ChunkerConfig {
     pub overlap_tokens: usize,
     /// Merge tiny sections into the next one if below this threshold (default: 30)
     pub merge_threshold: usize,
+    /// Heading patterns to exclude from indexing (case-insensitive substring match)
+    pub exclude_headings: Vec<String>,
 }
 
 impl Default for ChunkerConfig {
@@ -44,6 +46,7 @@ impl Default for ChunkerConfig {
             min_chunk_size: 50,
             overlap_tokens: 50,
             merge_threshold: 30,
+            exclude_headings: Vec::new(),
         }
     }
 }
@@ -56,6 +59,7 @@ impl ChunkerConfig {
             overlap_tokens: sc.chunk_overlap_tokens,
             min_chunk_size: sc.min_chunk_tokens,
             merge_threshold: sc.merge_threshold,
+            exclude_headings: sc.exclude_headings.clone(),
         }
     }
 }
@@ -77,6 +81,15 @@ impl Chunker {
     /// Create with default configuration
     pub fn default_config() -> Self {
         Self::new(ChunkerConfig::default())
+    }
+
+    /// Check if a heading title matches any exclusion pattern (case-insensitive substring).
+    fn should_exclude_heading(&self, title: &str) -> bool {
+        let lower = title.to_lowercase();
+        self.config.exclude_headings.iter().any(|pattern| {
+            let lp = pattern.to_lowercase();
+            lower.contains(&lp)
+        })
     }
 
     /// Extract YAML frontmatter tags from markdown content.
@@ -161,6 +174,15 @@ impl Chunker {
 
         while i < sections.len() {
             let section = &sections[i];
+
+            // Skip sections whose heading matches an exclusion pattern
+            if !section.heading.title.is_empty()
+                && self.should_exclude_heading(&section.heading.title)
+            {
+                i += 1;
+                continue;
+            }
+
             let section_tokens = tokenize::count_tokens(&section.content);
 
             // Compute heading path via forward stack pass
@@ -686,6 +708,7 @@ Charlie content goes here for testing.
             chunk_overlap_tokens: 128,
             min_chunk_tokens: 64,
             merge_threshold: 50,
+            exclude_headings: vec!["Dataview".to_string()],
             ..Default::default()
         };
 
@@ -694,6 +717,56 @@ Charlie content goes here for testing.
         assert_eq!(cc.overlap_tokens, 128);
         assert_eq!(cc.min_chunk_size, 64);
         assert_eq!(cc.merge_threshold, 50);
+        assert_eq!(cc.exclude_headings, vec!["Dataview"]);
+    }
+
+    #[test]
+    fn test_exclude_headings_skips_matching_sections() {
+        let config = ChunkerConfig {
+            min_chunk_size: 3,
+            exclude_headings: vec!["Query".to_string()],
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+        let content = "# My Note\nSome intro text here.\n\n## Dataview Query\ndate: today\ntype: task\n\n## Real Section\nImportant content to index.";
+        let chunks = chunker.chunk_file(Path::new("test.md"), content);
+
+        // Should have chunks from "My Note" and "Real Section" but NOT "Dataview Query"
+        let headings: Vec<_> = chunks.iter().filter_map(|c| c.heading.clone()).collect();
+        assert!(!headings.contains(&"Dataview Query".to_string()));
+        assert!(headings.iter().any(|h| h.as_str() == "Real Section"));
+    }
+
+    #[test]
+    fn test_exclude_headings_case_insensitive() {
+        let config = ChunkerConfig {
+            min_chunk_size: 3,
+            exclude_headings: vec!["daily tasks".to_string()],
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+        let content = "# Note\nIntro text here now.\n\n## Daily Tasks\n- [ ] Do stuff\n\n## Other Stuff\nMore content to index here.";
+        let chunks = chunker.chunk_file(Path::new("test.md"), content);
+
+        let headings: Vec<_> = chunks.iter().filter_map(|c| c.heading.clone()).collect();
+        assert!(!headings.contains(&"Daily Tasks".to_string()));
+        assert!(headings.iter().any(|h| h.as_str() == "Other Stuff"));
+    }
+
+    #[test]
+    fn test_exclude_headings_substring_match() {
+        let config = ChunkerConfig {
+            min_chunk_size: 3,
+            exclude_headings: vec!["Query".to_string()],
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+        let content = "# Note\nIntro text here now.\n\n## My Dataview Query Block\nsome query content\n\n## Notes\nRegular notes here.";
+        let chunks = chunker.chunk_file(Path::new("test.md"), content);
+
+        let headings: Vec<_> = chunks.iter().filter_map(|c| c.heading.clone()).collect();
+        assert!(!headings.contains(&"My Dataview Query Block".to_string()));
+        assert!(headings.iter().any(|h| h.as_str() == "Notes"));
     }
 
     // --- Acceptance criterion #3: multi-line content with no headings (chunk_by_size fallback) ---
@@ -764,6 +837,7 @@ Charlie content goes here for testing.
             overlap_tokens: 0, // no overlap so each chunk has a unique line span
             min_chunk_size: 5,
             merge_threshold: 0, // disable merging
+            exclude_headings: Vec::new(),
         };
         let chunker = Chunker::new(config);
 
@@ -836,6 +910,7 @@ Charlie content goes here for testing.
             overlap_tokens: 3, // nonzero overlap — word-window advances by 7 (not a multiple of 3 words/line)
             min_chunk_size: 5,
             merge_threshold: 0, // disable merging
+            exclude_headings: Vec::new(),
         };
         let chunker = Chunker::new(config.clone());
 
@@ -911,6 +986,7 @@ Charlie content goes here for testing.
             overlap_tokens: 3, // nonzero overlap
             min_chunk_size: 3,
             merge_threshold: 8, // both sections below threshold → merge
+            exclude_headings: Vec::new(),
         };
         let chunker = Chunker::new(config);
 

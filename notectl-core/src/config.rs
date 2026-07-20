@@ -107,6 +107,11 @@ pub struct SearchConfig {
     /// Merge tiny sections into the next one if below this threshold (token count)
     #[serde(default = "default_merge_threshold")]
     pub merge_threshold: usize,
+
+    /// Heading patterns to exclude from indexing (case-insensitive substring match).
+    /// Useful for skipping Dataview queries, template blocks, etc.
+    #[serde(default)]
+    pub exclude_headings: Vec<String>,
 }
 
 fn default_model_id() -> String {
@@ -122,6 +127,15 @@ impl SearchConfig {
         } else {
             base_path.join(&self.cache_dir)
         }
+    }
+
+    /// Check if a heading title matches any exclusion pattern (case-insensitive substring).
+    pub fn should_exclude_heading(&self, title: &str) -> bool {
+        let lower = title.to_lowercase();
+        self.exclude_headings.iter().any(|pattern| {
+            let lp = pattern.to_lowercase();
+            lower.contains(&lp)
+        })
     }
 }
 
@@ -142,6 +156,7 @@ impl Default for SearchConfig {
             cache_dir: default_cache_dir(),
             max_results: default_max_results(),
             merge_threshold: default_merge_threshold(),
+            exclude_headings: Vec::new(),
         }
     }
 }
@@ -303,6 +318,16 @@ impl Config {
             && let Ok(val) = v.parse::<usize>()
         {
             self.search.max_results = val;
+        }
+
+        // Merge excluded headings from environment variable (comma-separated)
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_EXCLUDE_HEADINGS") {
+            let patterns: Vec<String> = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            self.search.exclude_headings.extend(patterns);
         }
     }
 
@@ -568,6 +593,62 @@ cache_dir = "/tmp/search-cache"
             unsafe {
                 std::env::remove_var(var);
             }
+        }
+    }
+
+    #[test]
+    fn test_should_exclude_heading() {
+        let config = SearchConfig {
+            exclude_headings: vec!["Query".to_string(), "daily tasks".to_string()],
+            ..Default::default()
+        };
+
+        // Exact match
+        assert!(config.should_exclude_heading("Query"));
+        // Case insensitive
+        assert!(config.should_exclude_heading("QUERY"));
+        assert!(config.should_exclude_heading("query"));
+        // Substring match
+        assert!(config.should_exclude_heading("My Dataview Query Block"));
+        assert!(config.should_exclude_heading("Daily Tasks"));
+        // No match
+        assert!(!config.should_exclude_heading("Notes"));
+        assert!(!config.should_exclude_heading("Introduction"));
+    }
+
+    #[test]
+    fn test_exclude_headings_env_var() {
+        unsafe {
+            std::env::set_var(
+                "NOTECTL_SEARCH_EXCLUDE_HEADINGS",
+                "Query, Daily Tasks, Template",
+            );
+        }
+
+        let mut config = Config::default();
+        config.merge_search_from_env();
+
+        assert!(
+            config
+                .search
+                .exclude_headings
+                .contains(&"Query".to_string())
+        );
+        assert!(
+            config
+                .search
+                .exclude_headings
+                .contains(&"Daily Tasks".to_string())
+        );
+        assert!(
+            config
+                .search
+                .exclude_headings
+                .contains(&"Template".to_string())
+        );
+
+        unsafe {
+            std::env::remove_var("NOTECTL_SEARCH_EXCLUDE_HEADINGS");
         }
     }
 }
