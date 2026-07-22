@@ -3,11 +3,75 @@
 //! This is a lightweight approximation suitable for the chunker's token budget logic.
 //! It counts whitespace-separated words as tokens, which is a reasonable approximation
 //! for embedding models that use subword tokenization (typically 1-2 tokens per word).
+//!
+//! Plain whitespace-splitting breaks down for content with long unbroken runs
+//! (minified JSON, base64, a giant URL) — a single "word" can represent far
+//! more real tokens than this approximation assumes, and with nothing to
+//! split it on, every function here would otherwise treat it as one
+//! unbounded unit, letting a chunk grow arbitrarily large. [`split_words`]
+//! guards against that by additionally splitting any single word longer than
+//! [`MAX_WORD_CHARS`] into fixed-size pieces.
 
-/// Count approximate tokens in text by counting whitespace-separated words.
-/// This is an approximation - actual tokenizers may produce different counts.
+/// Ceiling on a single whitespace-delimited "word" before [`split_words`]
+/// forcibly splits it further. Conservative enough that ordinary long words
+/// (URLs, identifiers) are only mildly over-split, while pathological
+/// whitespace-free blobs get broken into many bounded pieces instead of
+/// forming one unbounded "word".
+pub(crate) const MAX_WORD_CHARS: usize = 32;
+
+/// Split a single word into byte-range pieces of at most `max_chars`
+/// characters each, split at UTF-8 char boundaries (never mid-character).
+/// Returns the whole word as one range if it's already within the limit.
+///
+/// `pub(crate)` so `chunker.rs`'s `word_spans` (which needs byte ranges into
+/// the original content, not owned `&str` slices) can apply the exact same
+/// splitting rule and stay index-aligned with this module's word lists.
+pub(crate) fn split_long_word_ranges(word: &str, max_chars: usize) -> Vec<std::ops::Range<usize>> {
+    if max_chars == 0 || word.chars().count() <= max_chars {
+        // Not a Vec<usize> in disguise — this is genuinely a one-element
+        // Vec<Range<usize>>, matching the multi-range case below.
+        #[allow(clippy::single_range_in_vec_init)]
+        return vec![0..word.len()];
+    }
+
+    let boundaries: Vec<usize> = word
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(word.len()))
+        .collect();
+
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < boundaries.len() - 1 {
+        let end_idx = (i + max_chars).min(boundaries.len() - 1);
+        ranges.push(boundaries[i]..boundaries[end_idx]);
+        i = end_idx;
+    }
+    ranges
+}
+
+/// Split text into whitespace-delimited words, further splitting any single
+/// word longer than [`MAX_WORD_CHARS`] so no unit can silently represent an
+/// unbounded number of real tokens. All token-budget logic in this module
+/// and in `chunker.rs`'s `word_spans` must use this (or the same
+/// [`MAX_WORD_CHARS`]/splitting rule) rather than raw `split_whitespace()`,
+/// since word indices are shared across independently-built word lists and
+/// must stay aligned.
+pub(crate) fn split_words(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .flat_map(|word| {
+            split_long_word_ranges(word, MAX_WORD_CHARS)
+                .into_iter()
+                .map(move |r| &word[r])
+        })
+        .collect()
+}
+
+/// Count approximate tokens in text by counting whitespace-separated words
+/// (with long words further split — see [`split_words`]). This is an
+/// approximation - actual tokenizers may produce different counts.
 pub fn count_tokens(text: &str) -> usize {
-    text.split_whitespace().count()
+    split_words(text).len()
 }
 
 /// Split text into overlapping chunks, returning each chunk's text along with its
@@ -26,7 +90,7 @@ pub fn tokenize_with_overlap_indexed(
         return vec![(String::new(), 0, 0)];
     }
 
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<&str> = split_words(text);
     if words.is_empty() {
         return vec![(String::new(), 0, 0)];
     }
@@ -78,7 +142,7 @@ pub fn tokenize_fixed(text: &str, max_tokens: usize) -> Vec<String> {
         return vec![String::new()];
     }
 
-    let words: Vec<&str> = text.split_whitespace().collect();
+    let words: Vec<&str> = split_words(text);
     if words.is_empty() {
         return vec![String::new()];
     }
@@ -92,6 +156,69 @@ pub fn tokenize_fixed(text: &str, max_tokens: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_count_tokens_long_unbroken_word_is_not_counted_as_one_token() {
+        // Regression test: a single whitespace-free "word" (e.g. minified
+        // JSON, base64) must not collapse to a token count of 1 — that's
+        // what let chunks grow unboundedly before MAX_WORD_CHARS splitting.
+        let blob: String = "a".repeat(1000);
+        let tokens = count_tokens(&blob);
+        assert_eq!(tokens, 1000usize.div_ceil(MAX_WORD_CHARS));
+        assert!(tokens > 1);
+    }
+
+    #[test]
+    fn test_split_long_word_ranges_preserves_all_bytes_and_char_boundaries() {
+        let word = "x".repeat(100);
+        let ranges = split_long_word_ranges(&word, 32);
+        // Ranges must be contiguous and cover the whole word.
+        assert_eq!(ranges.first().unwrap().start, 0);
+        assert_eq!(ranges.last().unwrap().end, word.len());
+        for w in ranges.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "ranges must be contiguous");
+        }
+        // No piece should exceed the char cap.
+        for r in &ranges {
+            assert!(word[r.clone()].chars().count() <= 32);
+        }
+    }
+
+    #[test]
+    fn test_split_long_word_ranges_never_splits_mid_utf8_char() {
+        // Multi-byte UTF-8 chars (each 3 bytes) — a naive byte-offset split
+        // at a fixed byte count would panic or corrupt a character here.
+        let word = "\u{2764}".repeat(50); // heavy black heart, 3 bytes/char
+        let ranges = split_long_word_ranges(&word, 10);
+        for r in ranges {
+            // Slicing panics on a non-boundary; this line is the real assertion.
+            let piece = &word[r];
+            assert!(piece.chars().count() <= 10);
+        }
+    }
+
+    #[test]
+    fn test_tokenize_with_overlap_indexed_bounds_a_single_giant_word() {
+        // A single ~10,000-char unbroken "word" (no whitespace at all) must
+        // still be split into multiple bounded chunks, not returned as one
+        // giant chunk — this is the exact shape that broke on real vault
+        // content (minified JSON with no internal whitespace).
+        let blob: String = "z".repeat(10_000);
+        let chunks = tokenize_with_overlap_indexed(&blob, 50, 0);
+        assert!(
+            chunks.len() > 1,
+            "a single giant word must be split into multiple chunks"
+        );
+        for (text, _, _) in &chunks {
+            // 50 words/chunk, each up to MAX_WORD_CHARS chars plus a joining
+            // space, is the worst-case bound.
+            assert!(
+                text.len() <= 50 * (MAX_WORD_CHARS + 1),
+                "chunk of {} chars exceeds the bound",
+                text.len()
+            );
+        }
+    }
 
     #[test]
     fn test_count_tokens_simple() {

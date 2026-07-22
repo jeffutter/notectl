@@ -216,8 +216,11 @@ impl Chunker {
                 if merged_tokens <= self.config.max_tokens * 2 {
                     // Merge successful, skip to next section after this one
                     // Count words in each original section to map merged-word indices back
-                    // to the correct file-line offset.
-                    let first_section_words: usize = section.content.split_whitespace().count();
+                    // to the correct file-line offset. Must use the same bounded splitting
+                    // as word_spans/tokenize::split_words, not raw split_whitespace(), or
+                    // this index would drift out of alignment with merged_word_spans below
+                    // whenever section.content contains a long unbroken run.
+                    let first_section_words: usize = tokenize::split_words(&section.content).len();
                     // Byte offset of next_section's content within merged_content
                     // (section.content + "\n\n" + next_section.content).
                     let next_section_byte_offset = section.content.len() + 2;
@@ -233,6 +236,7 @@ impl Chunker {
                         };
 
                     for (j, &(ref part, start_idx, end_idx)) in chunk_parts.iter().enumerate() {
+                        let mut low_semantic_value = false;
                         let (line_start, line_end) = if !merged_word_spans.is_empty()
                             && start_idx < merged_word_spans.len()
                         {
@@ -240,6 +244,10 @@ impl Chunker {
                             let last_idx =
                                 end_idx.saturating_sub(1).min(merged_word_spans.len() - 1);
                             let last_span = &merged_word_spans[last_idx];
+                            low_semantic_value = Self::is_low_semantic_value(
+                                &merged_content,
+                                first_span.start..last_span.end,
+                            );
 
                             // Determine which original section each end falls in.
                             let first_in_first_section = start_idx < first_section_words;
@@ -273,6 +281,10 @@ impl Chunker {
                         } else {
                             (section.start_line, next_section.end_line)
                         };
+
+                        if low_semantic_value {
+                            continue;
+                        }
 
                         chunks.push(Chunk {
                             id: format!(
@@ -320,18 +332,27 @@ impl Chunker {
                 // start_line is 1-indexed heading line; content starts one line after
                 // the heading, so start_line equals the 0-indexed file line of the first
                 // content line.
-                let (line_start, line_end) =
+                let (line_start, line_end, low_semantic_value) =
                     if start_idx < section_word_spans.len() && part_word_count > 0 {
                         let first_span = &section_word_spans[start_idx];
                         let last_idx = end_idx.saturating_sub(1).min(section_word_spans.len() - 1);
                         let last_span = &section_word_spans[last_idx];
+                        let low_value = Self::is_low_semantic_value(
+                            &section.content,
+                            first_span.start..last_span.end,
+                        );
                         (
                             section.start_line + Self::line_at(&section.content, first_span.start),
                             section.start_line + Self::line_at(&section.content, last_span.end),
+                            low_value,
                         )
                     } else {
-                        (section.start_line, section.end_line)
+                        (section.start_line, section.end_line, false)
                     };
+
+                if low_semantic_value {
+                    continue;
+                }
 
                 chunks.push(Chunk {
                     id: format!(
@@ -371,7 +392,44 @@ impl Chunker {
             .count()
     }
 
-    /// Collect byte-span ranges for each whitespace-delimited word in `content`.
+    /// True if `content[range]`'s real (unsplit) word density is too low to
+    /// be worth indexing — e.g. minified JSON or base64 with no natural word
+    /// boundaries. A density check, not an absolute word-count floor: real
+    /// content like a JSON export of a chat/event log can have just enough
+    /// embedded readable strings (labels, names) to clear a small absolute
+    /// floor while still being overwhelmingly non-prose — e.g. real vault
+    /// content measured at ~154 words across 87,682 characters (~0.0018
+    /// words/char) versus ~0.15-0.25 words/char for ordinary English prose.
+    /// Checked against a chunk's ORIGINAL byte range in the source, not its
+    /// assembled `text` field: reassembling a chunk from `word_spans` pieces
+    /// joins them with `" "`, which inserts whitespace that wasn't in the
+    /// source wherever an oversized word got split — so a blob-derived
+    /// chunk's `text` looks artificially word-rich even when the source had
+    /// almost no real words in it at all.
+    fn is_low_semantic_value(content: &str, range: std::ops::Range<usize>) -> bool {
+        const MIN_WORDS_PER_CHAR: f64 = 0.03;
+        match content.get(range) {
+            None => true,
+            Some("") => true,
+            Some(s) => {
+                let words = s.split_whitespace().count();
+                (words as f64) / (s.len() as f64) < MIN_WORDS_PER_CHAR
+            }
+        }
+    }
+
+    /// Collect byte-span ranges for each whitespace-delimited word in
+    /// `content`, further splitting any word longer than
+    /// [`tokenize::MAX_WORD_CHARS`] the same way `tokenize::split_words`
+    /// does. Without this, content with long whitespace-free runs (minified
+    /// JSON, base64, etc.) produces a single "word" span that can represent
+    /// far more real tokens than the word-count-based token budget assumes,
+    /// letting a chunk grow unboundedly with no way to split it further.
+    ///
+    /// Must apply the exact same splitting rule as `tokenize::split_words`:
+    /// word indices computed here (e.g. `first_section_words` below) are
+    /// used to index into word lists built independently by both modules,
+    /// and must stay aligned.
     fn word_spans(content: &str) -> Vec<std::ops::Range<usize>> {
         let bytes = content.as_bytes();
         let mut spans = Vec::new();
@@ -388,7 +446,10 @@ impl Chunker {
             while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
                 i += 1;
             }
-            spans.push(start..i);
+            let word = &content[start..i];
+            for r in tokenize::split_long_word_ranges(word, tokenize::MAX_WORD_CHARS) {
+                spans.push((start + r.start)..(start + r.end));
+            }
         }
         spans
     }
@@ -405,9 +466,11 @@ impl Chunker {
                 .map(|s| &content[s.start..s.end])
                 .collect::<Vec<_>>()
                 .join(" ");
-            if tokenize::count_tokens(&text) >= self.config.min_chunk_size {
-                let first_pos = chunk_words.first().unwrap().start;
-                let last_pos = chunk_words.last().unwrap().end;
+            let first_pos = chunk_words.first().unwrap().start;
+            let last_pos = chunk_words.last().unwrap().end;
+            if tokenize::count_tokens(&text) >= self.config.min_chunk_size
+                && !Self::is_low_semantic_value(content, first_pos..last_pos)
+            {
                 let line_start = Self::line_at(content, first_pos);
                 let line_end = Self::line_at(content, last_pos);
                 chunks.push(Chunk {
@@ -576,6 +639,68 @@ Different content here for section two.
         }
     }
 
+    /// Same regression as `test_chunk_by_size_bounds_mixed_prose_and_huge_unbroken_word`,
+    /// but for a heading-structured section (the split_long_text/
+    /// tokenize_with_overlap_indexed path) rather than the headingless
+    /// chunk_by_size fallback — a huge blob pasted under a real heading must
+    /// also be bounded, not just one pasted into a headingless file. Uses a
+    /// prose+blob mix (not pure blob) since pure blob content is now
+    /// entirely excluded — see `test_long_section_splitting_excludes_pure_blob_section`.
+    #[test]
+    fn test_long_section_splitting_bounds_embedded_huge_unbroken_word() {
+        let config = ChunkerConfig {
+            max_tokens: 100,
+            overlap_tokens: 0,
+            min_chunk_size: 1,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config.clone());
+
+        let prose = "real words describing something useful here and there ".repeat(30);
+        let blob: String = "y".repeat(50_000);
+        let content = format!("# Big Blob\n{prose}{blob}");
+
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+
+        assert!(
+            chunks.iter().any(|c| c.text.contains("real words")),
+            "prose chunks must survive"
+        );
+        for chunk in &chunks {
+            let tokens = tokenize::count_tokens(&chunk.text);
+            assert!(
+                tokens <= config.max_tokens,
+                "chunk has {tokens} tokens, expected <= {}",
+                config.max_tokens
+            );
+        }
+    }
+
+    /// A section that's entirely a whitespace-free blob (no real words at
+    /// all — e.g. Excalidraw's inline scene JSON) has no semantic search
+    /// value and should be excluded entirely, not indexed as a run of
+    /// meaningless chunks.
+    #[test]
+    fn test_long_section_splitting_excludes_pure_blob_section() {
+        let config = ChunkerConfig {
+            max_tokens: 100,
+            overlap_tokens: 0,
+            min_chunk_size: 1,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+
+        let blob: String = "y".repeat(50_000);
+        let content = format!("# Big Blob\n{blob}");
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+
+        assert!(
+            chunks.is_empty(),
+            "a purely whitespace-free blob section should be fully excluded, got {} chunks",
+            chunks.len()
+        );
+    }
+
     #[test]
     fn test_tiny_section_merging() {
         let config = ChunkerConfig {
@@ -675,6 +800,67 @@ Charlie content goes here for testing.
         // Beta (H2 under Alpha) should have ["Alpha"]
         let beta_path = heading_to_path.get("Beta").unwrap();
         assert_eq!(beta_path, &["Alpha".to_string()]);
+    }
+
+    /// Regression test: a single huge whitespace-free run (e.g. minified
+    /// JSON or base64 pasted into a note, no internal whitespace to split
+    /// on) mixed with real prose must not produce one unbounded chunk. This
+    /// is exactly the shape that broke on real vault content — a single
+    /// "word" spanning ~87KB produced a chunk with tens of thousands of real
+    /// tokens, blowing past every downstream token budget with no way to
+    /// split it further. Mixed (not pure blob) content, since pure blob
+    /// content is now excluded entirely — see
+    /// `test_chunk_by_size_excludes_pure_blob_content`.
+    #[test]
+    fn test_chunk_by_size_bounds_mixed_prose_and_huge_unbroken_word() {
+        let config = ChunkerConfig {
+            max_tokens: 100,
+            min_chunk_size: 1,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config.clone());
+
+        // No headings, so this goes through chunk_by_size, the path that
+        // broke in practice. Real prose up front so it isn't pure blob.
+        let prose = "real words describing something useful here and there ".repeat(30);
+        let blob: String = "x".repeat(50_000);
+        let content = format!("{prose}{blob}");
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+
+        assert!(
+            chunks.iter().any(|c| c.text.contains("real words")),
+            "prose chunks must survive"
+        );
+        for chunk in &chunks {
+            let tokens = tokenize::count_tokens(&chunk.text);
+            assert!(
+                tokens <= config.max_tokens,
+                "chunk has {tokens} tokens, expected <= {}",
+                config.max_tokens
+            );
+        }
+    }
+
+    /// Content that's entirely a whitespace-free blob (no real words at
+    /// all) has no semantic search value and should be excluded entirely,
+    /// not indexed as a run of meaningless chunks.
+    #[test]
+    fn test_chunk_by_size_excludes_pure_blob_content() {
+        let config = ChunkerConfig {
+            max_tokens: 100,
+            min_chunk_size: 1,
+            ..Default::default()
+        };
+        let chunker = Chunker::new(config);
+
+        let content: String = "x".repeat(50_000);
+        let chunks = chunker.chunk_file(Path::new("test.md"), &content);
+
+        assert!(
+            chunks.is_empty(),
+            "purely whitespace-free blob content should be fully excluded, got {} chunks",
+            chunks.len()
+        );
     }
 
     #[test]
