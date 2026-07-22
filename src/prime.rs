@@ -173,12 +173,18 @@ Examples:
 
 ### Search
 
-Semantic and keyword search across indexed notes.
+Semantic and keyword search across indexed notes. Dense (semantic) scoring
+calls an OpenAI-compatible /v1/embeddings HTTP endpoint — no model is
+bundled. Set `embedding_api_base` (and `model_id`, `embedding_api_key` if
+needed) in `.notectl.toml`'s `[search]` section, or via
+NOTECTL_SEARCH_EMBEDDING_API_BASE / NOTECTL_SEARCH_MODEL_ID /
+NOTECTL_SEARCH_EMBEDDING_API_KEY. Without it, search silently degrades to
+sparse (BM25 keyword) only.
 
 `{bin} index{vp}`              build or update the search index
-  --reindex true|false       force full rebuild (wipe manifest.json, chunks/, vectors.bin; preserve models/)
-  --model <id>               override embedding model ID (default: google/embedding-gemma-300m)
-  --dim <N>                  override embedding dimension (default: 256)
+  --reindex true|false       force full rebuild (wipe manifest.json, chunks/, vectors.bin)
+  --model <id>               override the model name sent to the embedding API (no default)
+  --dim <N>                  override embedding dimension ceiling (default: 4096, i.e. no truncation)
 
 `{bin} search{vp} <query>`    search across indexed notes
   --limit N                  max results (default 50)

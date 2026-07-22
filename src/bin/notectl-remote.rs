@@ -5,6 +5,8 @@ use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation, Rece
 use notectl_outline::{
     GetOutlineOperation, GetSectionOperation, OutlineCapability, SearchHeadingsOperation,
 };
+#[cfg(feature = "search")]
+use notectl_search::{IndexOperation, SearchCapability, SearchOperation};
 use notectl_tags::{ExtractTagsOperation, ListTagsOperation, SearchByTagsOperation, TagCapability};
 use notectl_tasks::{SearchTasksOperation, TaskCapability};
 use std::path::PathBuf;
@@ -57,8 +59,18 @@ fn create_operations() -> Vec<Arc<dyn Operation>> {
             Arc::clone(&config),
         )))),
         Arc::new(SearchHeadingsOperation::new(Arc::new(
-            OutlineCapability::new(base_path, Arc::clone(&config)),
+            OutlineCapability::new(base_path.clone(), Arc::clone(&config)),
         ))),
+        #[cfg(feature = "search")]
+        Arc::new(IndexOperation::new(Arc::new(SearchCapability::new(
+            base_path.clone(),
+            Arc::clone(&config),
+        )))),
+        #[cfg(feature = "search")]
+        Arc::new(SearchOperation::new(Arc::new(SearchCapability::new(
+            base_path,
+            Arc::clone(&config),
+        )))),
     ]
 }
 
