@@ -5,17 +5,10 @@ Semantic search over markdown notes using hybrid BM25 + dense vector retrieval.
 ## Features
 
 - **Sparse retrieval**: BM25 scoring via lightweight in-memory indexer (no external dependencies)
-- **Dense retrieval**: Qwen3-Embedding-0.6B via candle (default), with ONNX Runtime fallback for BGE/EmbeddingGemma models
+- **Dense retrieval**: HTTP client to any OpenAI-compatible `/v1/embeddings` endpoint (llama.cpp/llama-swap, vLLM, Ollama, OpenAI, etc.) — no model runs in-process
 - **Hybrid ranking**: Weighted Reciprocal Rank Fusion (RRF) merges sparse + dense results
 - **Incremental indexing**: Only re-processes changed files on subsequent index builds
-- **Matryoshka embeddings**: Supports truncating 1024-dim vectors to 512, 256, or 128 dimensions
-
-## Cargo Features
-
-| Feature | Description |
-|---------|-------------|
-| `qwen3` | Enable Qwen3 embedding models via candle backend (enabled by default) |
-| `integration` | Run integration tests that require model download + inference |
+- **Matryoshka embeddings**: Optionally truncate a model's native embedding dimension for storage savings
 
 ## Smoke Test
 
@@ -33,17 +26,14 @@ cargo run --bin notectl --features search -- search /path/to/vault "query" | jq 
 ## Running Tests
 
 ```bash
-# Unit tests (no model required)
-cargo test -p notectl-search
-
-# Unit tests (all features)
+# Unit tests — fully offline, nothing touches the network
 cargo test -p notectl-search
 
 # Doc-tests
 cargo test -p notectl-search --doc
 
-# Integration test (requires HF_TOKEN + network access)
-HF_TOKEN=<token> cargo test -p notectl-search --features integration
+# Sanity-check connectivity to the configured embedding endpoint
+cargo run --example print_embedding -p notectl-search
 ```
 
 ## Architecture
@@ -62,10 +52,7 @@ HF_TOKEN=<token> cargo test -p notectl-search --features integration
 │ (scoring)│ (wrapper) │(cosine + RRF)            │
 ├──────────┴───────────┴──────────────────────────┤
 │              embeddings/                        │
-│  ┌────────────┬────────────┬─────────────────┐ │
-│  │ candle     │  onnx      │    config       │ │
-│  │ (qwen3*)   │ (bge, etc) │  (model_id)     │ │
-│  └────────────┴────────────┴─────────────────┘ │
+│  reqwest client → POST {api_base}/embeddings     │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -74,5 +61,5 @@ HF_TOKEN=<token> cargo test -p notectl-search --features integration
 Indexed data is stored in `<cache_dir>/notectl/search/` by default:
 
 - `manifest.json` — build metadata (timestamp, config hash, dimension)
-- `chunks.json` — extracted text chunks with source file and line info
-- `vectors.bin` — binary-packed embedding vectors (only with `embeddings` feature)
+- `chunks/` — extracted text chunks, one file per chunk
+- `vectors.bin` — binary-packed embedding vectors (only when an embedding endpoint is configured)

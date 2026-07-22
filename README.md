@@ -208,7 +208,7 @@ notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-leve
 
 Semantic and keyword search across indexed notes. Build with `--features search` for hybrid search (dense embeddings + sparse BM25 fused via RRF).
 
-Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs) with ONNX Runtime. If the embedding model is unavailable, searches degrade gracefully to keyword-only (BM25) with no configuration needed.
+Dense search calls out to an OpenAI-compatible `/v1/embeddings` HTTP endpoint (e.g. llama.cpp/llama-swap, vLLM, Ollama, OpenAI itself) — no model runs in-process. If no endpoint is configured, or it's unreachable, searches degrade gracefully to keyword-only (BM25) with no configuration needed.
 
 Build or update the search index:
 
@@ -219,8 +219,8 @@ notectl index path/to/vault
 # Force full rebuild, wiping existing index artifacts
 notectl index path/to/vault --reindex true
 
-# Use a specific embedding model (default: Qwen/Qwen3-Embedding-0.6B)
-notectl index path/to/vault --model BAAI/bge-small-en-v1.5 --dim 384
+# Override the model name sent to the embedding endpoint and truncation dim
+notectl index path/to/vault --model qwen3-embedding:0.6b --dim 1024
 ```
 
 Search across indexed notes:
@@ -245,30 +245,26 @@ The response also includes `mode_used` which reflects the actual mode that ran �
 
 The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
 
-### Supported Embedding Models
+### Configuring the Embedding Endpoint
 
-Dense search uses [fastembed](https://github.com/Anush008/fastembed-rs). Two backends are available:
+There is no bundled or local embedding model. Point `embedding_api_base` at any server that
+speaks the OpenAI-compatible `/v1/embeddings` API — llama.cpp/llama-swap, vLLM, Ollama, OpenAI
+itself, etc. — and set `model_id` to whatever model name that server expects:
 
-**Candle backend** (requires `qwen3` feature, enabled by default):
+```toml
+[search]
+model_id = "qwen3-embedding:0.6b"
+embedding_api_base = "https://your-server/v1"
+# embedding_api_key = "..."   # optional bearer token
+```
 
-| Model | Config `model_id` | Dimension | Notes |
-|-------|-------------------|-----------|-------|
-| Qwen3-Embedding-0.6B (default) | `Qwen/Qwen3-Embedding-0.6B` | 1024 (Matryoshka) | Compact, high-quality multilingual embeddings |
-| Qwen3-Embedding-4B | `Qwen/Qwen3-Embedding-4B` | 4096 (Matryoshka) | Higher capacity |
-| Qwen3-Embedding-8B | `Qwen/Qwen3-Embedding-8B` | 4096 (Matryoshka) | Largest Qwen3 model |
+Also settable via `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_EMBEDDING_API_BASE`, and
+`NOTECTL_SEARCH_EMBEDDING_API_KEY`. Changing `model_id`, `embedding_api_base`, or `embedding_dim`
+triggers a full reindex. `embedding_dim` (default: 4096, effectively "no truncation") lets you
+opt into Matryoshka truncation for models that support it, to save storage.
 
-**ONNX Runtime backend**:
-
-| Model | Config `model_id` | Dimension | Notes |
-|-------|-------------------|-----------|-------|
-| EmbeddingGemma-300M | `google/embedding-gemma-300m` | 768 (Matryoshka) | Requires HF_TOKEN + accepted license |
-| BGE Small v1.5 | `BAAI/bge-small-en-v1.5` | 384 | Lightweight, fast inference |
-| BGE Base v1.5 | `BAAI/bge-base-en-v1.5` | 768 | Better quality, larger model |
-| BGE Large v1.5 | `BAAI/bge-large-en-v1.5` | 1024 | Highest quality among BGE family |
-
-Models download automatically on first index build. Set `model_id` in your `[search]` config block or via `NOTECTL_SEARCH_MODEL_ID` env var to switch models. Changing the model triggers a full reindex.
-
-If any model is unavailable (network issues, missing `HF_TOKEN`, etc.), searches degrade gracefully to keyword-only (BM25) with no configuration needed.
+If `embedding_api_base` isn't set, or the endpoint is unreachable, searches degrade gracefully to
+keyword-only (BM25) with no configuration needed.
 
 ### MCP Server Mode
 
@@ -382,8 +378,10 @@ Search behavior can be tuned via `.notectl.toml`:
 
 ```toml
 [search]
-model_id = "Qwen/Qwen3-Embedding-0.6B"      # Embedding model ID
-embedding_dim = 1024                         # Embedding dimension (matryoshka truncation)
+model_id = "qwen3-embedding:0.6b"            # Model name sent to the embedding API
+embedding_api_base = "https://your-server/v1" # OpenAI-compatible endpoint; unset = BM25-only
+# embedding_api_key = "..."                  # Optional bearer token
+embedding_dim = 4096                         # Embedding dimension ceiling (matryoshka truncation)
 max_seq_tokens = 512                         # Maximum sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Minimum tokens per chunk before merging forward
@@ -392,7 +390,7 @@ rrf_bm25_weight = 1.0                        # Weight for BM25 scores in RRF fus
 rrf_cosine_weight = 1.0                      # Weight for cosine scores in RRF fusion
 max_results = 50                             # Maximum results returned per query
 merge_threshold = 30                         # Merge tiny sections below this token count
-cache_dir = ".notectl/search"                # Index and model cache directory
+cache_dir = ".notectl/search"                # Index cache directory
 ```
 
 All search config values can also be overridden via environment variables:
@@ -400,7 +398,8 @@ All search config values can also be overridden via environment variables:
 | Environment Variable             | Config Key           |
 |----------------------------------|----------------------|
 | `NOTECTL_SEARCH_MODEL_ID`        | `search.model_id`    |
-| `NOTECTL_SEARCH_MODEL_REVISION`  | `search.model_revision` |
+| `NOTECTL_SEARCH_EMBEDDING_API_BASE` | `search.embedding_api_base` |
+| `NOTECTL_SEARCH_EMBEDDING_API_KEY`  | `search.embedding_api_key` |
 | `NOTECTL_SEARCH_EMBEDDING_DIM`   | `search.embedding_dim` |
 | `NOTECTL_SEARCH_MAX_SEQ_TOKENS`  | `search.max_seq_tokens` |
 | `NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS` | `search.chunk_overlap_tokens` |
@@ -409,7 +408,6 @@ All search config values can also be overridden via environment variables:
 | `NOTECTL_SEARCH_RRF_K`           | `search.rrf_k`       |
 | `NOTECTL_SEARCH_RRF_BM25_WEIGHT` | `search.rrf_bm25_weight` |
 | `NOTECTL_SEARCH_RRF_COSINE_WEIGHT` | `search.rrf_cosine_weight` |
-| `NOTECTL_SEARCH_DENSE_WEIGHTS`   | `search.dense_weights` |
 | `NOTECTL_SEARCH_SPARSE_WEIGHTS`  | `search.sparse_weights` |
 | `NOTECTL_SEARCH_CACHE_DIR`       | `search.cache_dir`   |
 | `NOTECTL_SEARCH_MAX_RESULTS`     | `search.max_results` |

@@ -76,13 +76,17 @@ impl<'a> IndexBuilder<'a> {
     ///    - `UpToDate` → return early with no changes.
     ///    - `FullRebuild` → clear old chunks/vectors, process everything.
     ///    - `Incremental` → drop chunks for removed files, re-process changed files.
-    /// 3. Walk all markdown files (honoring exclusion patterns).
-    /// 4. For each file: read content, compute blake3 hash, chunk via [`Chunker`].
-    /// 5. Collect all chunks sorted by source_file path for deterministic ordering.
-    /// 6. If embedder is available: derive titles from heading paths, batch-embed,
-    ///    write vectors atomically.
-    /// 7. Write chunk texts atomically.
-    /// 8. Update and save manifest atomically.
+    /// 3. Walk all markdown files (honoring exclusion patterns), then sort by
+    ///    relative path so processing order — and therefore chunk/vector
+    ///    order — is deterministic regardless of filesystem walk order.
+    /// 4. Stream: for each file in that order, read/hash/chunk it, and feed
+    ///    its chunks into a bounded batch buffer. Whenever the buffer fills
+    ///    (or at the end, for the final partial batch), flush it: persist
+    ///    that batch's chunk text, and — if an embedder is available and
+    ///    loads successfully — embed that batch and stream its vectors to
+    ///    disk. Peak memory is bounded to one batch's worth of text/vectors,
+    ///    not the whole vault (see [`Self::flush_batch`]).
+    /// 5. Update and save the manifest atomically.
     ///
     /// Returns [`BuildSummary`] with stats about the build.
     pub async fn build(
@@ -122,22 +126,70 @@ impl<'a> IndexBuilder<'a> {
             }
         }
 
-        // Step 2: Walk current files (honors exclusion patterns).
+        // Step 2: Walk current files, then sort by relative path AS A STRING
+        // (not PathBuf's component-wise Ord, which can disagree — e.g.
+        // "a-b.md" vs "a/b.md" sort differently as strings vs. path
+        // components). This reproduces the same deterministic chunk order
+        // the old "collect everything then sort by source_file" approach
+        // gave us, without needing to buffer every chunk to sort them:
+        // chunk_file has no cross-file state, so processing files in this
+        // order and appending their chunks as produced yields an identical
+        // final order.
         let current_files = notectl_core::file_walker::collect_markdown_files(base_path, config)
             .map_err(|e| SearchError::Storage(format!("Failed to collect markdown files: {e}")))?;
 
-        // Step 3: Process each file — read, hash, chunk.
-        let mut all_chunks: Vec<Chunk> = Vec::new();
+        let mut current_files: Vec<(String, std::path::PathBuf)> = current_files
+            .into_iter()
+            .map(|abs_path| {
+                let rel_path = abs_path
+                    .strip_prefix(base_path)
+                    .unwrap_or(abs_path.as_path())
+                    .to_string_lossy()
+                    .to_string();
+                (rel_path, abs_path)
+            })
+            .collect();
+        current_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Progress bar tracks files, not chunks — chunk count isn't known
+        // until the vault is walked, since chunking happens incrementally
+        // alongside embedding rather than all up front.
+        let pb = if std::io::stdout().is_terminal() {
+            let bar = ProgressBar::new(current_files.len() as u64);
+            bar.set_style(
+                ProgressStyle::default_bar()
+                    .template(
+                        "{spinner:.green} [{elapsed}] {bar:40} {percent}% ({pos}/{len} files)",
+                    )
+                    .unwrap()
+                    .progress_chars("##-"),
+            );
+            bar.set_message("Indexing");
+            Some(bar)
+        } else {
+            None
+        };
+
+        // Steps 3-4: walk -> chunk -> embed -> persist, streamed in bounded
+        // batches instead of materializing the whole vault's text/vectors.
+        //
+        // Sized by chunk count, not a token budget — worst case (every chunk
+        // at the default 512-token max, plus title-prefix overhead) that's
+        // ~18k tokens, comfortably under common embedding-endpoint context
+        // windows (e.g. 32768). A larger batch size risks a hard
+        // context-window-exceeded error on real content once chunk sizes
+        // vary, even if a same-size synthetic benchmark happened to fit.
+        const BATCH_SIZE: usize = 32;
+
+        let mut all_entries: Vec<ChunkEntry> = Vec::new();
         let mut file_hashes: BTreeMap<String, String> = BTreeMap::new();
         let mut file_info_map: BTreeMap<String, FileInfo> = BTreeMap::new();
+        let mut pending: Vec<Chunk> = Vec::with_capacity(BATCH_SIZE);
+        let mut vector_writer: Option<crate::storage::VectorWriter> = None;
+        let mut embeddings_unavailable = false;
+        let mut total_chunks: usize = 0;
 
-        for abs_path in &current_files {
-            let rel_path = abs_path
-                .strip_prefix(base_path)
-                .unwrap_or(abs_path.as_path())
-                .to_string_lossy()
-                .to_string();
-
+        for (rel_path, abs_path) in &current_files {
             let content = match fs::read_to_string(abs_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -154,55 +206,78 @@ impl<'a> IndexBuilder<'a> {
                 0
             });
 
-            let chunks = self.chunker.chunk_file(Path::new(&rel_path), &content);
+            let chunks = self.chunker.chunk_file(Path::new(rel_path), &content);
             let chunk_ids: Vec<String> = chunks.iter().map(|c| c.id.clone()).collect();
+            total_chunks += chunks.len();
 
-            all_chunks.extend(chunks);
+            for chunk in chunks {
+                all_entries.push(ChunkEntry {
+                    id: chunk.id.clone(),
+                    source_file: chunk.source_file.clone(),
+                    line_start: chunk.line_start,
+                    line_end: chunk.line_end,
+                    heading: chunk.heading.clone(),
+                    heading_path: chunk.heading_path.clone(),
+                    tags: chunk.tags.clone(),
+                });
+                pending.push(chunk);
+
+                if pending.len() >= BATCH_SIZE {
+                    self.flush_batch(
+                        &mut pending,
+                        &mut vector_writer,
+                        &mut embeddings_unavailable,
+                    )
+                    .await?;
+                }
+            }
 
             file_info_map.insert(
                 rel_path.clone(),
                 FileInfo {
-                    path: rel_path,
+                    path: rel_path.clone(),
                     content_hash,
                     mtime: mtime_secs,
                     chunk_ids,
                 },
             );
+
+            if let Some(ref bar) = pb {
+                bar.inc(1);
+            }
         }
 
-        // Sort chunks by source_file for deterministic ordering.
-        all_chunks.sort_by(|a, b| a.source_file.cmp(&b.source_file));
+        // Flush the final partial batch, if any.
+        self.flush_batch(
+            &mut pending,
+            &mut vector_writer,
+            &mut embeddings_unavailable,
+        )
+        .await?;
 
-        // Step 4: Build chunk entries for the manifest.
-        let chunk_entries: Vec<ChunkEntry> = all_chunks
-            .iter()
-            .map(|c| ChunkEntry {
-                id: c.id.clone(),
-                source_file: c.source_file.clone(),
-                line_start: c.line_start,
-                line_end: c.line_end,
-                heading: c.heading.clone(),
-                heading_path: c.heading_path.clone(),
-                tags: c.tags.clone(),
-            })
-            .collect();
+        // has_embeddings mirrors the old embed_chunks contract: true only if
+        // an embedder was configured, the model loaded successfully, and
+        // there was at least one chunk to embed (vector_writer is created
+        // lazily on the first successful batch — see flush_batch).
+        let has_embeddings = if let Some(writer) = vector_writer {
+            writer.finish()?;
+            true
+        } else {
+            false
+        };
+
+        if let Some(bar) = pb {
+            bar.finish_with_message("Indexing complete");
+        }
 
         // Step 5: Build file info list (sorted by path).
         let files: Vec<FileInfo> = file_info_map.values().cloned().collect();
         let file_count = files.len();
 
-        // Step 6: Compute overall content hash.
+        // Compute overall content hash.
         let overall_hash = compute_overall_content_hash(&file_hashes);
 
-        // Step 7: Embedding step (feature-gated).
-        let has_embeddings = self.embed_chunks(&all_chunks).await?;
-
-        // Step 8: Write chunk texts atomically.
-        if !all_chunks.is_empty() {
-            self.index.write_chunks(&all_chunks)?;
-        }
-
-        // Step 9: Update manifest.
+        // Update manifest.
         let manifest = self.index.manifest_mut();
         manifest.model_id = config.search.model_id.clone();
         manifest.embedding_dim = config.search.embedding_dim;
@@ -213,24 +288,24 @@ impl<'a> IndexBuilder<'a> {
             merge_threshold: config.search.merge_threshold,
         };
         manifest.files = files;
-        manifest.chunks = chunk_entries;
+        manifest.chunks = all_entries;
         manifest.content_hash = overall_hash.clone();
         manifest.last_indexed = Some(chrono_now_rfc3339());
         manifest.has_embeddings = has_embeddings;
 
-        // Step 10: Save manifest atomically.
+        // Save manifest atomically.
         self.index.save_manifest()?;
 
         tracing::info!(
             "Index built: {} files, {} chunks, embeddings={}",
             file_count,
-            all_chunks.len(),
+            total_chunks,
             has_embeddings
         );
 
         Ok(BuildSummary {
             files_indexed: file_count,
-            chunks_produced: all_chunks.len(),
+            chunks_produced: total_chunks,
             has_embeddings,
             content_hash: overall_hash,
         })
@@ -258,114 +333,93 @@ impl<'a> IndexBuilder<'a> {
         Ok(())
     }
 
-    /// Embed all chunks using the embedder (if available).
+    /// Flush one batch of chunks: persist their text, and — if embeddings
+    /// are available — embed them and stream the resulting vectors to disk.
     ///
-    /// Derives document titles from `heading_path.join(" > ")` for each chunk.
-    /// Falls back to filename stem if heading_path is empty.
+    /// Bounds peak memory to one batch's worth of text/vectors rather than
+    /// the whole vault. Failure handling: if this is the *first* batch this
+    /// build has attempted to embed (`vector_writer` still `None`) and the
+    /// embedding call fails (endpoint unreachable, unconfigured, etc.), log
+    /// a warning once and gracefully degrade the rest of the build to
+    /// no-embeddings via `embeddings_unavailable` (BM25 keyword search still
+    /// works). If a *later* batch fails after earlier ones already
+    /// succeeded, that's a hard error that aborts the whole build — we'd
+    /// rather fail loudly than silently ship a partially-embedded index.
     ///
-    /// On any incremental update where chunks change, rebuilds the entire
-    /// vector array because chunk IDs may shift and the binary format is positional.
-    ///
-    /// Returns `true` if embeddings were computed, `false` otherwise.
-    async fn embed_chunks(&mut self, chunks: &[Chunk]) -> Result<bool, SearchError> {
-        let embedder = match &mut self.embedder {
-            Some(e) => e,
-            None => return Ok(false),
-        };
-
-        if chunks.is_empty() {
-            return Ok(false);
+    /// Derives document titles from `heading_path.join(" > ")` for each
+    /// chunk, falling back to the filename stem if `heading_path` is empty.
+    async fn flush_batch(
+        &mut self,
+        pending: &mut Vec<Chunk>,
+        vector_writer: &mut Option<crate::storage::VectorWriter>,
+        embeddings_unavailable: &mut bool,
+    ) -> Result<(), SearchError> {
+        if pending.is_empty() {
+            return Ok(());
         }
 
-        let num_chunks = chunks.len();
+        // Always persist chunk text for this batch, regardless of embedding
+        // availability — write_chunks already writes one file per chunk, so
+        // calling it per-batch instead of once for the whole vault produces
+        // identical on-disk output, just with bounded peak memory.
+        self.index.write_chunks(pending)?;
 
-        // Try to load the model if it hasn't been loaded yet.
-        if !embedder.is_ready() {
-            tracing::info!("Downloading embedding model: {}", embedder.model_id());
-            match embedder.load() {
-                Ok(()) => {
-                    tracing::info!("Model downloaded and ready");
+        if !*embeddings_unavailable && let Some(embedder) = self.embedder.as_deref_mut() {
+            let texts: Vec<String> = pending.iter().map(|c| c.text.clone()).collect();
+            let titles: Vec<Option<String>> = pending
+                .iter()
+                .map(|c| {
+                    if c.heading_path.is_empty() {
+                        c.source_file
+                            .rsplit('/')
+                            .next()
+                            .and_then(|f| f.rsplit('.').next())
+                            .map(String::from)
+                    } else {
+                        Some(c.heading_path.join(" > "))
+                    }
+                })
+                .collect();
+
+            match embedder
+                .embed_batch_in_batches(&texts, &titles, TaskType::RetrievalDocument, texts.len())
+                .await
+            {
+                Ok(vectors) => {
+                    if vector_writer.is_none() {
+                        // Derive dim from the actual output, not the
+                        // configured embedding_dim: truncate() only
+                        // shrinks embeddings, never pads them, so a
+                        // configured dim larger than a model's native
+                        // output would otherwise write a header that
+                        // disagrees with the real per-vector byte width
+                        // and corrupt the file.
+                        let dim = vectors.first().map(|v| v.len() as u32).ok_or_else(|| {
+                            SearchError::Other(
+                                "embedding endpoint returned no vectors for a non-empty batch"
+                                    .to_string(),
+                            )
+                        })?;
+                        *vector_writer = Some(self.index.begin_vector_write(dim)?);
+                    }
+                    vector_writer.as_mut().unwrap().write_batch(&vectors)?;
                 }
-                Err(e) => {
+                Err(e) if vector_writer.is_none() => {
                     tracing::warn!(
-                        "Failed to load embedding model '{}': {}. \
+                        "Embedding endpoint unavailable for model '{}': {e}. \
                          Indexing without dense embeddings (BM25 keyword search still works).",
                         embedder.model_id(),
-                        e
                     );
-                    return Ok(false);
+                    *embeddings_unavailable = true;
+                }
+                Err(e) => {
+                    return Err(SearchError::Other(format!("Embedding failed: {e}")));
                 }
             }
         }
 
-        // Derive titles from heading paths.
-        let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
-        let titles: Vec<Option<String>> = chunks
-            .iter()
-            .map(|c| {
-                if c.heading_path.is_empty() {
-                    c.source_file
-                        .rsplit('/')
-                        .next()
-                        .and_then(|f| f.rsplit('.').next())
-                        .map(String::from)
-                } else {
-                    Some(c.heading_path.join(" > "))
-                }
-            })
-            .collect();
-
-        // Create progress bar for embedding (only on TTY).
-        let pb = if std::io::stdout().is_terminal() {
-            let bar = ProgressBar::new(num_chunks as u64);
-            bar.set_style(
-                ProgressStyle::default_bar()
-                    .template("{spinner:.green} [{elapsed}] {bar:40} {percent}% ({pos}/{len})")
-                    .unwrap()
-                    .progress_chars("##-"),
-            );
-            bar.set_message("Generating embeddings");
-            Some(bar)
-        } else {
-            None
-        };
-
-        // Process in batches of 128 for progress updates.
-        const BATCH_SIZE: usize = 128;
-        let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(num_chunks);
-
-        for (i, chunk) in texts.chunks(BATCH_SIZE).enumerate() {
-            let start = i * BATCH_SIZE;
-            let end = (start + chunk.len()).min(num_chunks);
-            let batch_texts = &texts[start..end];
-            let batch_titles = &titles[start..end];
-
-            let vectors = embedder
-                .embed_batch_in_batches(
-                    batch_texts,
-                    batch_titles,
-                    TaskType::RetrievalDocument,
-                    batch_texts.len(),
-                )
-                .await
-                .map_err(|e| SearchError::Other(format!("Embedding failed: {e}")))?;
-
-            all_vectors.extend(vectors);
-
-            if let Some(ref bar) = pb {
-                bar.set_position(end as u64);
-            } else {
-                tracing::info!("Embedded {}/{} chunks", end, num_chunks);
-            }
-        }
-
-        if let Some(bar) = pb {
-            bar.finish_with_message("Embeddings complete");
-        }
-
-        self.index.write_vectors(&all_vectors)?;
-
-        Ok(true)
+        pending.clear();
+        Ok(())
     }
 }
 
@@ -401,8 +455,8 @@ pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSumma
         &config.search,
     ));
 
-    let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
-    let mut builder = IndexBuilder::new(&mut index, &chunker, Some(&mut embedder));
+    let mut embedder = EmbeddingConfig::from_search_config(&config.search).map(Embedder::new);
+    let mut builder = IndexBuilder::new(&mut index, &chunker, embedder.as_mut());
     builder.build(base_path, config).await
 }
 
@@ -436,6 +490,11 @@ mod tests {
     }
 
     /// Helper: run build_index in a test environment.
+    ///
+    /// Passes `embedder: None` so these tests never touch the real dense
+    /// embedding backend (no network, no multi-GB model load) — they only
+    /// exercise chunking/manifest/staleness behavior, none of which depends
+    /// on `has_embeddings` being true.
     async fn run_build(_tmp: &TempDir, base: &Path, config: &Config) -> BuildSummary {
         let index_dir = config.search.resolve_index_dir(base);
         let chunk_config = ChunkConfigSnapshot {
@@ -454,8 +513,7 @@ mod tests {
         .unwrap();
 
         let chunker = test_chunker();
-        let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
-        let mut builder = IndexBuilder::new(&mut index, &chunker, Some(&mut embedder));
+        let mut builder = IndexBuilder::new(&mut index, &chunker, None);
 
         builder.build(base, config).await.unwrap()
     }
@@ -798,5 +856,80 @@ mod tests {
                 entry.source_file,
             );
         }
+    }
+
+    /// Files are processed (and their chunks/vectors positioned) in
+    /// relative-path-STRING sorted order, not filesystem walk order.
+    ///
+    /// Regression test for the streaming rewrite of `IndexBuilder::build`,
+    /// which now sorts files up front instead of buffering every chunk to
+    /// sort them afterward. Uses names chosen so string order and
+    /// `PathBuf`'s component-wise order would disagree ("a-note.md" vs
+    /// "a/note.md") to guard against a sort-key regression (see TASK notes
+    /// in the streaming refactor plan).
+    #[tokio::test]
+    async fn test_build_processes_files_in_sorted_relative_path_order() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("vault");
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::create_dir_all(base.join("b")).unwrap();
+
+        let long_enough = |label: &str| {
+            format!(
+                "# {label}\n\nThis note has enough content to produce at least one chunk from the chunker pipeline for the streaming order regression test."
+            )
+        };
+
+        fs::write(base.join("a-note.md"), long_enough("a-note")).unwrap();
+        fs::write(base.join("a").join("note.md"), long_enough("a/note")).unwrap();
+        fs::write(base.join("b").join("note.md"), long_enough("b/note")).unwrap();
+        fs::write(base.join("z.md"), long_enough("z")).unwrap();
+
+        let config = test_config();
+        let summary = run_build(&tmp, &base, &config).await;
+        assert!(
+            summary.chunks_produced >= 4,
+            "Expected at least one chunk per file"
+        );
+
+        let index_dir = config.search.resolve_index_dir(&base);
+        let chunk_config = ChunkConfigSnapshot {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+        };
+        let index = SearchIndex::open_or_create(
+            &index_dir,
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            chunk_config,
+        )
+        .unwrap();
+
+        let manifest = index.manifest();
+        let source_files: Vec<&str> = manifest
+            .chunks
+            .iter()
+            .map(|c| c.source_file.as_str())
+            .collect();
+
+        let mut sorted = source_files.clone();
+        sorted.sort();
+        assert_eq!(
+            source_files, sorted,
+            "manifest.chunks must be in ascending source_file string order"
+        );
+
+        // Sanity check: string order must put "a-note.md" before
+        // "a/note.md" ('-' = 0x2D < '/' = 0x2F). Confirms this test
+        // actually exercises the String-vs-PathBuf ordering distinction
+        // rather than trivially passing on already-sorted input.
+        let a_note_pos = source_files.iter().position(|s| *s == "a-note.md").unwrap();
+        let a_slash_note_pos = source_files.iter().position(|s| *s == "a/note.md").unwrap();
+        assert!(
+            a_note_pos < a_slash_note_pos,
+            "'a-note.md' must sort before 'a/note.md' under string order"
+        );
     }
 }

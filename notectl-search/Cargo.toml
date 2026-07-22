@@ -22,16 +22,9 @@ serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-# Dense embedding deps (always included)
-candle-core.workspace = true
-fastembed.workspace = true
+# Dense embedding: HTTP client to an OpenAI-compatible /v1/embeddings endpoint
+reqwest.workspace = true
 indicatif.workspace = true
-
-[features]
-# Integration tests that download and run the actual model.
-# Requires HF_TOKEN with accepted license for google/embeddinggemma-300m.
-# Not enabled by default — these tests are slow and require network access.
-integration = []
 
 [dev-dependencies]
 tempfile.workspace = true

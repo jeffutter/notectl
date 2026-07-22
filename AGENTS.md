@@ -147,8 +147,9 @@ The `[search]` section in `.notectl.toml` controls indexing and search behavior:
 
 ```toml
 [search]
-model_id = "Qwen/Qwen3-Embedding-0.6B"      # Embedding model (see README for supported models)
-embedding_dim = 1024                         # Embedding dimension (matryoshka truncation)
+model_id = "qwen3-embedding:0.6b"            # Model name sent to the embedding API
+embedding_api_base = "https://your-server/v1" # OpenAI-compatible endpoint; unset = BM25-only
+embedding_dim = 4096                         # Embedding dimension ceiling (matryoshka truncation)
 max_seq_tokens = 512                         # Max sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Min tokens per chunk before merging forward
@@ -157,8 +158,12 @@ rrf_bm25_weight = 1.0                        # BM25 weight in RRF fusion
 rrf_cosine_weight = 1.0                      # Cosine weight in RRF fusion
 max_results = 50                             # Max results per query
 merge_threshold = 30                         # Merge tiny sections below this token count
-cache_dir = ".notectl/search"                # Index/model cache directory
+cache_dir = ".notectl/search"                # Index cache directory
 ```
+
+No model runs in-process — dense search calls out to whatever OpenAI-compatible
+`/v1/embeddings` server `embedding_api_base` points at. If unset or unreachable,
+search degrades to BM25 keyword-only automatically.
 
 All `[search]` keys can be overridden via `NOTECTL_SEARCH_<KEY>` environment variables (e.g., `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_RRF_K`). See README.md for the full table.
 
@@ -282,7 +287,7 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 - **`notectl-files`**: File tree listing and content reading
 - **`notectl-daily-notes`**: Daily note lookup by date pattern
 - **`notectl-outline`**: Heading hierarchy extraction
-- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, dense embeddings via fastembed/ONNX, RRF fusion, persistent index storage). Feature-gated behind `search`.
+- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, dense embeddings via an OpenAI-compatible HTTP endpoint, RRF fusion, persistent index storage). Feature-gated behind `search`.
 
 ### Task Extraction Pipeline
 

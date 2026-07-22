@@ -1,13 +1,15 @@
-//! Harness to generate reference embeddings for integration tests.
+//! Harness to sanity-check connectivity to the configured embedding endpoint.
 //!
-//! Produces embeddings from the configured model via fastembed. Run with:
+//! Produces embeddings via whatever OpenAI-compatible server is configured
+//! (see `SearchConfig::embedding_api_base`/`embedding_api_key`, settable via
+//! `~/.config/notectl/config.toml` or `NOTECTL_SEARCH_EMBEDDING_API_BASE`/
+//! `NOTECTL_SEARCH_EMBEDDING_API_KEY`). Run with:
 //!
 //! ```bash
-//! cargo run --example print_embedding
+//! cargo run --example print_embedding -p notectl-search
 //! ```
-//!
-//! The model downloads automatically on first run.
 
+use notectl_core::config::Config;
 use notectl_search::embeddings::{Embedder, EmbeddingConfig, TaskType};
 
 fn format_rust_array(values: &[f32], name: &str) -> String {
@@ -23,9 +25,17 @@ fn format_rust_array(values: &[f32], name: &str) -> String {
 
 #[tokio::main]
 async fn main() {
-    let config = EmbeddingConfig::default();
+    let notectl_config = Config::load_from_base_path(&std::env::current_dir().unwrap_or_default());
+    let Some(config) = EmbeddingConfig::from_search_config(&notectl_config.search) else {
+        eprintln!(
+            "No embedding_api_base configured. Set it in ~/.config/notectl/config.toml \
+             (or NOTECTL_SEARCH_EMBEDDING_API_BASE) and try again."
+        );
+        std::process::exit(1);
+    };
     println!("Model: {}", config.model_id);
     println!("Dimension: {}", config.embedding_dim);
+    println!("API base: {}", config.api_base.as_deref().unwrap_or(""));
 
     let mut embedder = Embedder::new(config);
 

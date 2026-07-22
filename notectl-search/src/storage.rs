@@ -579,6 +579,38 @@ impl SearchIndex {
         Ok(vectors)
     }
 
+    /// Begin a streaming write of `vectors.bin`.
+    ///
+    /// Unlike [`Self::write_vectors`], which requires the full vector array
+    /// up front, this lets callers append batches incrementally (bounding
+    /// peak memory to one batch at a time) while still writing the file
+    /// atomically: nothing is renamed into place until
+    /// [`VectorWriter::finish`] is called.
+    ///
+    /// `dim` is the configured embedding dimension — known before any
+    /// vectors exist, so (unlike `write_vectors`) it doesn't need to be
+    /// inferred from the data.
+    pub fn begin_vector_write(&self, dim: u32) -> Result<VectorWriter, SearchError> {
+        let dest = self.base_dir.join("vectors.bin");
+        fs::create_dir_all(&self.base_dir)
+            .map_err(|e| SearchError::Storage(format!("Failed to create index directory: {e}")))?;
+
+        let mut tmp = NamedTempFile::new_in(&self.base_dir).map_err(|e| {
+            SearchError::Storage(format!("Failed to create temp file for vectors: {e}"))
+        })?;
+
+        // Placeholder header — count is unknown until `finish` patches it in.
+        tmp.write_all(&0u64.to_le_bytes())
+            .and_then(|_| tmp.write_all(&dim.to_le_bytes()))
+            .map_err(|e| SearchError::Storage(format!("Failed to write vectors header: {e}")))?;
+
+        Ok(VectorWriter {
+            tmp,
+            dest,
+            count: 0,
+        })
+    }
+
     /// Clear all chunks from disk without removing the manifest.
     pub fn clear_chunks(&self) -> Result<(), SearchError> {
         let chunks_dir = self.base_dir.join("chunks");
@@ -633,6 +665,69 @@ impl SearchIndex {
     pub fn reset(&self) -> Result<(), SearchError> {
         fs::remove_dir_all(&self.base_dir)
             .map_err(|e| SearchError::Storage(format!("Failed to reset index: {e}")))?;
+        Ok(())
+    }
+}
+
+/// Streaming writer for `vectors.bin`, obtained via [`SearchIndex::begin_vector_write`].
+///
+/// Wire format (matches [`SearchIndex::write_vectors`]):
+/// `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`.
+/// The count is written as a placeholder up front and patched in by
+/// [`Self::finish`], which is also where the file is atomically renamed into
+/// place — a build that fails before calling `finish` leaves the destination
+/// file untouched, same as today's all-at-once `write_vectors`.
+pub struct VectorWriter {
+    tmp: NamedTempFile,
+    dest: PathBuf,
+    count: u64,
+}
+
+impl VectorWriter {
+    /// Append one batch of vectors, bounding peak memory to this batch
+    /// rather than the whole vault.
+    pub fn write_batch(&mut self, vectors: &[Vec<f32>]) -> Result<(), SearchError> {
+        if vectors.is_empty() {
+            return Ok(());
+        }
+
+        // One buffer, one write_all per batch — not one syscall per float.
+        let dim = vectors[0].len();
+        let mut buf: Vec<u8> = Vec::with_capacity(vectors.len() * dim * 4);
+        for vec in vectors {
+            for v in vec {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        self.tmp
+            .write_all(&buf)
+            .map_err(|e| SearchError::Storage(format!("Failed to write vector batch: {e}")))?;
+        self.count += vectors.len() as u64;
+        Ok(())
+    }
+
+    /// Patch in the final count and atomically persist the file.
+    pub fn finish(mut self) -> Result<(), SearchError> {
+        use std::io::{Seek, SeekFrom};
+
+        self.tmp
+            .flush()
+            .map_err(|e| SearchError::Storage(format!("Failed to flush vectors: {e}")))?;
+        self.tmp
+            .as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .map_err(|e| SearchError::Storage(format!("Failed to seek vectors header: {e}")))?;
+        self.tmp
+            .write_all(&self.count.to_le_bytes())
+            .map_err(|e| SearchError::Storage(format!("Failed to patch vectors count: {e}")))?;
+        self.tmp
+            .flush()
+            .map_err(|e| SearchError::Storage(format!("Failed to flush vectors: {e}")))?;
+
+        self.tmp.persist(&self.dest).map_err(|e| {
+            SearchError::Storage(format!("Failed to persist vectors to {:?}: {e}", self.dest))
+        })?;
         Ok(())
     }
 }
@@ -1158,8 +1253,8 @@ mod tests {
     /// Helper: create an empty manifest matching the default test config.
     fn empty_manifest() -> SearchManifest {
         SearchManifest::new_empty(
-            "Qwen/Qwen3-Embedding-0.6B".to_string(),
-            1024, // matches default_embedding_dim()
+            String::new(), // matches default_model_id()
+            4096,          // matches default_embedding_dim()
             ChunkConfigSnapshot {
                 max_tokens: 512,
                 overlap_tokens: 64,
@@ -1550,6 +1645,64 @@ mod tests {
 
         // No vectors.bin exists — should be a no-op.
         index.remove_vectors().unwrap();
+    }
+
+    #[test]
+    fn test_vector_writer_streams_batches_matching_write_vectors() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        let dim = 4u32;
+        let batch1 = vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]];
+        let batch2 = vec![vec![9.0, 10.0, 11.0, 12.0]];
+
+        let mut writer = index.begin_vector_write(dim).unwrap();
+        writer.write_batch(&batch1).unwrap();
+        writer.write_batch(&batch2).unwrap();
+        writer.finish().unwrap();
+
+        let read_back = index.read_vectors().unwrap();
+        let mut expected = batch1;
+        expected.extend(batch2);
+        assert_eq!(read_back, expected);
+    }
+
+    #[test]
+    fn test_vector_writer_empty_batches_produce_zero_count() {
+        let tmp = TempDir::new().unwrap();
+        let config = test_config();
+
+        let index = SearchIndex::open_or_create(
+            tmp.path(),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            ChunkConfigSnapshot {
+                max_tokens: config.search.max_seq_tokens,
+                overlap_tokens: config.search.chunk_overlap_tokens,
+                min_chunk_size: config.search.min_chunk_tokens,
+                merge_threshold: config.search.merge_threshold,
+            },
+        )
+        .unwrap();
+
+        let writer = index.begin_vector_write(4).unwrap();
+        writer.finish().unwrap();
+
+        let read_back = index.read_vectors().unwrap();
+        assert!(read_back.is_empty());
     }
 
     // ---- Reindex cleanup preserves models/ ----

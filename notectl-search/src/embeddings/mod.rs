@@ -1,19 +1,15 @@
-//! Dense embedding support via [fastembed](https://github.com/Anush008/fastembed-rs).
+//! Dense embedding support via an OpenAI-compatible `/v1/embeddings` HTTP endpoint.
 //!
-//! Supports two backends:\n\
-//! - **ONNX Runtime** (via [`TextEmbedding`]): EmbeddingGemma-300M, BGE, Snowflake Arctic, etc.
-//! - **Candle** (via [`Qwen3TextEmbedding`]): Qwen3-Embedding (0.6B, 4B, 8B)
+//! No model runs in-process — `notectl` never loads or downloads anything
+//! itself. Callers point `embedding_api_base` at any server that speaks the
+//! OpenAI embeddings API (llama.cpp/llama-swap, vLLM, Ollama, OpenAI itself,
+//! etc.) and this module just POSTs to it.
 //!
-//! Default model: **Qwen3-Embedding-0.6B** (candle backend).
-//!
-//! Handles:\n\
-//! - Automatic model download and caching on first use\n\
-//! - Query/document prefix injection (`"query: "`, `"passage: "`)\n\
-//! - L2 normalization and Matryoshka dimension truncation\n\
-//! - Graceful degradation when model is unavailable
+//! Handles:
+//! - Query/document prefix injection (`"query: "`, `"passage: "`)
+//! - L2 normalization and Matryoshka dimension truncation
+//! - Graceful degradation when the endpoint is unavailable or unconfigured
 
-use candle_core::{DType, Device};
-use fastembed::{EmbeddingModel, Qwen3TextEmbedding, TextEmbedding, TextInitOptions};
 use notectl_core::config::SearchConfig;
 
 /// Task type for prefix injection.
@@ -28,40 +24,54 @@ pub enum TaskType {
 /// Configuration for embedding generation.
 #[derive(Debug, Clone)]
 pub struct EmbeddingConfig {
-    /// Model identifier (e.g., "Qwen/Qwen3-Embedding-0.6B").
+    /// Model identifier sent as `"model"` in the request body (e.g. "qwen3-embedding:0.6b").
     pub model_id: String,
-    /// Output dimension (for Matryoshka truncation).
+    /// Output dimension ceiling (for Matryoshka truncation). Values at or
+    /// above a model's native output length are a no-op — truncate() only
+    /// shrinks, never pads.
     pub embedding_dim: usize,
-    /// Maximum sequence length in tokens.
-    pub max_seq_len: usize,
+    /// Base URL for an OpenAI-compatible embeddings endpoint (e.g.
+    /// "https://host/v1"). `/embeddings` is appended to build the request
+    /// URL. `None` means dense embeddings are unavailable.
+    pub api_base: Option<String>,
+    /// Optional bearer token for the embedding API.
+    pub api_key: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            model_id: "Qwen/Qwen3-Embedding-0.6B".to_string(),
-            embedding_dim: 1024,
-            max_seq_len: 512,
+            model_id: String::new(),
+            embedding_dim: 4096,
+            api_base: None,
+            api_key: None,
         }
     }
 }
 
 impl EmbeddingConfig {
-    pub fn from_search_config(sc: &SearchConfig) -> Self {
-        Self {
+    /// Build from a [`SearchConfig`]. Returns `None` when no embedding API
+    /// base URL is configured — dense embeddings are simply unavailable,
+    /// not an error. Callers pass `None` on to `IndexBuilder`/search's
+    /// existing `Option<&mut Embedder>` handling, which already treats "no
+    /// embedder" as "BM25 keyword search only."
+    pub fn from_search_config(sc: &SearchConfig) -> Option<Self> {
+        let api_base = sc.embedding_api_base.clone()?;
+        Some(Self {
             model_id: sc.model_id.clone(),
             embedding_dim: sc.embedding_dim as usize,
-            max_seq_len: sc.max_seq_tokens,
-        }
+            api_base: Some(api_base),
+            api_key: sc.embedding_api_key.clone(),
+        })
     }
 }
 
 /// Error type for embedding operations.
 #[derive(Debug)]
 pub enum EmbedError {
-    /// Failed to initialize or load the model.
+    /// The embedder isn't configured with an API base URL.
     Init(String),
-    /// Failed to generate embeddings.
+    /// The HTTP request failed, or the server returned an error/unparseable response.
     Embed(String),
 }
 
@@ -76,43 +86,24 @@ impl std::fmt::Display for EmbedError {
 
 impl std::error::Error for EmbedError {}
 
-/// Backend used by the embedder.
-enum Backend {
-    /// ONNX Runtime backend (TextEmbedding)
-    Onnx(TextEmbedding),
-    /// Candle backend (Qwen3TextEmbedding)
-    Candle(Qwen3TextEmbedding),
+/// Request body for `POST {api_base}/embeddings`.
+#[derive(serde::Serialize)]
+struct EmbeddingsRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
 }
 
-impl Backend {
-    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
-        match self {
-            Backend::Onnx(model) => model
-                .embed(texts, None)
-                .map_err(|e| EmbedError::Embed(format!("Failed to generate embeddings: {e}"))),
-            Backend::Candle(model) => model
-                .embed(&texts.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-                .map_err(|e| EmbedError::Embed(format!("Failed to generate embeddings: {e}"))),
-        }
-    }
+/// One entry in the OpenAI-compatible embeddings response.
+#[derive(serde::Deserialize)]
+struct EmbeddingObject {
+    embedding: Vec<f32>,
+    index: usize,
 }
 
-/// Check if a model_id refers to a Qwen3 model (candle backend).
-fn is_qwen3_model(model_id: &str) -> bool {
-    model_id.starts_with("Qwen/Qwen3-Embedding") || model_id.starts_with("Qwen/qwen3-embedding")
-}
-
-/// Map a model_id string to a fastembed `EmbeddingModel` variant (ONNX backend).
-fn resolve_onnx_model(model_id: &str) -> EmbeddingModel {
-    match model_id {
-        "google/embeddinggemma-300m" | "google/embedding-gemma-300m" => {
-            EmbeddingModel::EmbeddingGemma300M
-        }
-        "BAAI/bge-small-en-v1.5" => EmbeddingModel::BGESmallENV15,
-        "BAAI/bge-base-en-v1.5" => EmbeddingModel::BGEBaseENV15,
-        "BAAI/bge-large-en-v1.5" => EmbeddingModel::BGELargeENV15,
-        _ => EmbeddingModel::EmbeddingGemma300M, // Default fallback for ONNX
-    }
+/// Response body from `POST {api_base}/embeddings`.
+#[derive(serde::Deserialize)]
+struct EmbeddingsResponse {
+    data: Vec<EmbeddingObject>,
 }
 
 /// Inject task-specific prefix into text.
@@ -148,24 +139,26 @@ fn truncate(embedding: Vec<f32>, dim: usize) -> Vec<f32> {
     }
 }
 
-/// Dense embedder backed by fastembed (ONNX or Candle backends).
+/// Dense embedder backed by an OpenAI-compatible HTTP endpoint.
 pub struct Embedder {
-    model: Option<Backend>,
+    client: reqwest::Client,
     config: EmbeddingConfig,
 }
 
 impl Embedder {
-    /// Create a new embedder. The model is loaded lazily on first use.
+    /// Create a new embedder for the given config.
+    ///
+    /// Generous timeout: servers like llama-swap commonly unload idle models
+    /// to free VRAM, so the first request after a while can trigger a cold
+    /// model load (which can take well over a minute) before any actual
+    /// embedding work starts. Once warm, real requests are much faster than
+    /// this ceiling.
     pub fn new(config: EmbeddingConfig) -> Self {
-        Self {
-            model: None,
-            config,
-        }
-    }
-
-    /// Check if the model is loaded and ready for inference.
-    pub fn is_ready(&self) -> bool {
-        self.model.is_some()
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_default();
+        Self { client, config }
     }
 
     /// Return the configured model ID.
@@ -173,66 +166,43 @@ impl Embedder {
         &self.config.model_id
     }
 
-    /// Attempt to load the embedding model.
-    ///
-    /// Returns `Ok(())` if the model was already loaded or loaded successfully.
-    /// Returns `Err` with a detailed reason if loading failed (network error,
-    /// missing license, invalid model ID, etc.).
-    pub fn load(&mut self) -> Result<(), EmbedError> {
-        self.ensure_loaded()
-    }
+    /// POST a batch of already-prefixed texts and return their embeddings,
+    /// in input order.
+    async fn embed_raw(&self, inputs: &[String]) -> Result<Vec<Vec<f32>>, EmbedError> {
+        let api_base =
+            self.config.api_base.as_deref().ok_or_else(|| {
+                EmbedError::Init("no embedding API base URL configured".to_string())
+            })?;
+        let url = format!("{}/embeddings", api_base.trim_end_matches('/'));
 
-    /// Ensure the model is loaded. Downloads on first call if needed.
-    fn ensure_loaded(&mut self) -> Result<(), EmbedError> {
-        if self.model.is_some() {
-            return Ok(());
+        let mut request = self.client.post(&url).json(&EmbeddingsRequest {
+            model: &self.config.model_id,
+            input: inputs,
+        });
+        if let Some(key) = &self.config.api_key {
+            request = request.bearer_auth(key);
         }
 
-        if is_qwen3_model(&self.config.model_id) {
-            tracing::info!(
-                "Loading Qwen3 embedding model: {} (dim={}, seq_len={})",
-                self.config.model_id,
-                self.config.embedding_dim,
-                self.config.max_seq_len
-            );
+        let response = request
+            .send()
+            .await
+            .map_err(|e| EmbedError::Embed(format!("Failed to reach {url}: {e}")))?;
 
-            let device = Device::Cpu;
-            let model = Qwen3TextEmbedding::from_hf(
-                &self.config.model_id,
-                &device,
-                DType::F32,
-                self.config.max_seq_len,
-            )
-            .map_err(|e| {
-                EmbedError::Init(format!(
-                    "Failed to load Qwen3 model '{}': {}",
-                    self.config.model_id, e
-                ))
-            })?;
-
-            self.model = Some(Backend::Candle(model));
-        } else {
-            let embedding_model = resolve_onnx_model(&self.config.model_id);
-
-            tracing::info!(
-                "Loading ONNX embedding model: {:?} (dim={})",
-                embedding_model,
-                self.config.embedding_dim
-            );
-
-            let options = TextInitOptions::new(embedding_model);
-
-            let model = TextEmbedding::try_new(options).map_err(|e| {
-                EmbedError::Init(format!(
-                    "Failed to load model '{}': {}",
-                    self.config.model_id, e
-                ))
-            })?;
-
-            self.model = Some(Backend::Onnx(model));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(EmbedError::Embed(format!(
+                "{url} returned {status}: {body}"
+            )));
         }
 
-        Ok(())
+        let mut parsed: EmbeddingsResponse = response
+            .json()
+            .await
+            .map_err(|e| EmbedError::Embed(format!("Failed to parse response from {url}: {e}")))?;
+
+        parsed.data.sort_by_key(|d| d.index);
+        Ok(parsed.data.into_iter().map(|d| d.embedding).collect())
     }
 
     /// Generate an embedding for a single text.
@@ -242,15 +212,10 @@ impl Embedder {
         title: Option<&str>,
         task: TaskType,
     ) -> Result<Vec<f32>, EmbedError> {
-        self.ensure_loaded()?;
-        let model = self.model.as_mut().unwrap();
-
         let input = apply_prefix(text, title, task);
-        let texts = vec![input];
+        let embeddings = self.embed_raw(&[input]).await?;
 
-        let embeddings = model.embed(&texts)?;
-
-        let embedding = embeddings.first().cloned().unwrap_or_default();
+        let embedding = embeddings.into_iter().next().unwrap_or_default();
         let truncated = truncate(embedding, self.config.embedding_dim);
         Ok(normalize(&truncated))
     }
@@ -267,10 +232,9 @@ impl Embedder {
             .await
     }
 
-    /// Generate embeddings in smaller batches, calling `on_progress` after each batch.
-    ///
-    /// This allows callers to show progress bars or status updates during long runs.
-    /// `batch_size` controls how many texts are processed per inner call to the model.
+    /// Generate embeddings in smaller batches — `batch_size` controls how
+    /// many texts go into each HTTP request, letting callers keep request
+    /// payloads (and thus memory) bounded regardless of total input size.
     pub async fn embed_batch_in_batches(
         &mut self,
         texts: &[String],
@@ -278,9 +242,6 @@ impl Embedder {
         task: TaskType,
         batch_size: usize,
     ) -> Result<Vec<Vec<f32>>, EmbedError> {
-        self.ensure_loaded()?;
-        let model = self.model.as_mut().unwrap();
-
         let mut result = Vec::with_capacity(texts.len());
         let effective_batch = batch_size.max(1);
 
@@ -294,7 +255,7 @@ impl Embedder {
                 .map(|(text, title)| apply_prefix(text, title.as_deref(), task))
                 .collect();
 
-            let embeddings = model.embed(&inputs)?;
+            let embeddings = self.embed_raw(&inputs).await?;
 
             for emb in embeddings {
                 let truncated = truncate(emb, self.config.embedding_dim);
@@ -310,10 +271,10 @@ impl std::fmt::Display for Embedder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Embedder(model={}, dim={}, ready={})",
+            "Embedder(model={}, dim={}, api_base={})",
             self.config.model_id,
             self.config.embedding_dim,
-            self.is_ready()
+            self.config.api_base.as_deref().unwrap_or("<none>"),
         )
     }
 }
@@ -349,9 +310,10 @@ mod tests {
     #[test]
     fn test_default_embedding_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.model_id, "Qwen/Qwen3-Embedding-0.6B");
-        assert_eq!(config.embedding_dim, 1024);
-        assert_eq!(config.max_seq_len, 512);
+        assert_eq!(config.model_id, "");
+        assert_eq!(config.embedding_dim, 4096);
+        assert!(config.api_base.is_none());
+        assert!(config.api_key.is_none());
     }
 
     #[test]
@@ -383,57 +345,47 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_onnx_model_defaults_to_gemma() {
-        assert!(matches!(
-            resolve_onnx_model("unknown/model"),
-            EmbeddingModel::EmbeddingGemma300M
-        ));
-    }
-
-    #[test]
-    fn test_resolve_onnx_model_gemma_variants() {
-        assert!(matches!(
-            resolve_onnx_model("google/embeddinggemma-300m"),
-            EmbeddingModel::EmbeddingGemma300M
-        ));
-        assert!(matches!(
-            resolve_onnx_model("google/embedding-gemma-300m"),
-            EmbeddingModel::EmbeddingGemma300M
-        ));
-    }
-
-    #[test]
-    fn test_is_qwen3_model() {
-        assert!(is_qwen3_model("Qwen/Qwen3-Embedding-0.6B"));
-        assert!(is_qwen3_model("Qwen/Qwen3-Embedding-4B"));
-        assert!(is_qwen3_model("Qwen/qwen3-embedding-0.6B"));
-        assert!(!is_qwen3_model("google/embedding-gemma-300m"));
-        assert!(!is_qwen3_model("BAAI/bge-small-en-v1.5"));
-    }
-
-    #[test]
-    fn test_embedder_creation() {
-        let embedder = Embedder::new(EmbeddingConfig::default());
-        assert!(!embedder.is_ready());
-    }
-
-    #[test]
-    fn test_embedder_display() {
+    fn test_embedder_creation_and_display() {
         let embedder = Embedder::new(EmbeddingConfig::default());
         let s = format!("{embedder}");
-        assert!(s.contains("ready=false"));
+        assert!(s.contains("api_base=<none>"));
     }
 
     #[test]
-    fn test_embedding_config_from_search_config() {
+    fn test_embedding_config_from_search_config_none_without_api_base() {
         use notectl_core::config::Config;
         let config = Config::default();
-        let emb_config = EmbeddingConfig::from_search_config(&config.search);
+        assert!(config.search.embedding_api_base.is_none());
+        assert!(EmbeddingConfig::from_search_config(&config.search).is_none());
+    }
+
+    #[test]
+    fn test_embedding_config_from_search_config_some_with_api_base() {
+        use notectl_core::config::{Config, SearchConfig};
+        let mut config = Config::default();
+        config.search = SearchConfig {
+            embedding_api_base: Some("https://example.com/v1".to_string()),
+            ..config.search
+        };
+
+        let emb_config = EmbeddingConfig::from_search_config(&config.search).unwrap();
         assert_eq!(emb_config.model_id, config.search.model_id);
         assert_eq!(
             emb_config.embedding_dim,
             config.search.embedding_dim as usize
         );
-        assert_eq!(emb_config.max_seq_len, config.search.max_seq_tokens);
+        assert_eq!(
+            emb_config.api_base.as_deref(),
+            Some("https://example.com/v1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_embed_single_without_api_base_returns_init_error() {
+        let mut embedder = Embedder::new(EmbeddingConfig::default());
+        let result = embedder
+            .embed_single("hello", None, TaskType::RetrievalQuery)
+            .await;
+        assert!(matches!(result, Err(EmbedError::Init(_))));
     }
 }

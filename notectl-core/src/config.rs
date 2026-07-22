@@ -15,7 +15,7 @@ pub fn default_cache_dir() -> String {
 }
 
 pub fn default_embedding_dim() -> u32 {
-    1024
+    4096
 }
 
 pub fn default_max_seq_tokens() -> usize {
@@ -52,13 +52,9 @@ pub fn default_merge_threshold() -> usize {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchConfig {
-    /// Model ID for dense embeddings (e.g., "google/embedding-gemma-300m")
+    /// Model ID sent as `"model"` to the embedding API (e.g. "qwen3-embedding:0.6b")
     #[serde(default = "default_model_id")]
     pub model_id: String,
-
-    /// Model revision/tag
-    #[serde(default)]
-    pub model_revision: Option<String>,
 
     /// Embedding dimension (for matryoshka truncation)
     #[serde(default = "default_embedding_dim")]
@@ -88,9 +84,16 @@ pub struct SearchConfig {
     #[serde(default = "default_rrf_cosine_weight")]
     pub rrf_cosine_weight: f64,
 
-    /// Optional dense model weights path (overrides hf-hub download)
+    /// Base URL for an OpenAI-compatible embeddings endpoint (e.g.
+    /// "https://host/v1"). `/embeddings` is appended to build the request
+    /// URL. `None` disables dense embeddings entirely — there is no
+    /// bundled/local model; BM25 keyword search still works either way.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dense_weights: Option<String>,
+    pub embedding_api_base: Option<String>,
+
+    /// Optional bearer token for the embedding API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_api_key: Option<String>,
 
     /// Optional sparse model weights path (overrides BM25 defaults)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,7 +118,7 @@ pub struct SearchConfig {
 }
 
 fn default_model_id() -> String {
-    "Qwen/Qwen3-Embedding-0.6B".to_string()
+    String::new()
 }
 
 impl SearchConfig {
@@ -143,7 +146,6 @@ impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             model_id: default_model_id(),
-            model_revision: None,
             embedding_dim: default_embedding_dim(),
             max_seq_tokens: default_max_seq_tokens(),
             chunk_overlap_tokens: default_chunk_overlap_tokens(),
@@ -151,7 +153,8 @@ impl Default for SearchConfig {
             rrf_k: default_rrf_k(),
             rrf_bm25_weight: default_rrf_bm25_weight(),
             rrf_cosine_weight: default_rrf_cosine_weight(),
-            dense_weights: None,
+            embedding_api_base: None,
+            embedding_api_key: None,
             sparse_weights: None,
             cache_dir: default_cache_dir(),
             max_results: default_max_results(),
@@ -188,7 +191,6 @@ impl Default for Config {
 #[derive(Debug, Clone, Deserialize)]
 struct PartialSearchConfig {
     model_id: Option<String>,
-    model_revision: Option<Option<String>>,
     embedding_dim: Option<u32>,
     max_seq_tokens: Option<usize>,
     chunk_overlap_tokens: Option<usize>,
@@ -196,7 +198,8 @@ struct PartialSearchConfig {
     rrf_k: Option<f64>,
     rrf_bm25_weight: Option<f64>,
     rrf_cosine_weight: Option<f64>,
-    dense_weights: Option<String>,
+    embedding_api_base: Option<String>,
+    embedding_api_key: Option<String>,
     sparse_weights: Option<String>,
     cache_dir: Option<String>,
     max_results: Option<usize>,
@@ -249,9 +252,6 @@ impl Config {
             if let Some(ref v) = s.model_id {
                 self.search.model_id = v.clone();
             }
-            if let Some(Some(ref v)) = s.model_revision {
-                self.search.model_revision = Some(v.clone());
-            }
             if let Some(v) = s.embedding_dim {
                 self.search.embedding_dim = v;
             }
@@ -273,8 +273,11 @@ impl Config {
             if let Some(v) = s.rrf_cosine_weight {
                 self.search.rrf_cosine_weight = v;
             }
-            if let Some(ref v) = s.dense_weights {
-                self.search.dense_weights = Some(v.clone());
+            if let Some(ref v) = s.embedding_api_base {
+                self.search.embedding_api_base = Some(v.clone());
+            }
+            if let Some(ref v) = s.embedding_api_key {
+                self.search.embedding_api_key = Some(v.clone());
             }
             if let Some(ref v) = s.sparse_weights {
                 self.search.sparse_weights = Some(v.clone());
@@ -365,21 +368,26 @@ impl Config {
     /// Merge search-specific configuration from environment variables.
     ///
     /// Covers every field on `SearchConfig` so that no user-set value is inert:
-    /// - Model: NOTECTL_SEARCH_MODEL_ID, NOTECTL_SEARCH_MODEL_REVISION
-    /// - Embedding: NOTECTL_SEARCH_EMBEDDING_DIM
+    /// - Model: NOTECTL_SEARCH_MODEL_ID
+    /// - Embedding endpoint: NOTECTL_SEARCH_EMBEDDING_API_BASE, NOTECTL_SEARCH_EMBEDDING_API_KEY,
+    ///   NOTECTL_SEARCH_EMBEDDING_DIM
     /// - Chunking: NOTECTL_SEARCH_MAX_SEQ_TOKENS, NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS,
     ///   NOTECTL_SEARCH_MIN_CHUNK_TOKENS, NOTECTL_SEARCH_MERGE_THRESHOLD
     /// - Fusion: NOTECTL_SEARCH_RRF_K, NOTECTL_SEARCH_RRF_BM25_WEIGHT,
     ///   NOTECTL_SEARCH_RRF_COSINE_WEIGHT
-    /// - Weights paths: NOTECTL_SEARCH_DENSE_WEIGHTS, NOTECTL_SEARCH_SPARSE_WEIGHTS
+    /// - Weights paths: NOTECTL_SEARCH_SPARSE_WEIGHTS
     /// - Output: NOTECTL_SEARCH_CACHE_DIR, NOTECTL_SEARCH_MAX_RESULTS
     fn merge_search_from_env(&mut self) {
         if let Ok(v) = std::env::var("NOTECTL_SEARCH_MODEL_ID") {
             self.search.model_id = v;
         }
 
-        if let Ok(v) = std::env::var("NOTECTL_SEARCH_MODEL_REVISION") {
-            self.search.model_revision = Some(v);
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_EMBEDDING_API_BASE") {
+            self.search.embedding_api_base = Some(v);
+        }
+
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_EMBEDDING_API_KEY") {
+            self.search.embedding_api_key = Some(v);
         }
 
         if let Ok(dim) = std::env::var("NOTECTL_SEARCH_EMBEDDING_DIM")
@@ -428,10 +436,6 @@ impl Config {
             && let Ok(val) = v.parse::<f64>()
         {
             self.search.rrf_cosine_weight = val;
-        }
-
-        if let Ok(v) = std::env::var("NOTECTL_SEARCH_DENSE_WEIGHTS") {
-            self.search.dense_weights = Some(v);
         }
 
         if let Ok(v) = std::env::var("NOTECTL_SEARCH_SPARSE_WEIGHTS") {
@@ -592,8 +596,8 @@ mod tests {
     #[test]
     fn test_search_config_default() {
         let config = Config::default();
-        assert_eq!(config.search.model_id, "Qwen/Qwen3-Embedding-0.6B");
-        assert_eq!(config.search.embedding_dim, 1024);
+        assert_eq!(config.search.model_id, "");
+        assert_eq!(config.search.embedding_dim, 4096);
         assert_eq!(config.search.max_seq_tokens, 512);
         assert_eq!(config.search.chunk_overlap_tokens, 64);
         assert_eq!(config.search.min_chunk_tokens, 32);
@@ -603,8 +607,8 @@ mod tests {
         assert_eq!(config.search.max_results, 50);
         assert_eq!(config.search.merge_threshold, 30);
         assert_eq!(config.search.cache_dir, ".notectl/search");
-        assert!(config.search.model_revision.is_none());
-        assert!(config.search.dense_weights.is_none());
+        assert!(config.search.embedding_api_base.is_none());
+        assert!(config.search.embedding_api_key.is_none());
         assert!(config.search.sparse_weights.is_none());
     }
 
@@ -662,7 +666,11 @@ cache_dir = "/tmp/search-cache"
     fn test_search_config_all_env_vars() {
         unsafe {
             std::env::set_var("NOTECTL_SEARCH_MODEL_ID", "custom/model");
-            std::env::set_var("NOTECTL_SEARCH_MODEL_REVISION", "v1.0");
+            std::env::set_var(
+                "NOTECTL_SEARCH_EMBEDDING_API_BASE",
+                "https://example.com/v1",
+            );
+            std::env::set_var("NOTECTL_SEARCH_EMBEDDING_API_KEY", "secret-key");
             std::env::set_var("NOTECTL_SEARCH_EMBEDDING_DIM", "512");
             std::env::set_var("NOTECTL_SEARCH_MAX_SEQ_TOKENS", "1024");
             std::env::set_var("NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS", "128");
@@ -671,7 +679,6 @@ cache_dir = "/tmp/search-cache"
             std::env::set_var("NOTECTL_SEARCH_RRF_K", "40.0");
             std::env::set_var("NOTECTL_SEARCH_RRF_BM25_WEIGHT", "2.5");
             std::env::set_var("NOTECTL_SEARCH_RRF_COSINE_WEIGHT", "0.5");
-            std::env::set_var("NOTECTL_SEARCH_DENSE_WEIGHTS", "/path/to/dense.bin");
             std::env::set_var("NOTECTL_SEARCH_SPARSE_WEIGHTS", "/path/to/sparse.bin");
             std::env::set_var("NOTECTL_SEARCH_CACHE_DIR", "/custom/cache");
             std::env::set_var("NOTECTL_SEARCH_MAX_RESULTS", "100");
@@ -681,7 +688,14 @@ cache_dir = "/tmp/search-cache"
         config.merge_search_from_env();
 
         assert_eq!(config.search.model_id, "custom/model");
-        assert_eq!(config.search.model_revision.as_deref(), Some("v1.0"));
+        assert_eq!(
+            config.search.embedding_api_base.as_deref(),
+            Some("https://example.com/v1")
+        );
+        assert_eq!(
+            config.search.embedding_api_key.as_deref(),
+            Some("secret-key")
+        );
         assert_eq!(config.search.embedding_dim, 512);
         assert_eq!(config.search.max_seq_tokens, 1024);
         assert_eq!(config.search.chunk_overlap_tokens, 128);
@@ -690,10 +704,6 @@ cache_dir = "/tmp/search-cache"
         assert!((config.search.rrf_k - 40.0).abs() < f64::EPSILON);
         assert!((config.search.rrf_bm25_weight - 2.5).abs() < f64::EPSILON);
         assert!((config.search.rrf_cosine_weight - 0.5).abs() < f64::EPSILON);
-        assert_eq!(
-            config.search.dense_weights.as_deref(),
-            Some("/path/to/dense.bin")
-        );
         assert_eq!(
             config.search.sparse_weights.as_deref(),
             Some("/path/to/sparse.bin")
@@ -704,7 +714,8 @@ cache_dir = "/tmp/search-cache"
         // Clean up all env vars
         for var in [
             "NOTECTL_SEARCH_MODEL_ID",
-            "NOTECTL_SEARCH_MODEL_REVISION",
+            "NOTECTL_SEARCH_EMBEDDING_API_BASE",
+            "NOTECTL_SEARCH_EMBEDDING_API_KEY",
             "NOTECTL_SEARCH_EMBEDDING_DIM",
             "NOTECTL_SEARCH_MAX_SEQ_TOKENS",
             "NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS",
@@ -713,7 +724,6 @@ cache_dir = "/tmp/search-cache"
             "NOTECTL_SEARCH_RRF_K",
             "NOTECTL_SEARCH_RRF_BM25_WEIGHT",
             "NOTECTL_SEARCH_RRF_COSINE_WEIGHT",
-            "NOTECTL_SEARCH_DENSE_WEIGHTS",
             "NOTECTL_SEARCH_SPARSE_WEIGHTS",
             "NOTECTL_SEARCH_CACHE_DIR",
             "NOTECTL_SEARCH_MAX_RESULTS",

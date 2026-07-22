@@ -270,22 +270,19 @@ pub async fn search(
     };
 
     // Embed query + read vectors when the mode needs dense scoring.
-    let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense() {
-        let mut embedder = Embedder::new(EmbeddingConfig::from_search_config(&config.search));
+    let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense()
+        && let Some(emb_config) = EmbeddingConfig::from_search_config(&config.search)
+    {
+        let mut embedder = Embedder::new(emb_config);
 
-        if !embedder.is_ready() {
-            tracing::warn!("Model not loaded yet. Degrading to sparse-only search.");
-            None
-        } else {
-            match embedder
-                .embed_single(query, None, TaskType::RetrievalQuery)
-                .await
-            {
-                Ok(qvec) => Some((qvec, raw_vectors)),
-                Err(e) => {
-                    tracing::error!("Query embedding failed: {e}. Degrading to sparse.");
-                    None
-                }
+        match embedder
+            .embed_single(query, None, TaskType::RetrievalQuery)
+            .await
+        {
+            Ok(qvec) => Some((qvec, raw_vectors)),
+            Err(e) => {
+                tracing::warn!("Query embedding failed: {e}. Degrading to sparse.");
+                None
             }
         }
     } else {
@@ -483,6 +480,33 @@ mod tests {
         }
     }
 
+    /// Build the index without a real embedder.
+    ///
+    /// These tests only exercise sparse search and dense-degradation behavior —
+    /// none of them need real dense vectors — so skip the real embedding
+    /// backend entirely (no network, no multi-GB model load, deterministic
+    /// regardless of what's cached locally).
+    async fn build_index_no_embed(base: &Path, config: &Config) -> crate::index::BuildSummary {
+        let chunk_config = ChunkConfigSnapshot {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+        };
+        let mut index = SearchIndex::open_or_create(
+            &config.search.resolve_index_dir(base),
+            config.search.model_id.clone(),
+            config.search.embedding_dim,
+            chunk_config,
+        )
+        .unwrap();
+        let chunker = crate::chunker::Chunker::new(
+            crate::chunker::ChunkerConfig::from_search_config(&config.search),
+        );
+        let mut builder = crate::index::IndexBuilder::new(&mut index, &chunker, None);
+        builder.build(base, config).await.unwrap()
+    }
+
     // ---- SearchMode tests ----
 
     #[test]
@@ -619,7 +643,7 @@ mod tests {
         let config = test_config();
 
         // Build the index first.
-        let summary = crate::index::build_index(&base, &config).await.unwrap();
+        let summary = build_index_no_embed(&base, &config).await;
         assert!(
             summary.chunks_produced >= 3,
             "Expected at least 3 chunks, got {}",
@@ -687,7 +711,7 @@ mod tests {
         }
 
         let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         // Limit results to 2.
         let options = SearchOptions {
@@ -721,7 +745,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         // Add a new file after indexing.
         std::fs::write(
@@ -773,7 +797,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         let options = SearchOptions {
             mode: SearchMode::Sparse,
@@ -820,7 +844,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         let options = SearchOptions {
             mode: SearchMode::Sparse,
@@ -879,7 +903,7 @@ mod tests {
         let config = test_config();
 
         // Build the index first (without a real model, no embeddings produced).
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         // Re-open the index to get a fresh handle after build_index wrote artifacts.
         let index_dir = config.search.resolve_index_dir(&base);
@@ -963,7 +987,7 @@ mod tests {
         .unwrap();
 
         let config = test_config();
-        crate::index::build_index(&base, &config).await.unwrap();
+        build_index_no_embed(&base, &config).await;
 
         // Request Hybrid mode (which needs dense vectors).
         // Without the embeddings feature (or with no vectors on disk),
