@@ -11,7 +11,6 @@ pub use notectl_files::{
 pub use notectl_outline::{
     GetOutlineOperation, GetSectionOperation, OutlineCapability, SearchHeadingsOperation,
 };
-#[cfg(feature = "search")]
 pub use notectl_search::{IndexOperation, SearchCapability, SearchOperation};
 pub use notectl_tags::{
     ExtractTagsOperation, ListTagsOperation, SearchByTagsOperation, TagCapability,
@@ -25,7 +24,6 @@ pub struct CapabilityRegistry {
     file_capability: Arc<FileCapability>,
     daily_note_capability: Arc<DailyNoteCapability>,
     outline_capability: Arc<OutlineCapability>,
-    #[cfg(feature = "search")]
     search_capability: Arc<SearchCapability>,
 }
 
@@ -47,7 +45,6 @@ impl CapabilityRegistry {
                 base_path.clone(),
                 Arc::clone(&config),
             )),
-            #[cfg(feature = "search")]
             search_capability: Arc::new(SearchCapability::new(base_path, Arc::clone(&config))),
         }
     }
@@ -72,7 +69,6 @@ impl CapabilityRegistry {
         Arc::clone(&self.outline_capability)
     }
 
-    #[cfg(feature = "search")]
     pub fn search(&self) -> Arc<SearchCapability> {
         Arc::clone(&self.search_capability)
     }
@@ -91,9 +87,7 @@ impl CapabilityRegistry {
             Arc::new(GetOutlineOperation::new(self.outline())),
             Arc::new(GetSectionOperation::new(self.outline())),
             Arc::new(SearchHeadingsOperation::new(self.outline())),
-            #[cfg(feature = "search")]
             Arc::new(IndexOperation::new(self.search())),
-            #[cfg(feature = "search")]
             Arc::new(SearchOperation::new(self.search())),
         ]
     }

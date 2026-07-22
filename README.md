@@ -206,7 +206,7 @@ notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-leve
 
 ### Search Operations
 
-Semantic and keyword search across indexed notes. Build with `--features search` for hybrid search (dense embeddings + sparse BM25 fused via RRF).
+Semantic and keyword search across indexed notes — hybrid search (dense embeddings + sparse BM25 fused via RRF) is built in.
 
 Dense search calls out to an OpenAI-compatible `/v1/embeddings` HTTP endpoint (e.g. llama.cpp/llama-swap, vLLM, Ollama, OpenAI itself) — no model runs in-process. If no endpoint is configured, or it's unreachable, searches degrade gracefully to keyword-only (BM25) with no configuration needed.
 

@@ -93,16 +93,7 @@ notectl-tags.workspace = true
 notectl-files.workspace = true
 notectl-daily-notes.workspace = true
 notectl-outline.workspace = true
-notectl-search = { path = "notectl-search", optional = true }
-
-[features]
-# Search is enabled by default; opt out with --no-default-features
-default = ["search"]
-
-# Enable semantic search capability (dense + sparse hybrid via RRF fusion).
-# Dense search uses fastembed with EmbeddingGemma-300M by default.
-# Degrades gracefully to sparse-only if model is unavailable.
-search = ["notectl-search"]
+notectl-search.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -12,7 +12,6 @@ use notectl_tags::{
     SearchByTagsRequest, SearchByTagsResponse,
 };
 use notectl_tasks::{SearchTasksRequest, TaskSearchResponse};
-#[cfg(feature = "search")]
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::{
     ServerHandler,
@@ -23,7 +22,6 @@ use rmcp::{
     model::*,
     tool, tool_handler, tool_router,
 };
-#[cfg(feature = "search")]
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,10 +47,6 @@ impl TaskSearchService {
         ));
 
         // Build tool router starting with macro-generated routes
-        #[cfg(not(feature = "search"))]
-        let tool_router = Self::tool_router();
-
-        #[cfg(feature = "search")]
         let tool_router = Self::tool_router()
             .with_async_tool::<search_tools::SearchTool>()
             .with_async_tool::<search_tools::IndexTool>();
@@ -200,10 +194,9 @@ impl TaskSearchService {
 }
 
 // ---------------------------------------------------------------------------
-// Trait-based search tools (conditionally compiled, added manually to router)
+// Trait-based search tools (added manually to the router, not via #[tool])
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "search")]
 mod search_tools {
     use super::*;
     use notectl_search::{IndexResponse, SearchMode, SearchResponse};
@@ -347,21 +340,6 @@ mod search_tools {
 impl ServerHandler for TaskSearchService {
     fn get_info(&self) -> ServerInfo {
         // Build instructions from capability metadata
-        #[cfg(not(feature = "search"))]
-        let instructions: String = [
-            "A Markdown task extraction service. Available operations:",
-            &format!("- {}", notectl_tasks::capability::search_tasks::DESCRIPTION),
-            &format!("- {}", notectl_tags::extract_tags::DESCRIPTION),
-            &format!("- {}", notectl_tags::list_tags::DESCRIPTION),
-            &format!("- {}", notectl_tags::search_by_tags::DESCRIPTION),
-            &format!("- {}", notectl_files::list_files::DESCRIPTION),
-            &format!("- {}", notectl_files::read_files::DESCRIPTION),
-            &format!("- {}", notectl_daily_notes::get_daily_note::DESCRIPTION),
-            &format!("- {}", notectl_daily_notes::search_daily_notes::DESCRIPTION),
-        ]
-        .join("\n");
-
-        #[cfg(feature = "search")]
         let instructions: String = [
             "A Markdown task extraction service. Available operations:",
             &format!("- {}", notectl_tasks::capability::search_tasks::DESCRIPTION),

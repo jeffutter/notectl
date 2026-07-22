@@ -14,13 +14,13 @@ Semantic search over markdown notes using hybrid BM25 + dense vector retrieval.
 
 ```bash
 # Build and index a vault
-cargo run --bin notectl --features search -- index /path/to/vault
+cargo run --bin notectl -- index /path/to/vault
 
 # Search the indexed vault
-cargo run --bin notectl --features search -- search /path/to/vault "your query here"
+cargo run --bin notectl -- search /path/to/vault "your query here"
 
 # Verify JSON output structure
-cargo run --bin notectl --features search -- search /path/to/vault "query" | jq '.results[0]'
+cargo run --bin notectl -- search /path/to/vault "query" | jq '.results[0]'
 ```
 
 ## Running Tests

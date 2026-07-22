@@ -78,27 +78,27 @@ cargo build
 # Build release version
 cargo build --release
 
-# Build with search support
-cargo build --features search
+# The package defines two binaries (notectl, notectl-remote) — `cargo run`
+# needs --bin notectl to disambiguate:
 
 # Run task search with arguments
-cargo run -- tasks path/to/file.md
-cargo run -- tasks path/to/vault --status incomplete --tags work --limit 20
+cargo run --bin notectl -- tasks path/to/file.md
+cargo run --bin notectl -- tasks path/to/vault --status incomplete --tags work --limit 20
 
 # Start MCP server (stdio)
-cargo run -- serve stdio path/to/vault
+cargo run --bin notectl -- serve stdio path/to/vault
 
 # Start HTTP server
-cargo run -- serve http path/to/vault --port 8000
+cargo run --bin notectl -- serve http path/to/vault --port 8000
 
-# Search operations (requires --features search)
-cargo run --features search -- index path/to/vault
-cargo run --features search -- search path/to/vault "query text"
-cargo run --features search -- search path/to/vault "query text" --mode dense
+# Search operations
+cargo run --bin notectl -- index path/to/vault
+cargo run --bin notectl -- search path/to/vault "query text"
+cargo run --bin notectl -- search path/to/vault "query text" --mode dense
 
 # Test the tool manually
 echo "- [ ] Test task #tag 📅 2025-12-10" > test.md
-cargo run -- tasks test.md
+cargo run --bin notectl -- tasks test.md
 ```
 
 ## Configuration
@@ -223,22 +223,19 @@ notectl/                              (workspace root + main binary)
       outline_extractor.rs            (OutlineExtractor, heading parsing)
       capability.rs                   (OutlineCapability, GetOutline/GetSection/SearchHeadingsOperation)
 
-  notectl-search/                     (semantic + keyword search, feature-gated)
+  notectl-search/                     (semantic + keyword search)
     src/
       lib.rs
       capability.rs                   (SearchCapability, IndexOperation, SearchOperation)
-      chunker.rs                      (markdown chunking)
-      index.rs                        (index build/incremental update)
+      chunker.rs                      (markdown chunking, token-budget bounding)
+      index.rs                        (streaming index build/incremental update)
       search.rs                       (search execution, result ranking)
       bm25.rs                         (BM25 sparse scoring)
       sparse.rs                       (sparse vector storage)
       fusion.rs                       (RRF fusion of dense + sparse results)
-      storage.rs                      (persistent index storage)
+      storage.rs                      (persistent index storage, streaming VectorWriter)
       tokenize.rs                     (text tokenization)
-      embeddings/mod.rs               (embedding model management)
-      embeddings/embed.rs             (embedding computation)
-      embeddings/model.rs             (model selection, config)
-      embeddings/download.rs          (model downloading from HuggingFace)
+      embeddings/mod.rs               (HTTP client for any OpenAI-compatible /v1/embeddings endpoint)
 ```
 
 ### Dependency Graph (no cycles)
@@ -251,8 +248,8 @@ core
   |--- files (core)
   |--- outline (core)
   |--- daily-notes (core, files)
-  |--- search (core, files)           [feature = "search"]
-  |--- binary (core, tasks, tags, files, daily-notes, outline, search?)
+  |--- search (core, files)
+  |--- binary (core, tasks, tags, files, daily-notes, outline, search)
 ```
 
 ### Capability-Based Architecture
@@ -406,15 +403,13 @@ To add a new capability (e.g., for bookmarks):
 
 > **Note**: As of now, `notectl-outline` operations (`get_outline`, `get_section`, `search_headings`) are registered for HTTP and CLI but **not** exposed as MCP tools in `src/mcp.rs`. They are available via HTTP and CLI only.
 
-### Conditional Compilation (search feature)
+### Search MCP Tool Registration
 
-The `notectl-search` crate is behind a `feature = "search"` flag. Key integration points use `#[cfg(feature = "search")]`:
-
-- **`src/capabilities/mod.rs`**: `SearchCapability` import, field, getter, and operation registration are all gated
-- **`src/mcp.rs`**: Search MCP tools use manual `with_async_tool::<search_tools::SearchTool>()` / `IndexTool` registration rather than the `#[tool_router]` macro. Defined in a `#[cfg(feature = "search")] mod search_tools { ... }` block
-- **`src/main.rs`**: Search commands are added conditionally
-
-Build with `--features search` to include search functionality.
+Unlike other capabilities, search's MCP tools aren't registered via the
+`#[tool_router]` macro — `src/mcp.rs`'s `search_tools` module manually
+registers `SearchTool`/`IndexTool` via `with_async_tool::<...>()` in
+`TaskSearchService::new`. `notectl-search` itself is a regular, always-on
+workspace dependency (not feature-gated) — see `src/capabilities/mod.rs`.
 
 ### Adding New Metadata Types or Task Statuses
 
