@@ -7,6 +7,7 @@ members = [
   "notectl-files",
   "notectl-daily-notes",
   "notectl-outline",
+  "notectl-search",
 ]
 resolver = "2"
 
@@ -41,12 +42,20 @@ tokio = { version = "1", features = [
   "sync",
 ] }
 tokio-util = { version = "0.7" }
+blake3 = "1"
+dirs = "5"
+indicatif = "0.17"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.13", features = [
+  "json",
+  "rustls",
+], default-features = false }
 
 # Workspace members
 notectl-core = { path = "notectl-core" }
+notectl-search = { path = "notectl-search" }
 notectl-tasks = { path = "notectl-tasks" }
 notectl-tags = { path = "notectl-tags" }
 notectl-files = { path = "notectl-files" }
@@ -67,10 +76,7 @@ async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
 mimalloc = { version = "0.1.52" }
-reqwest = { version = "0.13", features = [
-  "json",
-  "rustls",
-], default-features = false }
+reqwest.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -87,6 +93,16 @@ notectl-tags.workspace = true
 notectl-files.workspace = true
 notectl-daily-notes.workspace = true
 notectl-outline.workspace = true
+notectl-search = { path = "notectl-search", optional = true }
+
+[features]
+# Search is enabled by default; opt out with --no-default-features
+default = ["search"]
+
+# Enable semantic search capability (dense + sparse hybrid via RRF fusion).
+# Dense search uses fastembed with EmbeddingGemma-300M by default.
+# Degrades gracefully to sparse-only if model is unavailable.
+search = ["notectl-search"]
 
 [dev-dependencies]
 tempfile.workspace = true

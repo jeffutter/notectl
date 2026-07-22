@@ -52,9 +52,28 @@
       "Bash(rtk cargo *)",
       "Bash(cargo audit *)",
       "Skill(update-config)",
-      "Bash(git -C /home/jeffutter/src/markdown-todo-extractor tag v0.9.0)"
+      "Bash(git -C /home/jeffutter/src/markdown-todo-extractor tag v0.9.0)",
+      "Bash(nix develop *)",
+      "Bash(backlog task *)",
+      "Skill(run)",
+      "Bash(backlog sequence *)",
+      "Bash(backlog --help)",
+      "Bash(backlog overview *)",
+      "Bash(backlog milestone *)",
+      "Skill(rust-best-practices)",
+      "mcp__backlog__task_view",
+      "mcp__backlog__task_create",
+      "mcp__backlog__task_edit",
+      "WebFetch(domain:worktrunk.dev)",
+      "Bash(wt --version)",
+      "Bash(git -C /home/jeffutter/src/notectl check-ignore -v .envrc)",
+      "Bash(git -C /home/jeffutter/src/notectl ls-files .envrc)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "backlog"
+  ]
 }
