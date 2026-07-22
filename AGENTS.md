@@ -411,6 +411,24 @@ registers `SearchTool`/`IndexTool` via `with_async_tool::<...>()` in
 `TaskSearchService::new`. `notectl-search` itself is a regular, always-on
 workspace dependency (not feature-gated) — see `src/capabilities/mod.rs`.
 
+**Gotcha:** rmcp's `#[tool_handler]` macro defaults its `list_tools`/
+`call_tool`/`get_tool` dispatch to a freshly rebuilt `Self::tool_router()`
+(the `#[tool_router]`-macro-generated function containing only `#[tool]`
+methods) — it does **not** use the `self.tool_router` field by default.
+Since the manually-registered `SearchTool`/`IndexTool` only exist on the
+field built in `new()`, the `#[tool_handler]` attribute on
+`impl ServerHandler for TaskSearchService` **must** keep its
+`router = self.tool_router.clone()` argument, or those tools compile fine,
+show up in `get_info()`'s instructions text, and are still completely
+unreachable via `tools/list`/`tools/call` — this happened once already
+(see `tests/mcp_tools.rs`'s doc comment for the full story). That test
+drives the real stdio server end-to-end and asserts every expected tool
+name is both listed and dispatchable — run it (`cargo test --test
+mcp_tools`) after any change to `src/mcp.rs`'s tool wiring, and extend its
+`EXPECTED_TOOLS` list when adding a new tool. Compiling and starting the
+server is not sufficient verification for MCP tool wiring — only a live
+`tools/list`/`tools/call` round trip catches this class of bug.
+
 ### Adding New Metadata Types or Task Statuses
 
 In `notectl-tasks/src/extractor.rs`:

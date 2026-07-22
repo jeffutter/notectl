@@ -336,7 +336,7 @@ mod search_tools {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for TaskSearchService {
     fn get_info(&self) -> ServerInfo {
         // Build instructions from capability metadata
