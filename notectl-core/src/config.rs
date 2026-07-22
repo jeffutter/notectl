@@ -505,6 +505,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// `std::env::set_var`/`remove_var` mutate process-global state, but
+    /// Rust's default test runner executes tests in parallel across threads
+    /// in the same process — so any two tests that touch env vars can race
+    /// and leak values into each other, regardless of each test's own
+    /// cleanup. Every test that reads/writes `NOTECTL_SEARCH_*` (or any
+    /// other env var this module consults) must hold this lock for its
+    /// entire body, serializing them against each other without affecting
+    /// unrelated tests.
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_should_exclude_substring() {
         let config = Config {
@@ -541,6 +551,7 @@ mod tests {
 
     #[test]
     fn test_merge_from_env() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Use a unique env var name for this test to avoid parallel test conflicts
         const TEST_VAR: &str = "NOTECTL_TEST_MERGE_FROM_ENV";
 
@@ -572,6 +583,7 @@ mod tests {
 
     #[test]
     fn test_env_with_empty_patterns() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Use a unique env var name for this test to avoid parallel test conflicts
         const TEST_VAR: &str = "NOTECTL_TEST_EMPTY_PATTERNS";
 
@@ -664,6 +676,7 @@ cache_dir = "/tmp/search-cache"
 
     #[test]
     fn test_search_config_all_env_vars() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("NOTECTL_SEARCH_MODEL_ID", "custom/model");
             std::env::set_var(
@@ -756,6 +769,7 @@ cache_dir = "/tmp/search-cache"
 
     #[test]
     fn test_exclude_headings_env_var() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var(
                 "NOTECTL_SEARCH_EXCLUDE_HEADINGS",
@@ -792,6 +806,7 @@ cache_dir = "/tmp/search-cache"
 
     #[test]
     fn test_global_config_path_xdg_set() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", "/custom/xdg/config");
         }
@@ -809,6 +824,7 @@ cache_dir = "/tmp/search-cache"
 
     #[test]
     fn test_global_config_path_fallback_to_home() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Clear XDG_CONFIG_HOME to test fallback
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
@@ -856,6 +872,7 @@ model_id = "custom/model"
 
     #[test]
     fn test_load_from_base_path_layering() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Save and restore env vars to avoid interference from parallel tests
         let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let saved_model = std::env::var("NOTECTL_SEARCH_MODEL_ID").ok();
@@ -923,6 +940,7 @@ max_seq_tokens = 256
 
     #[test]
     fn test_env_overrides_vault_and_global() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Save and restore env vars to avoid interference from parallel tests
         let saved_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let saved_model = std::env::var("NOTECTL_SEARCH_MODEL_ID").ok();

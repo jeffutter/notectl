@@ -85,7 +85,7 @@ impl<'a> IndexBuilder<'a> {
     ///    that batch's chunk text, and — if an embedder is available and
     ///    loads successfully — embed that batch and stream its vectors to
     ///    disk. Peak memory is bounded to one batch's worth of text/vectors,
-    ///    not the whole vault (see [`Self::flush_batch`]).
+    ///    not the whole vault (see `flush_batch`).
     /// 5. Update and save the manifest atomically.
     ///
     /// Returns [`BuildSummary`] with stats about the build.

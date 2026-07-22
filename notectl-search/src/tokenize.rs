@@ -8,11 +8,11 @@
 //! (minified JSON, base64, a giant URL) — a single "word" can represent far
 //! more real tokens than this approximation assumes, and with nothing to
 //! split it on, every function here would otherwise treat it as one
-//! unbounded unit, letting a chunk grow arbitrarily large. [`split_words`]
+//! unbounded unit, letting a chunk grow arbitrarily large. `split_words`
 //! guards against that by additionally splitting any single word longer than
-//! [`MAX_WORD_CHARS`] into fixed-size pieces.
+//! `MAX_WORD_CHARS` into fixed-size pieces.
 
-/// Ceiling on a single whitespace-delimited "word" before [`split_words`]
+/// Ceiling on a single whitespace-delimited "word" before `split_words`
 /// forcibly splits it further. Conservative enough that ordinary long words
 /// (URLs, identifiers) are only mildly over-split, while pathological
 /// whitespace-free blobs get broken into many bounded pieces instead of
@@ -51,10 +51,10 @@ pub(crate) fn split_long_word_ranges(word: &str, max_chars: usize) -> Vec<std::o
 }
 
 /// Split text into whitespace-delimited words, further splitting any single
-/// word longer than [`MAX_WORD_CHARS`] so no unit can silently represent an
+/// word longer than `MAX_WORD_CHARS` so no unit can silently represent an
 /// unbounded number of real tokens. All token-budget logic in this module
 /// and in `chunker.rs`'s `word_spans` must use this (or the same
-/// [`MAX_WORD_CHARS`]/splitting rule) rather than raw `split_whitespace()`,
+/// `MAX_WORD_CHARS`/splitting rule) rather than raw `split_whitespace()`,
 /// since word indices are shared across independently-built word lists and
 /// must stay aligned.
 pub(crate) fn split_words(text: &str) -> Vec<&str> {
@@ -68,7 +68,7 @@ pub(crate) fn split_words(text: &str) -> Vec<&str> {
 }
 
 /// Count approximate tokens in text by counting whitespace-separated words
-/// (with long words further split — see [`split_words`]). This is an
+/// (with long words further split — see `split_words`). This is an
 /// approximation - actual tokenizers may produce different counts.
 pub fn count_tokens(text: &str) -> usize {
     split_words(text).len()
