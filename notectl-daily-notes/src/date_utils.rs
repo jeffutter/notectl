@@ -46,11 +46,7 @@ pub fn validate_date(date_str: &str) -> bool {
 
     // Check days per month
     let max_days = days_in_month(parts[0], month);
-    if day > max_days {
-        return false;
-    }
-
-    true
+    day <= max_days
 }
 
 /// Parse a date string into (year, month, day) components

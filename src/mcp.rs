@@ -344,7 +344,7 @@ mod search_tools {
 
 #[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for TaskSearchService {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // Build instructions from capability metadata
         let instructions: String = [
             "A Markdown task extraction service. Available operations:",
@@ -361,7 +361,7 @@ impl ServerHandler for TaskSearchService {
         ]
         .join("\n");
 
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(instructions)
     }
 }

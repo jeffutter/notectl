@@ -13,7 +13,6 @@ clap.workspace = true
 tempfile.workspace = true
 notectl-core.workspace = true
 notectl-outline.workspace = true
-rayon.workspace = true
 regex.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
