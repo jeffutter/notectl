@@ -1157,7 +1157,7 @@ dependencies = [
 
 [[package]]
 name = "notectl"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-daily-notes"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1221,7 +1221,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-files"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1239,7 +1239,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-outline"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-search"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1276,7 +1276,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-tags"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "notectl-tasks"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "clap",
