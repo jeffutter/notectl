@@ -141,7 +141,7 @@ impl<'a> IndexBuilder<'a> {
     ///    filesystem walk order.
     /// 3. Stream: read/hash/chunk each file and persist its chunk text. A
     ///    chunk with a stored vector under the same key reuses it; the rest
-    ///    are embedded in batches of [`BATCH_SIZE`].
+    ///    are embedded in batches of `BATCH_SIZE`.
     /// 4. Persist the vectors, then the manifest, each atomically.
     /// 5. Delete chunk files the manifest no longer refers to.
     ///
