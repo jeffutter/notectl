@@ -22,6 +22,12 @@ pub struct Bm25Result {
     pub score: f64,
 }
 
+/// `ln((N - df + 0.5) / (df + 0.5) + 1)`
+fn inverse_document_frequency(doc_count: usize, doc_frequency: usize) -> f64 {
+    let (n, df) = (doc_count as f64, doc_frequency as f64);
+    ((n - df + 0.5) / (df + 0.5) + 1.0).ln()
+}
+
 /// In-memory BM25 indexer and scorer.
 ///
 /// This is a lightweight implementation that stores an inverted index
@@ -105,12 +111,21 @@ impl Bm25Indexer {
     /// Document frequency (DF) is derived from the inverted index: each term's
     /// postings list length equals the number of distinct documents containing it.
     pub fn finalize(&mut self) {
-        // Compute IDF: log((N - df + 0.5) / (df + 0.5) + 1)
         for (term, postings) in &self.postings {
-            let df = postings.len();
-            let idf = ((self.doc_count as f64 - df as f64 + 0.5) / (df as f64 + 0.5) + 1.0).ln();
+            let idf = inverse_document_frequency(self.doc_count, postings.len());
             self.idf.insert(term.clone(), idf);
         }
+    }
+
+    /// The upper limit of [`score_query`](Self::score_query) for these tokens:
+    /// what a document would approach by repeating every one of them without
+    /// end. Tokens found in no document count too, as the rarest possible.
+    pub fn max_score(&self, query_tokens: &[String]) -> f64 {
+        let unseen = inverse_document_frequency(self.doc_count, 0);
+        query_tokens
+            .iter()
+            .map(|token| self.idf.get(token).copied().unwrap_or(unseen) * (self.params.k1 + 1.0))
+            .sum()
     }
 
     /// Score a query against all indexed documents.

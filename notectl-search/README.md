@@ -6,7 +6,8 @@ Semantic search over markdown notes using hybrid BM25 + dense vector retrieval.
 
 - **Sparse retrieval**: BM25 scoring via lightweight in-memory indexer (no external dependencies)
 - **Dense retrieval**: HTTP client to any OpenAI-compatible `/v1/embeddings` endpoint (llama.cpp/llama-swap, vLLM, Ollama, OpenAI, etc.) — no model runs in-process
-- **Hybrid ranking**: Weighted Reciprocal Rank Fusion (RRF) merges sparse + dense results
+- **Hybrid ranking**: a weighted mean of cosine similarity and BM25 scaled to 0..1
+- **Reranking**: optional scoring and ordering by a model behind an HTTP `/rerank` endpoint
 - **Incremental indexing**: Only re-processes changed files on subsequent index builds
 - **Matryoshka embeddings**: Optionally truncate a model's native embedding dimension for storage savings
 
@@ -49,7 +50,7 @@ cargo run --example print_embedding -p notectl-search
 │  (build) │  (query)  │ (split)  │ (persist)     │
 ├──────────┼───────────┼──────────┴───────────────┤
 │  bm25    │  sparse   │  fusion                  │
-│ (scoring)│ (wrapper) │(cosine + RRF)            │
+│ (scoring)│ (wrapper) │(cosine + combine)        │
 ├──────────┴───────────┴──────────────────────────┤
 │              embeddings/                        │
 │  reqwest client → POST {api_base}/embeddings     │

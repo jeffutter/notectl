@@ -53,7 +53,10 @@ impl SparseIndexer {
     /// Score a free-text query against the indexed chunks.
     ///
     /// Returns a vector of `(chunk_index, score)` pairs sorted by descending
-    /// score. Only chunks with a positive score are included.
+    /// score. Only chunks with a positive score are included. Scores are BM25
+    /// divided by the most the query could score ([`Bm25Indexer::max_score`]),
+    /// so they lie in `0..1` and fall as fewer of the query's rarer terms
+    /// match.
     ///
     /// # Arguments
     /// * `query` - Free-text query string (will be tokenized internally)
@@ -63,10 +66,11 @@ impl SparseIndexer {
     /// of the chunk in the original slice passed to [`SparseIndexer::index_chunks`].
     pub fn score_query(&self, query: &str) -> Vec<(usize, f64)> {
         let tokens = Bm25Indexer::tokenize(query);
+        let max = self.inner.max_score(&tokens);
         self.inner
             .score_query(&tokens)
             .into_iter()
-            .map(|r| (r.doc_index, r.score))
+            .map(|r| (r.doc_index, r.score / max))
             .collect()
     }
 }
@@ -108,6 +112,21 @@ mod tests {
         // because it contains both "rust" and "memory"
         assert_eq!(results[0].0, 2);
         assert!(results[0].1 > 0.0);
+    }
+
+    #[test]
+    fn scores_fall_when_query_terms_are_missing() {
+        let chunks = vec![
+            make_chunk(0, "rust memory safety"),
+            make_chunk(1, "python data science"),
+        ];
+        let indexer = SparseIndexer::index_chunks(&chunks);
+
+        let full = indexer.score_query("rust memory")[0].1;
+        let partial = indexer.score_query("rust sourdough hydration")[0].1;
+
+        assert!(partial < full, "{partial} < {full}");
+        assert!(full > 0.0 && full < 1.0, "{full}");
     }
 
     #[test]

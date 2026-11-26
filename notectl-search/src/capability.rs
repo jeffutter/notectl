@@ -97,7 +97,7 @@ pub struct SearchRequest {
     /// Search mode: hybrid, dense, or sparse (default hybrid)
     #[arg(long, value_enum, default_value = "hybrid", help = "Search mode")]
     #[schemars(
-        description = "Scoring mode: hybrid (dense+sparse fused), dense only, or sparse only (default hybrid)"
+        description = "Scoring mode: hybrid (dense+sparse averaged), dense only, or sparse only (default hybrid)"
     )]
     pub mode: Option<SearchMode>,
 
@@ -126,7 +126,7 @@ pub struct SearchRequest {
     /// Recency weight for search ranking, applied only when enable_recency is true (default 0.5)
     #[arg(long, help = "Recency weight when enabled (default 0.5)")]
     #[schemars(
-        description = "Recency weight applied post-RRF fusion when enable_recency is true (default 0.5)"
+        description = "Recency weight applied to scores when enable_recency is true (default 0.5)"
     )]
     pub recency_weight: Option<f64>,
 }
@@ -170,6 +170,9 @@ pub struct SearchResponse {
     pub total_count: usize,
     /// Effective search mode used (may differ from requested due to auto-degradation)
     pub mode_used: String,
+    /// Whether the rerank model decided the results. False when none is
+    /// configured, it was unavailable, or the index is empty.
+    pub reranked: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +254,6 @@ impl SearchCapability {
         let options = crate::search::SearchOptions {
             mode: query.mode,
             max_results: query.limit,
-            rrf_k: self.config.search.rrf_k,
             rrf_bm25_weight: self.config.search.rrf_bm25_weight,
             rrf_cosine_weight: self.config.search.rrf_cosine_weight,
             rrf_recency_weight,
@@ -283,6 +285,7 @@ impl SearchCapability {
             results: outcome.results,
             total_count,
             mode_used,
+            reranked: outcome.reranked,
         })
     }
 }

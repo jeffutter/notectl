@@ -30,10 +30,6 @@ pub fn default_min_chunk_tokens() -> usize {
     32
 }
 
-pub fn default_rrf_k() -> f64 {
-    60.0
-}
-
 pub fn default_max_results() -> usize {
     50
 }
@@ -76,15 +72,11 @@ pub struct SearchConfig {
     #[serde(default = "default_min_chunk_tokens")]
     pub min_chunk_tokens: usize,
 
-    /// RRF k parameter for reciprocal rank fusion
-    #[serde(default = "default_rrf_k")]
-    pub rrf_k: f64,
-
-    /// Weight applied to BM25 scores in RRF fusion (not the BM25 k1 saturation constant)
+    /// Weight of the BM25 score in hybrid mode (not the BM25 k1 saturation constant)
     #[serde(default = "default_rrf_bm25_weight")]
     pub rrf_bm25_weight: f64,
 
-    /// Weight applied to cosine similarity scores in RRF fusion
+    /// Weight of the cosine similarity in hybrid mode
     #[serde(default = "default_rrf_cosine_weight")]
     pub rrf_cosine_weight: f64,
 
@@ -98,6 +90,36 @@ pub struct SearchConfig {
     /// Optional bearer token for the embedding API.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding_api_key: Option<String>,
+
+    /// Model ID sent to the rerank endpoint at
+    /// `{embedding_api_base}/rerank`, with the same API key. When set, search
+    /// results are scored and ordered by this model. `None` disables it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rerank_model: Option<String>,
+
+    /// Lowest cosine similarity a chunk found by the dense search may have and
+    /// still be sent to the rerank model (default 0, no cutoff). The useful
+    /// value depends on the embedding model.
+    #[serde(default)]
+    pub rerank_min_cosine: f64,
+
+    /// Lowest BM25 score (as a share of the most the query could score, 0 to 1)
+    /// a chunk found by the keyword search may have and still be sent to the
+    /// rerank model (default 0, no cutoff).
+    #[serde(default)]
+    pub rerank_min_bm25: f64,
+
+    /// The most chunks each search path (dense, keyword) sends to the rerank
+    /// model, whatever the requested result count (default 20, at least 1).
+    /// Higher looks further for good matches, takes longer, and raises the
+    /// most results a reranked search can return.
+    #[serde(default = "default_rerank_candidates")]
+    pub rerank_candidates: usize,
+
+    /// How many characters of each chunk the rerank model reads (default 2000,
+    /// at least 1). Its time grows with the text it is sent.
+    #[serde(default = "default_rerank_max_chars")]
+    pub rerank_max_chars: usize,
 
     /// Optional sparse model weights path (overrides BM25 defaults)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,11 +137,19 @@ pub struct SearchConfig {
     #[serde(default = "default_merge_threshold")]
     pub merge_threshold: usize,
 
-    /// Default recency weight applied post-RRF fusion when a search request
+    /// Default recency weight applied to scores when a search request
     /// opts in to recency boosting (default 0.5). Recency boosting itself is
     /// off by default; callers enable it per-request.
     #[serde(default = "default_rrf_recency_weight")]
     pub rrf_recency_weight: f64,
+}
+
+fn default_rerank_candidates() -> usize {
+    20
+}
+
+fn default_rerank_max_chars() -> usize {
+    2000
 }
 
 fn default_model_id() -> String {
@@ -146,11 +176,15 @@ impl Default for SearchConfig {
             max_seq_tokens: default_max_seq_tokens(),
             chunk_overlap_tokens: default_chunk_overlap_tokens(),
             min_chunk_tokens: default_min_chunk_tokens(),
-            rrf_k: default_rrf_k(),
             rrf_bm25_weight: default_rrf_bm25_weight(),
             rrf_cosine_weight: default_rrf_cosine_weight(),
             embedding_api_base: None,
             embedding_api_key: None,
+            rerank_model: None,
+            rerank_min_cosine: 0.0,
+            rerank_min_bm25: 0.0,
+            rerank_candidates: default_rerank_candidates(),
+            rerank_max_chars: default_rerank_max_chars(),
             sparse_weights: None,
             cache_dir: default_cache_dir(),
             max_results: default_max_results(),
@@ -198,11 +232,15 @@ struct PartialSearchConfig {
     max_seq_tokens: Option<usize>,
     chunk_overlap_tokens: Option<usize>,
     min_chunk_tokens: Option<usize>,
-    rrf_k: Option<f64>,
     rrf_bm25_weight: Option<f64>,
     rrf_cosine_weight: Option<f64>,
     embedding_api_base: Option<String>,
     embedding_api_key: Option<String>,
+    rerank_model: Option<String>,
+    rerank_min_cosine: Option<f64>,
+    rerank_min_bm25: Option<f64>,
+    rerank_candidates: Option<usize>,
+    rerank_max_chars: Option<usize>,
     sparse_weights: Option<String>,
     cache_dir: Option<String>,
     max_results: Option<usize>,
@@ -272,9 +310,6 @@ impl Config {
             if let Some(v) = s.min_chunk_tokens {
                 self.search.min_chunk_tokens = v;
             }
-            if let Some(v) = s.rrf_k {
-                self.search.rrf_k = v;
-            }
             if let Some(v) = s.rrf_bm25_weight {
                 self.search.rrf_bm25_weight = v;
             }
@@ -286,6 +321,21 @@ impl Config {
             }
             if let Some(ref v) = s.embedding_api_key {
                 self.search.embedding_api_key = Some(v.clone());
+            }
+            if let Some(ref v) = s.rerank_model {
+                self.search.rerank_model = Some(v.clone());
+            }
+            if let Some(v) = s.rerank_min_cosine {
+                self.search.rerank_min_cosine = v;
+            }
+            if let Some(v) = s.rerank_min_bm25 {
+                self.search.rerank_min_bm25 = v;
+            }
+            if let Some(v) = s.rerank_candidates {
+                self.search.rerank_candidates = v;
+            }
+            if let Some(v) = s.rerank_max_chars {
+                self.search.rerank_max_chars = v;
             }
             if let Some(ref v) = s.sparse_weights {
                 self.search.sparse_weights = Some(v.clone());
@@ -392,8 +442,11 @@ impl Config {
     ///   NOTECTL_SEARCH_EMBEDDING_DIM
     /// - Chunking: NOTECTL_SEARCH_MAX_SEQ_TOKENS, NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS,
     ///   NOTECTL_SEARCH_MIN_CHUNK_TOKENS, NOTECTL_SEARCH_MERGE_THRESHOLD
-    /// - Fusion: NOTECTL_SEARCH_RRF_K, NOTECTL_SEARCH_RRF_BM25_WEIGHT,
+    /// - Scoring: NOTECTL_SEARCH_RRF_BM25_WEIGHT,
     ///   NOTECTL_SEARCH_RRF_COSINE_WEIGHT
+    /// - Reranking: NOTECTL_SEARCH_RERANK_MODEL,
+    ///   NOTECTL_SEARCH_RERANK_MIN_COSINE, NOTECTL_SEARCH_RERANK_MIN_BM25,
+    ///   NOTECTL_SEARCH_RERANK_CANDIDATES, NOTECTL_SEARCH_RERANK_MAX_CHARS
     /// - Weights paths: NOTECTL_SEARCH_SPARSE_WEIGHTS
     /// - Output: NOTECTL_SEARCH_CACHE_DIR, NOTECTL_SEARCH_MAX_RESULTS
     fn merge_search_from_env(&mut self) {
@@ -405,6 +458,29 @@ impl Config {
             self.search.embedding_api_base = Some(v);
         }
 
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RERANK_MODEL") {
+            self.search.rerank_model = Some(v);
+        }
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RERANK_MIN_COSINE")
+            && let Ok(val) = v.parse::<f64>()
+        {
+            self.search.rerank_min_cosine = val;
+        }
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RERANK_MIN_BM25")
+            && let Ok(val) = v.parse::<f64>()
+        {
+            self.search.rerank_min_bm25 = val;
+        }
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RERANK_CANDIDATES")
+            && let Ok(val) = v.parse::<usize>()
+        {
+            self.search.rerank_candidates = val;
+        }
+        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RERANK_MAX_CHARS")
+            && let Ok(val) = v.parse::<usize>()
+        {
+            self.search.rerank_max_chars = val;
+        }
         if let Ok(v) = std::env::var("NOTECTL_SEARCH_EMBEDDING_API_KEY") {
             self.search.embedding_api_key = Some(v);
         }
@@ -437,12 +513,6 @@ impl Config {
             && let Ok(val) = v.parse::<usize>()
         {
             self.search.merge_threshold = val;
-        }
-
-        if let Ok(v) = std::env::var("NOTECTL_SEARCH_RRF_K")
-            && let Ok(val) = v.parse::<f64>()
-        {
-            self.search.rrf_k = val;
         }
 
         if let Ok(v) = std::env::var("NOTECTL_SEARCH_RRF_BM25_WEIGHT")
@@ -640,7 +710,6 @@ mod tests {
         assert_eq!(config.search.max_seq_tokens, 512);
         assert_eq!(config.search.chunk_overlap_tokens, 64);
         assert_eq!(config.search.min_chunk_tokens, 32);
-        assert!((config.search.rrf_k - 60.0).abs() < f64::EPSILON);
         assert!((config.search.rrf_bm25_weight - 1.0).abs() < f64::EPSILON);
         assert!((config.search.rrf_cosine_weight - 1.0).abs() < f64::EPSILON);
         assert_eq!(config.search.max_results, 50);
@@ -648,6 +717,9 @@ mod tests {
         assert_eq!(config.search.cache_dir, ".notectl/search");
         assert!(config.search.embedding_api_base.is_none());
         assert!(config.search.embedding_api_key.is_none());
+        assert!(config.search.rerank_model.is_none());
+        assert_eq!(config.search.rerank_candidates, 20);
+        assert_eq!(config.search.rerank_max_chars, 2000);
         assert!(config.search.sparse_weights.is_none());
     }
 
@@ -660,6 +732,7 @@ embedding_dim = 128
 max_seq_tokens = 256
 chunk_overlap_tokens = 32
 min_chunk_tokens = 16
+# A removed key, still present in older config files, is ignored.
 rrf_k = 30.0
 cache_dir = "/tmp/search-cache"
 "#;
@@ -670,7 +743,6 @@ cache_dir = "/tmp/search-cache"
         assert_eq!(config.search.max_seq_tokens, 256);
         assert_eq!(config.search.chunk_overlap_tokens, 32);
         assert_eq!(config.search.min_chunk_tokens, 16);
-        assert!((config.search.rrf_k - 30.0).abs() < f64::EPSILON);
         assert_eq!(config.search.cache_dir, "/tmp/search-cache");
     }
 
@@ -683,11 +755,12 @@ embedding_dim = 128
 max_seq_tokens = 256
 chunk_overlap_tokens = 32
 min_chunk_tokens = 16
-rrf_k = 30.0
 rrf_bm25_weight = 2.0
 rrf_cosine_weight = 0.5
 max_results = 25
 merge_threshold = 40
+rerank_candidates = 12
+rerank_max_chars = 900
 cache_dir = "/tmp/search-cache"
 "#;
 
@@ -698,6 +771,8 @@ cache_dir = "/tmp/search-cache"
         assert!((config.search.rrf_cosine_weight - 0.5).abs() < f64::EPSILON);
         assert_eq!(config.search.max_results, 25);
         assert_eq!(config.search.merge_threshold, 40);
+        assert_eq!(config.search.rerank_candidates, 12);
+        assert_eq!(config.search.rerank_max_chars, 900);
         assert_eq!(config.search.cache_dir, "/tmp/search-cache");
     }
 
@@ -711,12 +786,16 @@ cache_dir = "/tmp/search-cache"
                 "https://example.com/v1",
             );
             std::env::set_var("NOTECTL_SEARCH_EMBEDDING_API_KEY", "secret-key");
+            std::env::set_var("NOTECTL_SEARCH_RERANK_MODEL", "rerank");
+            std::env::set_var("NOTECTL_SEARCH_RERANK_MIN_COSINE", "0.5");
+            std::env::set_var("NOTECTL_SEARCH_RERANK_MIN_BM25", "0.2");
+            std::env::set_var("NOTECTL_SEARCH_RERANK_CANDIDATES", "15");
+            std::env::set_var("NOTECTL_SEARCH_RERANK_MAX_CHARS", "1500");
             std::env::set_var("NOTECTL_SEARCH_EMBEDDING_DIM", "512");
             std::env::set_var("NOTECTL_SEARCH_MAX_SEQ_TOKENS", "1024");
             std::env::set_var("NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS", "128");
             std::env::set_var("NOTECTL_SEARCH_MIN_CHUNK_TOKENS", "16");
             std::env::set_var("NOTECTL_SEARCH_MERGE_THRESHOLD", "50");
-            std::env::set_var("NOTECTL_SEARCH_RRF_K", "40.0");
             std::env::set_var("NOTECTL_SEARCH_RRF_BM25_WEIGHT", "2.5");
             std::env::set_var("NOTECTL_SEARCH_RRF_COSINE_WEIGHT", "0.5");
             std::env::set_var("NOTECTL_SEARCH_RRF_RECENCY_WEIGHT", "0.75");
@@ -737,12 +816,16 @@ cache_dir = "/tmp/search-cache"
             config.search.embedding_api_key.as_deref(),
             Some("secret-key")
         );
+        assert_eq!(config.search.rerank_model.as_deref(), Some("rerank"));
+        assert!((config.search.rerank_min_cosine - 0.5).abs() < f64::EPSILON);
+        assert!((config.search.rerank_min_bm25 - 0.2).abs() < f64::EPSILON);
+        assert_eq!(config.search.rerank_candidates, 15);
+        assert_eq!(config.search.rerank_max_chars, 1500);
         assert_eq!(config.search.embedding_dim, 512);
         assert_eq!(config.search.max_seq_tokens, 1024);
         assert_eq!(config.search.chunk_overlap_tokens, 128);
         assert_eq!(config.search.min_chunk_tokens, 16);
         assert_eq!(config.search.merge_threshold, 50);
-        assert!((config.search.rrf_k - 40.0).abs() < f64::EPSILON);
         assert!((config.search.rrf_bm25_weight - 2.5).abs() < f64::EPSILON);
         assert!((config.search.rrf_cosine_weight - 0.5).abs() < f64::EPSILON);
         assert!((config.search.rrf_recency_weight - 0.75).abs() < f64::EPSILON);
@@ -758,12 +841,16 @@ cache_dir = "/tmp/search-cache"
             "NOTECTL_SEARCH_MODEL_ID",
             "NOTECTL_SEARCH_EMBEDDING_API_BASE",
             "NOTECTL_SEARCH_EMBEDDING_API_KEY",
+            "NOTECTL_SEARCH_RERANK_MODEL",
+            "NOTECTL_SEARCH_RERANK_MIN_COSINE",
+            "NOTECTL_SEARCH_RERANK_MIN_BM25",
+            "NOTECTL_SEARCH_RERANK_CANDIDATES",
+            "NOTECTL_SEARCH_RERANK_MAX_CHARS",
             "NOTECTL_SEARCH_EMBEDDING_DIM",
             "NOTECTL_SEARCH_MAX_SEQ_TOKENS",
             "NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS",
             "NOTECTL_SEARCH_MIN_CHUNK_TOKENS",
             "NOTECTL_SEARCH_MERGE_THRESHOLD",
-            "NOTECTL_SEARCH_RRF_K",
             "NOTECTL_SEARCH_RRF_BM25_WEIGHT",
             "NOTECTL_SEARCH_RRF_COSINE_WEIGHT",
             "NOTECTL_SEARCH_RRF_RECENCY_WEIGHT",

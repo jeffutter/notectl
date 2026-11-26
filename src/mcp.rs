@@ -202,7 +202,7 @@ mod search_tools {
         pub query: String,
         /// Maximum number of results to return (default 50)
         pub limit: Option<usize>,
-        /// Scoring mode: hybrid (dense+sparse fused), dense only, or sparse only (default hybrid)
+        /// Scoring mode: hybrid (dense+sparse averaged), dense only, or sparse only (default hybrid)
         pub mode: Option<SearchMode>,
         /// If true, skip the staleness check and use the existing index without rebuilding
         pub no_reindex: Option<bool>,
@@ -211,7 +211,7 @@ mod search_tools {
         pub tags: Vec<String>,
         /// If true, boost search results by recency (default false)
         pub enable_recency: Option<bool>,
-        /// Recency weight applied post-RRF fusion when enable_recency is true (default 0.5)
+        /// Recency weight applied to scores when enable_recency is true (default 0.5)
         pub recency_weight: Option<f64>,
     }
 

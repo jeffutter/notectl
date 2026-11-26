@@ -1,21 +1,24 @@
-//! End-to-end search pipeline: freshen → embed query → hybrid rank → results.
+//! End-to-end search pipeline: freshen → embed query → score → results.
 //!
 //! Orchestrates all building blocks:
 //! - [`crate::storage`] — manifest, vectors, chunk texts on disk
 //! - [`crate::sparse`] — BM25 indexing and scoring
-//! - [`crate::fusion`] — cosine top-k and RRF fusion
+//! - [`crate::fusion`] — cosine similarity and score combination
 //! - [`crate::embeddings`] — query embedding via fastembed
 //! - [`crate::index`] — reindex pipeline for stale indexes
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use notectl_core::config::{Config, SearchConfig};
 use notectl_core::progress::ProgressSink;
 
-use crate::fusion::{cosine_top_k, rrf_fuse};
+use crate::fusion::{combine_scores, cosine_top_k};
+use crate::index::document_title;
 use crate::loaded::{DenseVectors, IndexCache};
+use crate::rerank::Reranker;
 use crate::sparse::SparseIndexer;
-use crate::storage::StalenessDiff;
+use crate::storage::{SearchManifest, StalenessDiff};
 use crate::{RankedChunk, SearchError, SearchResult};
 
 /// Default empty string for fallback when chunk text is missing.
@@ -43,7 +46,7 @@ use crate::embeddings::{Embedder, EmbeddingConfig, TaskType};
 #[serde(rename_all = "lowercase")]
 #[non_exhaustive]
 pub enum SearchMode {
-    /// Run dense (cosine) + sparse (BM25) and fuse via RRF.
+    /// Weighted mean of dense (cosine) and sparse (BM25) scores.
     #[default]
     Hybrid,
     /// Dense (cosine similarity) only.
@@ -91,13 +94,11 @@ pub struct SearchOptions {
     pub mode: SearchMode,
     /// Maximum number of results to return.
     pub max_results: usize,
-    /// RRF rank-damping constant (default 60).
-    pub rrf_k: f64,
-    /// Weight multiplier for BM25 side of RRF (default 1.0).
+    /// Weight of the BM25 score in hybrid mode (default 1.0).
     pub rrf_bm25_weight: f64,
-    /// Weight multiplier for cosine side of RRF (default 1.0).
+    /// Weight of the cosine similarity in hybrid mode (default 1.0).
     pub rrf_cosine_weight: f64,
-    /// Recency weight applied post-RRF fusion (default 0.5). Set to 0 to disable.
+    /// How strongly to favor recent documents (default 0.5). Set to 0 to disable.
     pub rrf_recency_weight: f64,
     /// Skip staleness check and reindexing; use existing index as-is.
     pub no_reindex: bool,
@@ -112,7 +113,6 @@ impl Default for SearchOptions {
         Self {
             mode: SearchMode::default(),
             max_results: sc.max_results,
-            rrf_k: sc.rrf_k,
             rrf_bm25_weight: sc.rrf_bm25_weight,
             rrf_cosine_weight: sc.rrf_cosine_weight,
             rrf_recency_weight: sc.rrf_recency_weight,
@@ -128,7 +128,6 @@ impl SearchOptions {
         Self {
             mode: SearchMode::default(),
             max_results: config.max_results,
-            rrf_k: config.rrf_k,
             rrf_bm25_weight: config.rrf_bm25_weight,
             rrf_cosine_weight: config.rrf_cosine_weight,
             rrf_recency_weight: config.rrf_recency_weight,
@@ -153,6 +152,9 @@ pub struct SearchOutcome {
     pub results: Vec<RankedChunk>,
     /// Effective search mode used (may differ from requested due to auto-degradation).
     pub mode_used: SearchMode,
+    /// Whether the rerank model decided the results. False when none is
+    /// configured, it failed, or the index is empty.
+    pub reranked: bool,
 }
 
 /// Run the full search pipeline.
@@ -161,7 +163,8 @@ pub struct SearchOutcome {
 /// 1. **Freshen** — staleness check + conditional reindex (unless `no_reindex`).
 /// 2. **Load** — manifest chunks, chunk texts, dense vectors, rebuild BM25.
 /// 3. **Embed query** — only for Dense/Hybrid mode.
-/// 4. **Score & rank** — cosine top-k, BM25, or RRF fusion.
+/// 4. **Score & rank** — by the rerank model when configured; otherwise by
+///    cosine similarity, scaled BM25, or their weighted mean.
 /// 5. **Map** — chunk indices back to [`RankedChunk`] with file path, heading, preview.
 pub async fn search(
     base_path: &Path,
@@ -200,6 +203,7 @@ pub async fn search(
         return Ok(SearchOutcome {
             results: Vec::new(),
             mode_used: options.mode,
+            reranked: false,
         });
     }
 
@@ -304,72 +308,79 @@ pub async fn search(
         }
     };
 
-    // Score & rank based on the typed inputs.
-    let fused: Vec<(usize, f64)> = match inputs {
+    // Score each path the mode uses, with the weight each carries in the
+    // combined score.
+    let (mut dense_scores, mut sparse_scores, w_dense, w_sparse) = match inputs {
         ScoreInputs::Dense { query_vec, dense } => {
-            let dense_scores = score_dense(dense, &query_vec, options.max_results);
-            rrf_fuse(
-                &dense_scores,
-                &[],
-                options.rrf_k,
-                options.rrf_cosine_weight,
-                0.0,
-            )
+            (score_dense(dense, &query_vec), Vec::new(), 1.0, 0.0)
         }
-        ScoreInputs::Sparse { indexer } => {
-            let sparse_scores = indexer.score_query(query);
-            rrf_fuse(
-                &[],
-                &sparse_scores,
-                options.rrf_k,
-                0.0,
-                options.rrf_bm25_weight,
-            )
-        }
+        ScoreInputs::Sparse { indexer } => (Vec::new(), indexer.score_query(query), 0.0, 1.0),
         ScoreInputs::Hybrid {
             query_vec,
             dense,
             indexer,
-        } => {
-            // Use 2x max_results for cosine to give BM25 long-tail terms a chance.
-            let dense_scores = score_dense(dense, &query_vec, options.max_results * 2);
-            let sparse_scores = indexer.score_query(query);
-            rrf_fuse(
-                &dense_scores,
-                &sparse_scores,
-                options.rrf_k,
-                options.rrf_cosine_weight,
-                options.rrf_bm25_weight,
-            )
-        }
+        } => (
+            score_dense(dense, &query_vec),
+            indexer.score_query(query),
+            options.rrf_cosine_weight,
+            options.rrf_bm25_weight,
+        ),
     };
 
+    // Drop chunks without the requested tags (AND logic, case-insensitive)
+    // before anything picks the best of them.
+    let filter_tags: Vec<String> = options.tags.iter().map(|t| t.to_lowercase()).collect();
+    let tagged = |idx: usize| {
+        filter_tags.is_empty()
+            || manifest.chunks.get(idx).is_some_and(|entry| {
+                let tags: Vec<String> = entry.tags.iter().map(|t| t.to_lowercase()).collect();
+                filter_tags.iter().all(|wanted| tags.contains(wanted))
+            })
+    };
+    dense_scores.retain(|&(idx, _)| tagged(idx));
+    sparse_scores.retain(|&(idx, _)| tagged(idx));
+
+    let reranked = match Reranker::from_search_config(&config.search) {
+        Some(reranker) => {
+            // Both lists are sorted best first.
+            let pool = config.search.rerank_candidates.max(1);
+            let dense = dense_scores
+                .iter()
+                .take(pool)
+                .filter(|&&(_, score)| f64::from(score) >= config.search.rerank_min_cosine);
+            let sparse = sparse_scores
+                .iter()
+                .take(pool)
+                .filter(|&&(_, score)| score >= config.search.rerank_min_bm25);
+            let candidates: BTreeSet<usize> = dense
+                .map(|&(idx, _)| idx)
+                .chain(sparse.map(|&(idx, _)| idx))
+                .collect();
+            let max_chars = config.search.rerank_max_chars.max(1);
+            let documents = rerank_documents(candidates, manifest, chunk_texts, max_chars);
+            rerank(&reranker, query, documents).await
+        }
+        None => None,
+    };
+    let was_reranked = reranked.is_some();
+    let scored = reranked
+        .unwrap_or_else(|| combine_scores(&dense_scores, &sparse_scores, w_dense, w_sparse));
+
     // Apply recency weighting if configured.
-    let fused = if options.rrf_recency_weight > 0.0 {
-        apply_recency_boost(&fused, manifest, options.rrf_recency_weight)
+    let scored = if options.rrf_recency_weight > 0.0 {
+        apply_recency_boost(&scored, manifest, options.rrf_recency_weight)
     } else {
-        fused
+        scored
     };
 
     // Truncate to max_results.
-    let top_results: Vec<(usize, f64)> = fused.into_iter().take(options.max_results).collect();
+    let top_results: Vec<(usize, f64)> = scored.into_iter().take(options.max_results).collect();
 
     // ---- Step 5: Map chunk indices to RankedChunk ----
-    // Normalize requested tags to lowercase for case-insensitive matching.
-    let filter_tags: Vec<String> = options.tags.iter().map(|t| t.to_lowercase()).collect();
-
     let results: Vec<RankedChunk> = top_results
         .into_iter()
         .filter_map(|(chunk_idx, score)| {
             let entry = manifest.chunks.get(chunk_idx)?;
-
-            // Filter by tags (AND logic: must match all specified tags)
-            if !filter_tags.is_empty() {
-                let chunk_tags: Vec<String> = entry.tags.iter().map(|t| t.to_lowercase()).collect();
-                if !filter_tags.iter().all(|ft| chunk_tags.contains(ft)) {
-                    return None;
-                }
-            }
 
             let text = chunk_texts
                 .get(chunk_idx)
@@ -397,36 +408,100 @@ pub async fn search(
     Ok(SearchOutcome {
         results,
         mode_used: final_mode,
+        reranked: was_reranked,
     })
 }
 
-/// Cosine top-k over the stored vectors, reported as chunk indices.
-fn score_dense(dense: &DenseVectors, query_vec: &[f32], k: usize) -> Vec<(usize, f32)> {
-    cosine_top_k(&dense.vectors, query_vec, k)
+/// Cosine similarity of every stored vector, highest first, reported as chunk
+/// indices.
+fn score_dense(dense: &DenseVectors, query_vec: &[f32]) -> Vec<(usize, f32)> {
+    cosine_top_k(&dense.vectors, query_vec, dense.vectors.len())
         .into_iter()
         .map(|(i, score)| (dense.chunks[i], score))
         .collect()
 }
 
-/// Apply recency weighting to fused search results.
+/// What the rerank model reads for each candidate chunk: its title and the
+/// start of its text, paired with the chunk's index.
+fn rerank_documents(
+    candidates: BTreeSet<usize>,
+    manifest: &SearchManifest,
+    chunk_texts: &[String],
+    max_chars: usize,
+) -> Vec<(usize, String)> {
+    candidates
+        .into_iter()
+        .filter_map(|idx| {
+            let entry = manifest.chunks.get(idx)?;
+            let text = chunk_texts.get(idx).map_or(EMPTY_STR, String::as_str);
+            let text = truncate_chars(text, max_chars);
+            let title = document_title(
+                &entry.source_file,
+                &entry.heading_path,
+                entry.heading.as_deref(),
+            );
+            let document = match title {
+                Some(title) => format!("{title}\n{text}"),
+                None => text.to_string(),
+            };
+            Some((idx, document))
+        })
+        .collect()
+}
+
+/// Score the candidate documents with the rerank model, best first. No
+/// candidates means no results. `None` when the model gives no usable answer.
+async fn rerank(
+    reranker: &Reranker<'_>,
+    query: &str,
+    candidates: Vec<(usize, String)>,
+) -> Option<Vec<(usize, f64)>> {
+    if candidates.is_empty() {
+        return Some(Vec::new());
+    }
+    let (indices, documents): (Vec<usize>, Vec<String>) = candidates.into_iter().unzip();
+
+    match reranker.score(query, &documents).await {
+        Ok(scores) => {
+            let mut scored: Vec<(usize, f64)> = indices.into_iter().zip(scores).collect();
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+            Some(scored)
+        }
+        Err(e) => {
+            tracing::warn!("Reranking failed: {e}. Using combined scores.");
+            None
+        }
+    }
+}
+
+/// The first `max` characters of `text`.
+fn truncate_chars(text: &str, max: usize) -> &str {
+    text.char_indices()
+        .nth(max)
+        .map_or(text, |(end, _)| &text[..end])
+}
+
+/// Apply recency weighting to scored search results.
 ///
 /// For each chunk, looks up its document date (from frontmatter) or falls back
 /// to the file's mtime. Normalizes dates to [0, 1] relative to the corpus,
-/// then boosts scores: `adjusted = score * (1 + weight * factor)`.
+/// then scales scores: `adjusted = score * (1 + weight * factor) / (1 + weight)`.
+/// The newest keeps its score and older ones lose some, so scores stay in
+/// `0..=1` and recency alone never lifts a poor match.
 fn apply_recency_boost(
-    fused: &[(usize, f64)],
+    scored: &[(usize, f64)],
     manifest: &crate::storage::SearchManifest,
     weight: f64,
 ) -> Vec<(usize, f64)> {
-    if fused.is_empty() {
-        return fused.to_vec();
+    if scored.is_empty() {
+        return scored.to_vec();
     }
 
     // Build a map from chunk_idx to epoch seconds.
     // Fall back to file mtime when no frontmatter date is available.
     let mut file_mtime_cache: std::collections::HashMap<String, u64> =
         std::collections::HashMap::new();
-    let dates: Vec<u64> = fused
+    let dates: Vec<u64> = scored
         .iter()
         .map(|&(chunk_idx, _)| {
             let entry = manifest.chunks.get(chunk_idx);
@@ -466,14 +541,14 @@ fn apply_recency_boost(
     };
 
     // Apply boost and re-sort.
-    let mut scored: Vec<(usize, f64)> = fused
+    let mut boosted: Vec<(usize, f64)> = scored
         .iter()
         .zip(factors)
-        .map(|((idx, score), factor)| (*idx, *score * (1.0 + weight * factor)))
+        .map(|((idx, score), factor)| (*idx, *score * (1.0 + weight * factor) / (1.0 + weight)))
         .collect();
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored
+    boosted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    boosted
 }
 
 /// Extract a preview of ~`max_len` characters from the beginning of the text.
@@ -494,6 +569,7 @@ fn extract_preview(text: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::tests::FakeEndpoint;
     use crate::storage::ChunkConfigSnapshot;
     use crate::storage::SearchIndex;
     use notectl_core::config::SearchConfig;
@@ -597,7 +673,6 @@ mod tests {
         let opts = SearchOptions::default();
         assert_eq!(opts.mode, SearchMode::Hybrid);
         assert_eq!(opts.max_results, 50);
-        assert!((opts.rrf_k - 60.0).abs() < f64::EPSILON);
         assert!((opts.rrf_bm25_weight - 1.0).abs() < f64::EPSILON);
         assert!((opts.rrf_cosine_weight - 1.0).abs() < f64::EPSILON);
         assert!(!opts.no_reindex);
@@ -607,14 +682,12 @@ mod tests {
     fn test_search_options_from_config() {
         let sc = SearchConfig {
             max_results: 10,
-            rrf_k: 40.0,
             rrf_bm25_weight: 2.0,
             rrf_cosine_weight: 0.5,
             ..Default::default()
         };
         let opts = SearchOptions::from_config(&sc);
         assert_eq!(opts.max_results, 10);
-        assert!((opts.rrf_k - 40.0).abs() < f64::EPSILON);
         assert!((opts.rrf_bm25_weight - 2.0).abs() < f64::EPSILON);
         assert!((opts.rrf_cosine_weight - 0.5).abs() < f64::EPSILON);
     }
@@ -1136,6 +1209,242 @@ mod tests {
         );
     }
 
+    // ---- Score tests ----
+
+    /// Two notes the fake endpoint embeds at right angles to each other,
+    /// searched with a query embedded in the same direction as `near.md`.
+    async fn search_embedded(mode: SearchMode, query: &str) -> SearchOutcome {
+        search_pair(mode, query, None).await
+    }
+
+    async fn search_pair(
+        mode: SearchMode,
+        query: &str,
+        rerank_model: Option<&str>,
+    ) -> SearchOutcome {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let (_fake, mut config) = FakeEndpoint::start().await;
+        config.search.rerank_model = rerank_model.map(String::from);
+        for (name, word) in [("near.md", "rust "), ("far.md", "orthogonal ")] {
+            let note = format!("## Note\n\n{}", word.repeat(80));
+            std::fs::write(base.join(name), note).unwrap();
+        }
+        crate::index::build_index(base, &config, false, notectl_core::progress::ignore())
+            .await
+            .unwrap();
+
+        let options = SearchOptions {
+            mode,
+            rrf_recency_weight: 0.0,
+            ..Default::default()
+        };
+        let outcome = search(
+            base,
+            &config,
+            query,
+            options,
+            notectl_core::progress::ignore(),
+            &IndexCache::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.mode_used, mode);
+        outcome
+    }
+
+    fn score_of(outcome: &SearchOutcome, file: &str) -> f64 {
+        let result = outcome.results.iter().find(|r| r.source_file == file);
+        result.unwrap().score
+    }
+
+    #[tokio::test]
+    async fn dense_score_is_cosine_similarity() {
+        let outcome = search_embedded(SearchMode::Dense, "rust").await;
+
+        assert_eq!(score_of(&outcome, "near.md"), 1.0);
+        assert_eq!(score_of(&outcome, "far.md"), 0.0);
+    }
+
+    #[tokio::test]
+    async fn hybrid_score_averages_cosine_and_bm25() {
+        let sparse = search_embedded(SearchMode::Sparse, "rust").await;
+        let hybrid = search_embedded(SearchMode::Hybrid, "rust").await;
+
+        let expected = (1.0 + score_of(&sparse, "near.md")) / 2.0;
+        assert!((score_of(&hybrid, "near.md") - expected).abs() < 1e-9);
+        assert_eq!(score_of(&hybrid, "far.md"), 0.0);
+    }
+
+    #[tokio::test]
+    async fn reranker_sets_scores_and_order() {
+        for mode in [SearchMode::Hybrid, SearchMode::Dense] {
+            let outcome = search_pair(mode, "rust", Some("rerank")).await;
+
+            assert!(outcome.reranked);
+            assert_eq!(outcome.results[0].source_file, "far.md");
+            assert_eq!(score_of(&outcome, "far.md"), 0.9);
+            assert_eq!(score_of(&outcome, "near.md"), 0.1);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_rerank_falls_back_to_combined_scores() {
+        let outcome = search_pair(SearchMode::Dense, "rust", Some("unavailable")).await;
+
+        assert!(!outcome.reranked);
+        assert_eq!(outcome.results[0].source_file, "near.md");
+        assert_eq!(score_of(&outcome, "near.md"), 1.0);
+    }
+
+    /// Search a fresh index of `notes` (name, body) through the fake endpoint.
+    async fn search_notes(
+        notes: &[(&str, String)],
+        configure: impl FnOnce(&mut Config),
+        options: SearchOptions,
+    ) -> SearchOutcome {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let (_fake, mut config) = FakeEndpoint::start().await;
+        config.search.rerank_model = Some("rerank".to_string());
+        configure(&mut config);
+        for (name, body) in notes {
+            std::fs::write(base.join(name), body).unwrap();
+        }
+        crate::index::build_index(base, &config, false, notectl_core::progress::ignore())
+            .await
+            .unwrap();
+        search(
+            base,
+            &config,
+            "rust",
+            options,
+            notectl_core::progress::ignore(),
+            &IndexCache::default(),
+        )
+        .await
+        .unwrap()
+    }
+
+    fn note(body: &str) -> String {
+        format!("## Note\n\n{body}")
+    }
+
+    fn files(outcome: &SearchOutcome) -> Vec<&str> {
+        outcome
+            .results
+            .iter()
+            .map(|r| r.source_file.as_str())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn reranker_only_reads_chunks_above_a_cutoff() {
+        let notes = [
+            ("near.md", note(&"rust ".repeat(80))),
+            ("far.md", note(&"orthogonal ".repeat(80))),
+        ];
+        let outcome = search_notes(
+            &notes,
+            |config| config.search.rerank_min_cosine = 0.5,
+            SearchOptions::default(),
+        )
+        .await;
+
+        assert_eq!(files(&outcome), ["near.md"]);
+    }
+
+    #[tokio::test]
+    async fn nothing_above_the_cutoffs_means_no_results() {
+        let notes = [("near.md", note(&"rust ".repeat(80)))];
+        let outcome = search_notes(
+            &notes,
+            |config| {
+                config.search.rerank_min_cosine = 1.1;
+                config.search.rerank_min_bm25 = 1.1;
+            },
+            SearchOptions::default(),
+        )
+        .await;
+
+        assert!(outcome.reranked);
+        assert!(outcome.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reranker_reads_only_the_start_of_a_long_chunk() {
+        // One chunk, with the word the fake reranker likes past the cap.
+        let body = format!("{}orthogonal", "abcdefghij ".repeat(250));
+        let notes = [("long.md", note(&body))];
+        let options = SearchOptions {
+            rrf_recency_weight: 0.0,
+            ..Default::default()
+        };
+        let outcome = search_notes(&notes, |_| {}, options).await;
+
+        assert_eq!(outcome.results.len(), 1);
+        assert_eq!(outcome.results[0].score, 0.1);
+    }
+
+    #[tokio::test]
+    async fn rerank_limits_come_from_config() {
+        let notes = [
+            ("a.md", note(&format!("{}orthogonal", "rust ".repeat(80)))),
+            ("b.md", note(&"rust ".repeat(80))),
+        ];
+        let options = SearchOptions {
+            mode: SearchMode::Sparse,
+            rrf_recency_weight: 0.0,
+            ..Default::default()
+        };
+        let outcome = search_notes(
+            &notes,
+            |config| {
+                config.search.rerank_candidates = 1;
+                config.search.rerank_max_chars = 20;
+            },
+            options,
+        )
+        .await;
+
+        // One candidate, cut before the word the fake reranker likes.
+        assert_eq!(outcome.results.len(), 1);
+        assert_eq!(outcome.results[0].score, 0.1);
+    }
+
+    #[test]
+    fn truncation_counts_characters() {
+        assert_eq!(truncate_chars("héllo", 2), "hé");
+        assert_eq!(truncate_chars("hé", 5), "hé");
+    }
+
+    #[tokio::test]
+    async fn tagged_chunks_are_found_behind_many_better_untagged_ones() {
+        let mut names: Vec<String> = (0..SearchConfig::default().rerank_candidates + 1)
+            .map(|i| format!("{i:02}.md"))
+            .collect();
+        names.push("zz.md".to_string());
+        let notes: Vec<(&str, String)> = names
+            .iter()
+            .map(|name| {
+                let body = note(&"rust ".repeat(80));
+                let body = if name == "zz.md" {
+                    format!("---\ntags: [keep]\n---\n\n{body}")
+                } else {
+                    body
+                };
+                (name.as_str(), body)
+            })
+            .collect();
+        let options = SearchOptions {
+            tags: vec!["Keep".to_string()],
+            ..Default::default()
+        };
+        let outcome = search_notes(&notes, |_| {}, options).await;
+
+        assert_eq!(files(&outcome), ["zz.md"]);
+    }
+
     // ---- Recency scoring tests ----
 
     #[test]
@@ -1254,10 +1563,10 @@ mod tests {
         // Newest should rank first
         assert_eq!(result[0].0, 1, "newest doc should rank first");
         assert_eq!(result[1].0, 0, "oldest doc should rank second");
-        // Newest gets boosted: 1.0 * (1 + 0.5 * 1.0) = 1.5
-        assert!((result[0].1 - 1.5).abs() < f64::EPSILON);
-        // Oldest gets neutral: 1.0 * (1 + 0.5 * 0.0) = 1.0
-        assert!((result[1].1 - 1.0).abs() < f64::EPSILON);
+        // Newest keeps its score: 1.0 * (1 + 0.5 * 1.0) / 1.5 = 1.0
+        assert!((result[0].1 - 1.0).abs() < f64::EPSILON);
+        // Oldest is scaled down: 1.0 * (1 + 0.5 * 0.0) / 1.5
+        assert!((result[1].1 - 1.0 / 1.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1307,7 +1616,7 @@ mod tests {
         let result = apply_recency_boost(&fused, &manifest, 0.5);
 
         // All same date -> factor 0.5, so both get same multiplier
-        let multiplier = 1.0 + 0.5 * 0.5; // 1.25
+        let multiplier = (1.0 + 0.5 * 0.5) / 1.5;
         // Higher original score should still rank first
         assert_eq!(result[0].0, 1, "higher original score should rank first");
         assert!((result[0].1 - 2.0 * multiplier).abs() < f64::EPSILON);
@@ -1363,7 +1672,7 @@ mod tests {
             chunks: vec![1, 3],
             vectors: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
         };
-        let scores = score_dense(&dense, &[1.0, 0.0], 2);
+        let scores = score_dense(&dense, &[1.0, 0.0]);
         assert_eq!(scores, vec![(3, 1.0), (1, 0.0)]);
     }
 }

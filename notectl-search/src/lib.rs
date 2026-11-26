@@ -6,6 +6,7 @@ pub mod embeddings;
 pub mod fusion;
 pub mod index;
 mod loaded;
+mod rerank;
 pub mod search;
 pub mod sparse;
 pub mod storage;
@@ -74,7 +75,12 @@ pub struct RankedChunk {
     pub id: String,
     /// Source file path
     pub source_file: String,
-    /// Relevance score (higher = more relevant)
+    /// How well the chunk matches the query, from 0 to 1 (higher is better).
+    /// When the response says `reranked`, this is the rerank model's score.
+    /// Otherwise it is cosine similarity (dense mode), BM25 as a share of the
+    /// most the query could score (sparse), or their weighted mean (hybrid).
+    /// A recency boost scales older results down. Recalibrate thresholds after
+    /// changing models.
     pub score: f64,
     /// Optional heading context
     pub heading: Option<String>,

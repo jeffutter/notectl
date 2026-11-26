@@ -165,13 +165,17 @@ The `[search]` section in `.notectl.toml` controls indexing and search behavior:
 [search]
 model_id = "qwen3-embedding:0.6b"            # Model name sent to the embedding API
 embedding_api_base = "https://your-server/v1" # OpenAI-compatible endpoint; unset = BM25-only
+rerank_model = "rerank"                      # Reranker at {embedding_api_base}/rerank; unset = off
+rerank_min_cosine = 0.0                      # Cutoff for dense chunks sent to the reranker
+rerank_min_bm25 = 0.0                        # Cutoff (0..1) for keyword chunks sent to the reranker
+rerank_candidates = 20                       # Chunks each search sends to the reranker
+rerank_max_chars = 2000                      # Characters of each chunk the reranker reads
 embedding_dim = 4096                         # Embedding dimension ceiling (matryoshka truncation)
 max_seq_tokens = 512                         # Max sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Min tokens per chunk before merging forward
-rrf_k = 60.0                                 # RRF k parameter
-rrf_bm25_weight = 1.0                        # BM25 weight in RRF fusion
-rrf_cosine_weight = 1.0                      # Cosine weight in RRF fusion
+rrf_bm25_weight = 1.0                        # BM25 weight in hybrid mode
+rrf_cosine_weight = 1.0                      # Cosine weight in hybrid mode
 max_results = 50                             # Max results per query
 merge_threshold = 30                         # Merge tiny sections below this token count
 rrf_recency_weight = 0.5                     # Recency boost weight when --enable-recency is set
@@ -182,7 +186,7 @@ No model runs in-process — dense search calls out to whatever OpenAI-compatibl
 `/v1/embeddings` server `embedding_api_base` points at. If unset or unreachable,
 search degrades to BM25 keyword-only automatically.
 
-All `[search]` keys can be overridden via `NOTECTL_SEARCH_<KEY>` environment variables (e.g., `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_RRF_K`). See README.md for the full table.
+All `[search]` keys can be overridden via `NOTECTL_SEARCH_<KEY>` environment variables (e.g., `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_RRF_BM25_WEIGHT`). See README.md for the full table.
 
 ## Architecture
 
@@ -250,7 +254,8 @@ notectl/                              (workspace root + main binary)
       loaded.rs                       (in-memory index, cached between queries)
       bm25.rs                         (BM25 sparse scoring)
       sparse.rs                       (sparse vector storage)
-      fusion.rs                       (RRF fusion of dense + sparse results)
+      rerank.rs                       (HTTP client for the /rerank endpoint)
+      fusion.rs                       (cosine ranking, dense + sparse score combination)
       storage.rs                      (persistent index storage, streaming VectorWriter)
       tokenize.rs                     (text tokenization)
       embeddings/mod.rs               (HTTP client for any OpenAI-compatible /v1/embeddings endpoint)
@@ -306,7 +311,7 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
 - **`notectl-files`**: File tree listing and content reading
 - **`notectl-daily-notes`**: Daily note lookup by date pattern
 - **`notectl-outline`**: Heading hierarchy extraction
-- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, dense embeddings via an OpenAI-compatible HTTP endpoint, RRF fusion, persistent index storage). Feature-gated behind `search`.
+- **`notectl-search`**: Semantic + keyword search (chunking, BM25 sparse scoring, dense embeddings via an OpenAI-compatible HTTP endpoint, dense + sparse score combination, persistent index storage). Feature-gated behind `search`.
 
 ### Task Extraction Pipeline
 

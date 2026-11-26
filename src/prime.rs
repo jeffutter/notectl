@@ -203,6 +203,19 @@ to get `progress` events, then one `result` or `error` event.
   --recency-weight <f64>     recency boost weight when enabled (default 0.5; config: rrf_recency_weight)
 
 Output fields per result: id, source_file, score, heading (optional), date (optional), preview
+  score   match quality, 0 to 1, higher is better.
+          reranked=true: the rerank model's score (config: rerank_model). The
+          mode only chooses which chunks it reads: the best rerank_candidates
+          per search (default 20), above rerank_min_cosine / rerank_min_bm25,
+          first rerank_max_chars of each (default 2000). So at most
+          rerank_candidates results (twice that in hybrid), whatever --limit
+          says, and none when nothing passes the cutoffs.
+          reranked=false (no model, or it was unavailable): dense: cosine
+          similarity. sparse: BM25 as a share of the most the query could score.
+          hybrid: weighted mean of the two (config: rrf_cosine_weight,
+          rrf_bm25_weight).
+          Check reranked and mode_used before comparing scores. Recalibrate any
+          threshold after changing models.
 
 Examples:
   {bin} index{v}

@@ -206,7 +206,7 @@ notectl search-headings path/to/vault --pattern "Setup" --min-level 2 --max-leve
 
 ### Search Operations
 
-Semantic and keyword search across indexed notes — hybrid search (dense embeddings + sparse BM25 fused via RRF) is built in.
+Semantic and keyword search across indexed notes — hybrid search (a weighted mean of dense embedding and sparse BM25 scores) is built in.
 
 Dense search calls out to an OpenAI-compatible `/v1/embeddings` HTTP endpoint (e.g. llama.cpp/llama-swap, vLLM, Ollama, OpenAI itself) — no model runs in-process. If no endpoint is configured, or it's unreachable, searches degrade gracefully to keyword-only (BM25) with no configuration needed.
 
@@ -226,7 +226,7 @@ notectl index path/to/vault --model qwen3-embedding:0.6b --dim 1024
 Search across indexed notes:
 
 ```bash
-# Hybrid search (dense + sparse BM25 fused via RRF) — default mode
+# Hybrid search (dense + sparse BM25 combined) — default mode
 notectl search path/to/vault "project timeline"
 
 # Dense vector search only (auto-degrades to sparse if embeddings unavailable)
@@ -239,7 +239,21 @@ notectl search path/to/vault "error handling" --mode sparse
 notectl search path/to/vault "architecture" --no-reindex true
 ```
 
-Each result includes: `id`, `source_file`, `score`, `heading` (optional), and `preview` text.
+Each result includes: `id`, `source_file`, `score`, `heading` (optional), `date` (optional), and `preview` text.
+
+`score` says how well a result matches, from 0 to 1. Results are ordered by it.
+
+With a [rerank model](#reranking) configured, `score` is that model's score for the query and chunk, and the response has `reranked: true`. The mode only chooses which chunks the model reads: the best `rerank_candidates` (default 20) by cosine similarity, by BM25, or both.
+
+Without one, or when it is unavailable, `reranked` is `false` and `score` depends on `mode_used`:
+
+| `mode_used` | `score` |
+| --- | --- |
+| `dense` | Cosine similarity between the query and the chunk, with negative values counted as 0. |
+| `sparse` | BM25 keyword score as a share of the most the query could score. Words missing from a chunk, or from the whole vault, lower it. |
+| `hybrid` | Weighted mean of the two above (`rrf_cosine_weight`, `rrf_bm25_weight`, equal by default). |
+
+Scores from different modes, or with and without reranking, aren't comparable. Recalibrate any threshold after changing models. `--enable-recency` scales older results down.
 
 The response also includes `mode_used` which reflects the actual mode that ran — if you request `dense` but embeddings are unavailable, it auto-degrades to `sparse` and reports this in the response.
 
@@ -257,6 +271,34 @@ Upgrading from an index written by an older version embeds everything once.
 
 The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
 
+### Reranking
+
+Set `rerank_model` to have a reranker score and order results. notectl sends the query and candidate chunks to `{embedding_api_base}/rerank` with the same API key, using the Cohere-style request that LiteLLM, vLLM and llama.cpp accept. The model must return scores from 0 to 1.
+
+```toml
+[search]
+embedding_api_base = "https://your-server/v1"
+rerank_model = "rerank"
+```
+
+Each search then makes a second model call, whose time grows with the amount of text sent. Two settings bound it. `--limit` changes neither.
+
+```toml
+rerank_candidates = 20     # chunks taken from each search (dense, BM25)
+rerank_max_chars = 2000    # characters of each chunk the model reads
+```
+
+A reranked search returns at most `rerank_candidates` results (twice that in hybrid mode), even with a larger `--limit`. Lowering it is faster but misses good matches that the first pass ranked low.
+
+Two optional cutoffs drop weak chunks before they are sent. If none pass, the search returns no results.
+
+```toml
+rerank_min_cosine = 0.50   # cosine similarity; the useful value depends on the embedding model
+rerank_min_bm25 = 0.20     # BM25 as a share of the most the query could score, 0 to 1
+```
+
+Both default to 0 (no cutoff). The values above are examples from one vault and model; check them against your own.
+
 ### Configuring the Embedding Endpoint
 
 There is no bundled or local embedding model. Point `embedding_api_base` at any server that
@@ -271,7 +313,7 @@ embedding_api_base = "https://your-server/v1"
 ```
 
 Also settable via `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_EMBEDDING_API_BASE`, and
-`NOTECTL_SEARCH_EMBEDDING_API_KEY`. Changing `model_id` or `embedding_dim` re-embeds everything.
+`NOTECTL_SEARCH_EMBEDDING_API_KEY` (and `NOTECTL_SEARCH_RERANK_MODEL`). Changing `model_id` or `embedding_dim` re-embeds everything.
 Changing `embedding_api_base` does not, so use `--reindex true` if the new server runs a different
 model under the same name. `embedding_dim` (default: 4096, effectively "no truncation") lets you
 opt into Matryoshka truncation for models that support it, to save storage.
@@ -441,12 +483,12 @@ embedding_dim = 4096                         # Embedding dimension ceiling (matr
 max_seq_tokens = 512                         # Maximum sequence tokens for chunking
 chunk_overlap_tokens = 64                    # Token overlap between adjacent chunks
 min_chunk_tokens = 32                        # Minimum tokens per chunk before merging forward
-rrf_k = 60.0                                 # RRF k parameter for reciprocal rank fusion
-rrf_bm25_weight = 1.0                        # Weight for BM25 scores in RRF fusion
-rrf_cosine_weight = 1.0                      # Weight for cosine scores in RRF fusion
+rrf_bm25_weight = 1.0                        # Weight of the BM25 score in hybrid mode
+rrf_cosine_weight = 1.0                      # Weight of the cosine similarity in hybrid mode
 max_results = 50                             # Maximum results returned per query
 merge_threshold = 30                         # Merge tiny sections below this token count
-rrf_recency_weight = 0.5                     # Recency boost weight when --enable-recency is set (post-RRF fusion)
+rrf_recency_weight = 0.5                     # Recency boost weight when --enable-recency is set
+rerank_model = "rerank"                        # Optional: score results with a reranker
 cache_dir = ".notectl/search"                # Index cache directory
 ```
 
@@ -457,12 +499,16 @@ All search config values can also be overridden via environment variables:
 | `NOTECTL_SEARCH_MODEL_ID`        | `search.model_id`    |
 | `NOTECTL_SEARCH_EMBEDDING_API_BASE` | `search.embedding_api_base` |
 | `NOTECTL_SEARCH_EMBEDDING_API_KEY`  | `search.embedding_api_key` |
+| `NOTECTL_SEARCH_RERANK_MODEL`       | `search.rerank_model` |
+| `NOTECTL_SEARCH_RERANK_MIN_COSINE`  | `search.rerank_min_cosine` |
+| `NOTECTL_SEARCH_RERANK_MIN_BM25`    | `search.rerank_min_bm25` |
+| `NOTECTL_SEARCH_RERANK_CANDIDATES`  | `search.rerank_candidates` |
+| `NOTECTL_SEARCH_RERANK_MAX_CHARS`   | `search.rerank_max_chars` |
 | `NOTECTL_SEARCH_EMBEDDING_DIM`   | `search.embedding_dim` |
 | `NOTECTL_SEARCH_MAX_SEQ_TOKENS`  | `search.max_seq_tokens` |
 | `NOTECTL_SEARCH_CHUNK_OVERLAP_TOKENS` | `search.chunk_overlap_tokens` |
 | `NOTECTL_SEARCH_MIN_CHUNK_TOKENS` | `search.min_chunk_tokens` |
 | `NOTECTL_SEARCH_MERGE_THRESHOLD` | `search.merge_threshold` |
-| `NOTECTL_SEARCH_RRF_K`           | `search.rrf_k`       |
 | `NOTECTL_SEARCH_RRF_BM25_WEIGHT` | `search.rrf_bm25_weight` |
 | `NOTECTL_SEARCH_RRF_COSINE_WEIGHT` | `search.rrf_cosine_weight` |
 | `NOTECTL_SEARCH_RRF_RECENCY_WEIGHT` | `search.rrf_recency_weight` |

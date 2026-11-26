@@ -13,7 +13,7 @@ use notectl_core::config::Config;
 use notectl_core::progress::{Progress, ProgressSink};
 
 use crate::SearchError;
-use crate::chunker::{Chunk, Chunker};
+use crate::chunker::Chunker;
 use crate::storage::{
     ChunkConfigSnapshot, ChunkEntry, FileInfo, SearchIndex, SearchManifest, StalenessDiff,
     VectorWriter, blake3_hash_str, chrono_now_rfc3339, compute_overall_content_hash,
@@ -273,7 +273,11 @@ impl<'a> IndexBuilder<'a> {
             self.index.write_chunks(&chunks)?;
 
             for chunk in chunks {
-                let title = document_title(&chunk);
+                let title = document_title(
+                    &chunk.source_file,
+                    &chunk.heading_path,
+                    chunk.heading.as_deref(),
+                );
                 let key = document_key(
                     &config.search.model_id,
                     config.search.embedding_dim,
@@ -461,16 +465,20 @@ impl<'a> IndexBuilder<'a> {
 
 /// The title embedded with a chunk: the headings leading to it, ending with
 /// its own. The file's name stands in when there is no parent heading.
-fn document_title(chunk: &Chunk) -> Option<String> {
-    let mut parts = chunk.heading_path.clone();
+pub(crate) fn document_title(
+    source_file: &str,
+    heading_path: &[String],
+    heading: Option<&str>,
+) -> Option<String> {
+    let mut parts: Vec<String> = heading_path.to_vec();
     if parts.is_empty() {
         parts.extend(
-            Path::new(&chunk.source_file)
+            Path::new(source_file)
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned()),
         );
     }
-    parts.extend(chunk.heading.clone().filter(|h| !h.is_empty()));
+    parts.extend(heading.filter(|h| !h.is_empty()).map(String::from));
     (!parts.is_empty()).then(|| parts.join(" > "))
 }
 
@@ -535,7 +543,7 @@ pub async fn build_index(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use notectl_core::config::{Config, SearchConfig};
     use tempfile::TempDir;
@@ -1021,15 +1029,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     /// An in-process embeddings endpoint that records what it is asked for.
+    /// Text containing "orthogonal" embeds at right angles to all other text.
+    /// The "rerank" model scores such text 0.9 and all other text 0.1.
     #[derive(Clone, Default)]
-    struct FakeEndpoint {
+    pub(crate) struct FakeEndpoint {
         inputs: Arc<Mutex<Vec<String>>>,
         /// Requests still to be served before failing; `None` never fails.
         remaining: Arc<Mutex<Option<usize>>>,
     }
 
     impl FakeEndpoint {
-        async fn start() -> (Self, Config) {
+        pub(crate) async fn start() -> (Self, Config) {
             let fake = Self::default();
             let handler = fake.clone();
             let app = Router::new().route(
@@ -1045,14 +1055,44 @@ mod tests {
                         }
                         let inputs: Vec<String> =
                             serde_json::from_value(body["input"].clone()).unwrap();
-                        let data: Vec<_> = (0..inputs.len())
-                            .map(|i| serde_json::json!({"index": i, "embedding": [1.0, 0.0]}))
+                        let data: Vec<_> = inputs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, input)| {
+                                let embedding = if input.contains("orthogonal") {
+                                    [0.0, 1.0]
+                                } else {
+                                    [1.0, 0.0]
+                                };
+                                serde_json::json!({"index": i, "embedding": embedding})
+                            })
                             .collect();
                         fake.inputs.lock().unwrap().extend(inputs);
                         Ok(Json(serde_json::json!({ "data": data })))
                     }
                 }),
             );
+            let rerank = post(|Json(body): Json<serde_json::Value>| async move {
+                if body["model"] != "rerank" {
+                    return Err(StatusCode::FORBIDDEN);
+                }
+                let documents: Vec<String> =
+                    serde_json::from_value(body["documents"].clone()).unwrap();
+                let results: Vec<_> = documents
+                    .iter()
+                    .enumerate()
+                    .map(|(i, document)| {
+                        let score = if document.contains("orthogonal") {
+                            0.9
+                        } else {
+                            0.1
+                        };
+                        serde_json::json!({"index": i, "relevance_score": score})
+                    })
+                    .collect();
+                Ok(Json(serde_json::json!({ "results": results })))
+            });
+            let app = app.route("/v1/rerank", rerank);
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}/v1", listener.local_addr().unwrap());
             tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
