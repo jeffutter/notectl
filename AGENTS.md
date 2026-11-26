@@ -247,6 +247,7 @@ notectl/                              (workspace root + main binary)
       chunker.rs                      (markdown chunking, token-budget bounding)
       index.rs                        (streaming index build/incremental update)
       search.rs                       (search execution, result ranking)
+      loaded.rs                       (in-memory index, cached between queries)
       bm25.rs                         (BM25 sparse scoring)
       sparse.rs                       (sparse vector storage)
       fusion.rs                       (RRF fusion of dense + sparse results)
@@ -429,7 +430,9 @@ To add a new capability (e.g., for bookmarks):
 Unlike other capabilities, search's MCP tools aren't registered via the
 `#[tool_router]` macro — `src/mcp.rs`'s `search_tools` module manually
 registers `SearchTool`/`IndexTool` via `with_async_tool::<...>()` in
-`TaskSearchService::new`. `notectl-search` itself is a regular, always-on
+`TaskSearchService::new`. `main.rs` passes every MCP session the same
+`CapabilityRegistry` as the REST routes, so keep per-process state (like the
+loaded search index) in a capability. `notectl-search` itself is a regular, always-on
 workspace dependency (not feature-gated) — see `src/capabilities/mod.rs`.
 
 **Gotcha:** rmcp's `#[tool_handler]` macro defaults its `list_tools`/

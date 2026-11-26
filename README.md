@@ -235,7 +235,7 @@ notectl search path/to/vault "deployment steps" --mode dense --limit 10
 # Sparse (BM25) keyword search only
 notectl search path/to/vault "error handling" --mode sparse
 
-# Skip reindexing check, use existing index as-is
+# Skip the change check and reindexing, use the existing index as-is
 notectl search path/to/vault "architecture" --no-reindex true
 ```
 
@@ -249,6 +249,9 @@ The response also includes `mode_used` which reflects the actual mode that ran â
 to the embedding endpoint when no stored vector matches its model, dimension, title and text.
 `search` does this before every query unless you pass `--no-reindex true`. If the endpoint fails,
 the update completes with the vectors it has, and the next `index` or `search` retries the rest.
+
+A running server (`serve`) keeps the loaded index in memory between searches, and reloads it
+when it changes on disk, including when another process rebuilt it.
 
 Upgrading from an index written by an older version embeds everything once.
 

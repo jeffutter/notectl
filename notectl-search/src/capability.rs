@@ -1,3 +1,4 @@
+use crate::loaded::IndexCache;
 use crate::{RankedChunk, SearchMode};
 use clap::{CommandFactory, FromArgMatches};
 use notectl_core::CapabilityResult;
@@ -101,7 +102,10 @@ pub struct SearchRequest {
     pub mode: Option<SearchMode>,
 
     /// Skip staleness check and reindexing
-    #[arg(long, help = "Skip reindexing, use existing index as-is")]
+    #[arg(
+        long,
+        help = "Skip the change check and reindexing; use the existing index"
+    )]
     #[schemars(
         description = "If true, skip the staleness check and use the existing index without rebuilding"
     )]
@@ -176,12 +180,18 @@ pub struct SearchResponse {
 pub struct SearchCapability {
     base_path: PathBuf,
     config: Arc<Config>,
+    /// The loaded index, kept between queries by long-running processes.
+    cache: IndexCache,
 }
 
 impl SearchCapability {
     /// Create a new SearchCapability
     pub fn new(base_path: PathBuf, config: Arc<Config>) -> Self {
-        Self { base_path, config }
+        Self {
+            base_path,
+            config,
+            cache: IndexCache::default(),
+        }
     }
 
     /// Build or update the search index.
@@ -255,6 +265,7 @@ impl SearchCapability {
             &query.query,
             options,
             progress,
+            &self.cache,
         )
         .await
         .map_err(|e| internal_error(format!("Search failed: {e}")))?;

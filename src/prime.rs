@@ -198,7 +198,7 @@ to get `progress` events, then one `result` or `error` event.
 `{bin} search{vp} <query>`    search across indexed notes
   --limit N                  max results (default 50)
   --mode hybrid|dense|sparse scoring mode (default: hybrid)
-  --no-reindex true|false    skip staleness check/reindex
+  --no-reindex true|false    use the index as is, without checking files for changes
   --enable-recency true|false boost results by recency (default false)
   --recency-weight <f64>     recency boost weight when enabled (default 0.5; config: rrf_recency_weight)
 

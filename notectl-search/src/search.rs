@@ -12,10 +12,10 @@ use std::path::Path;
 use notectl_core::config::{Config, SearchConfig};
 use notectl_core::progress::ProgressSink;
 
-use crate::chunker::Chunk;
 use crate::fusion::{cosine_top_k, rrf_fuse};
+use crate::loaded::{DenseVectors, IndexCache};
 use crate::sparse::SparseIndexer;
-use crate::storage::{ChunkConfigSnapshot, SearchIndex, StalenessDiff};
+use crate::storage::StalenessDiff;
 use crate::{RankedChunk, SearchError, SearchResult};
 
 /// Default empty string for fallback when chunk text is missing.
@@ -69,18 +69,18 @@ impl SearchMode {
 /// Each variant owns exactly the inputs its scoring path needs — no Option
 /// plumbing or runtime assertions.  Built once after all auto-degradation
 /// decisions so the type system guarantees correctness.
-enum ScoreInputs {
+enum ScoreInputs<'a> {
     Dense {
         query_vec: Vec<f32>,
-        vectors: Vec<Vec<f32>>,
+        dense: &'a DenseVectors,
     },
     Sparse {
-        indexer: SparseIndexer,
+        indexer: &'a SparseIndexer,
     },
     Hybrid {
         query_vec: Vec<f32>,
-        vectors: Vec<Vec<f32>>,
-        indexer: SparseIndexer,
+        dense: &'a DenseVectors,
+        indexer: &'a SparseIndexer,
     },
 }
 
@@ -169,27 +169,14 @@ pub async fn search(
     query: &str,
     options: SearchOptions,
     progress: ProgressSink,
+    cache: &IndexCache,
 ) -> SearchResult<SearchOutcome> {
-    let index_dir = config.search.resolve_index_dir(base_path);
-
-    // Ensure the index directory exists (open_or_create creates it if missing).
-    let chunk_config = ChunkConfigSnapshot::from_config(config);
-
-    let mut index = SearchIndex::open_or_create(
-        &index_dir,
-        config.search.model_id.clone(),
-        config.search.embedding_dim,
-        chunk_config.clone(),
-    )?;
+    let mut loaded = cache.load(base_path, config)?;
 
     // ---- Step 1: Freshen (staleness check + conditional reindex) ----
-    let diff = crate::storage::compute_staleness_diff(base_path, config, index.manifest())?;
-
-    match &diff {
-        StalenessDiff::UpToDate => {
-            tracing::debug!("Index is up to date.");
-        }
-        _ if !options.no_reindex => {
+    if !options.no_reindex {
+        let diff = crate::storage::compute_staleness_diff(base_path, config, loaded.manifest())?;
+        if !matches!(diff, StalenessDiff::UpToDate) {
             // Rebuild the index to pick up changes.
             let summary = crate::index::build_index(base_path, config, false, progress).await?;
             tracing::info!(
@@ -198,22 +185,14 @@ pub async fn search(
                 summary.chunks_produced,
                 summary.has_embeddings
             );
-            // Re-open the index after build_index wrote new artifacts.
-            index = SearchIndex::open_or_create(
-                &index_dir,
-                config.search.model_id.clone(),
-                config.search.embedding_dim,
-                chunk_config.clone(),
-            )?;
-        }
-        _ => {
-            tracing::warn!(
-                "Index is stale but --no-reindex was set. Proceeding with existing index."
-            );
+            // Let go of the old version so the cache can free it before
+            // reading the new one.
+            drop(loaded);
+            loaded = cache.load(base_path, config)?;
         }
     }
 
-    let manifest = index.manifest();
+    let manifest = loaded.manifest();
 
     // Empty corpus → empty results.
     if manifest.chunks.is_empty() {
@@ -226,38 +205,12 @@ pub async fn search(
 
     // ---- Step 2: Load index artifacts ----
 
-    // Read chunk texts in manifest order (deterministic, matches vector positions).
-    let chunk_texts: Vec<String> = manifest
-        .chunks
-        .iter()
-        .map(|entry| {
-            index.read_chunk(&entry.id).unwrap_or_default() // Missing chunk text → treat as empty
-        })
-        .collect();
+    let chunk_texts = loaded.chunk_texts();
 
-    // Read dense vectors ONCE if the requested mode could use them.
+    // Read dense vectors only if the requested mode could use them.
     // For Sparse mode, skip entirely — has_vectors cannot affect the outcome.
-    // Chunks without a vector are left out of dense ranking;
-    // `vector_chunks[i]` is the chunk that `raw_vectors[i]` belongs to.
-    let (vector_chunks, raw_vectors): (Vec<usize>, Vec<Vec<f32>>) = if options.mode.needs_dense() {
-        let stored = index.read_vectors().unwrap_or_else(|e| {
-            tracing::warn!("{e}. Searching without dense vectors.");
-            Default::default()
-        });
-        manifest
-            .chunks
-            .iter()
-            .enumerate()
-            .filter_map(|(chunk_idx, entry)| {
-                let key = blake3::Hash::from_hex(&entry.embedding_key).ok()?;
-                Some((chunk_idx, stored.get(&key)?.clone()))
-            })
-            .unzip()
-    } else {
-        Default::default()
-    };
-
-    let has_vectors = !raw_vectors.is_empty();
+    let dense = options.mode.needs_dense().then(|| loaded.dense());
+    let has_vectors = dense.is_some_and(|d| !d.vectors.is_empty());
 
     // -----------------------------------------------------------------------
     // Steps 2-4: Load artifacts, embed query, score & rank
@@ -285,7 +238,8 @@ pub async fn search(
     };
 
     // Embed query + read vectors when the mode needs dense scoring.
-    let dense_data: Option<(Vec<f32>, Vec<Vec<f32>>)> = if effective_mode.needs_dense()
+    let dense_data: Option<(Vec<f32>, &DenseVectors)> = if effective_mode.needs_dense()
+        && let Some(dense) = dense
         && let Some(emb_config) = EmbeddingConfig::from_search_config(&config.search)
     {
         let mut embedder = Embedder::new(emb_config);
@@ -294,7 +248,7 @@ pub async fn search(
             .embed_single(query, None, TaskType::RetrievalQuery)
             .await
         {
-            Ok(qvec) => Some((qvec, raw_vectors)),
+            Ok(qvec) => Some((qvec, dense)),
             Err(e) => {
                 tracing::warn!("Query embedding failed: {e}. Degrading to sparse.");
                 None
@@ -319,36 +273,7 @@ pub async fn search(
 
     // Build BM25 indexer based on final_mode (not effective_mode), so degradation
     // from Dense → Sparse at query time still gets a working sparse indexer.
-    let sparse_indexer: Option<SparseIndexer> = if final_mode.needs_sparse() {
-        let chunks_for_bm25: Vec<Chunk> = manifest
-            .chunks
-            .iter()
-            .zip(chunk_texts.iter())
-            .map(|(entry, text)| {
-                // Inject tags into the indexed text so they're searchable by BM25.
-                let indexed_text = if entry.tags.is_empty() {
-                    text.clone()
-                } else {
-                    let tags_str = "tags: ".to_string() + &entry.tags.join(" ");
-                    format!("{}\n{}", tags_str, text)
-                };
-                Chunk {
-                    id: entry.id.clone(),
-                    source_file: entry.source_file.clone(),
-                    line_start: entry.line_start,
-                    line_end: entry.line_end,
-                    heading: entry.heading.clone(),
-                    heading_path: entry.heading_path.clone(),
-                    tags: entry.tags.clone(),
-                    date: entry.date,
-                    text: indexed_text,
-                }
-            })
-            .collect();
-        Some(SparseIndexer::index_chunks(&chunks_for_bm25))
-    } else {
-        None
-    };
+    let sparse_indexer: Option<&SparseIndexer> = final_mode.needs_sparse().then(|| loaded.sparse());
 
     // Capture debug info before moving values into the match.
     let has_dense = dense_data.is_some();
@@ -357,16 +282,16 @@ pub async fn search(
     // Construct typed scoring inputs — the type system now guarantees correctness.
     let inputs = match (final_mode, dense_data, sparse_indexer) {
         // Dense: needs query_vec + vectors
-        (SearchMode::Dense, Some((qvec, vectors)), _) => ScoreInputs::Dense {
+        (SearchMode::Dense, Some((qvec, dense)), _) => ScoreInputs::Dense {
             query_vec: qvec,
-            vectors,
+            dense,
         },
         // Sparse: needs indexer
         (SearchMode::Sparse, _, Some(indexer)) => ScoreInputs::Sparse { indexer },
         // Hybrid: needs all three
-        (SearchMode::Hybrid, Some((qvec, vectors)), Some(indexer)) => ScoreInputs::Hybrid {
+        (SearchMode::Hybrid, Some((qvec, dense)), Some(indexer)) => ScoreInputs::Hybrid {
             query_vec: qvec,
-            vectors,
+            dense,
             indexer,
         },
         // Any other combination means an internal invariant was violated.
@@ -381,9 +306,8 @@ pub async fn search(
 
     // Score & rank based on the typed inputs.
     let fused: Vec<(usize, f64)> = match inputs {
-        ScoreInputs::Dense { query_vec, vectors } => {
-            let dense_scores =
-                score_dense(&vectors, &vector_chunks, &query_vec, options.max_results);
+        ScoreInputs::Dense { query_vec, dense } => {
+            let dense_scores = score_dense(dense, &query_vec, options.max_results);
             rrf_fuse(
                 &dense_scores,
                 &[],
@@ -404,16 +328,11 @@ pub async fn search(
         }
         ScoreInputs::Hybrid {
             query_vec,
-            vectors,
+            dense,
             indexer,
         } => {
             // Use 2x max_results for cosine to give BM25 long-tail terms a chance.
-            let dense_scores = score_dense(
-                &vectors,
-                &vector_chunks,
-                &query_vec,
-                options.max_results * 2,
-            );
+            let dense_scores = score_dense(dense, &query_vec, options.max_results * 2);
             let sparse_scores = indexer.score_query(query);
             rrf_fuse(
                 &dense_scores,
@@ -481,16 +400,11 @@ pub async fn search(
     })
 }
 
-/// Cosine top-k over `vectors`, reported as chunk indices.
-fn score_dense(
-    vectors: &[Vec<f32>],
-    vector_chunks: &[usize],
-    query_vec: &[f32],
-    k: usize,
-) -> Vec<(usize, f32)> {
-    cosine_top_k(vectors, query_vec, k)
+/// Cosine top-k over the stored vectors, reported as chunk indices.
+fn score_dense(dense: &DenseVectors, query_vec: &[f32], k: usize) -> Vec<(usize, f32)> {
+    cosine_top_k(&dense.vectors, query_vec, k)
         .into_iter()
-        .map(|(i, score)| (vector_chunks[i], score))
+        .map(|(i, score)| (dense.chunks[i], score))
         .collect()
 }
 
@@ -580,6 +494,8 @@ fn extract_preview(text: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::ChunkConfigSnapshot;
+    use crate::storage::SearchIndex;
     use notectl_core::config::SearchConfig;
     use tempfile::TempDir;
 
@@ -775,6 +691,7 @@ mod tests {
             "rust programming",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -811,6 +728,7 @@ mod tests {
             "anything",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -852,6 +770,7 @@ mod tests {
             "programming",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -899,6 +818,7 @@ mod tests {
             "cloud computing",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -949,6 +869,7 @@ mod tests {
             "rust memory safety",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -1002,6 +923,7 @@ mod tests {
             "testing frameworks",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -1098,6 +1020,7 @@ mod tests {
             "rust programming",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await;
 
@@ -1166,6 +1089,7 @@ mod tests {
             "rust programming",
             options,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -1200,6 +1124,7 @@ mod tests {
             "rust programming",
             options_dense,
             notectl_core::progress::ignore(),
+            &IndexCache::default(),
         )
         .await
         .unwrap();
@@ -1434,8 +1359,11 @@ mod tests {
     #[test]
     fn dense_scores_name_chunks_not_vector_positions() {
         // Chunks 0 and 2 have no vector.
-        let vectors = vec![vec![0.0, 1.0], vec![1.0, 0.0]];
-        let scores = score_dense(&vectors, &[1, 3], &[1.0, 0.0], 2);
+        let dense = DenseVectors {
+            chunks: vec![1, 3],
+            vectors: vec![vec![0.0, 1.0], vec![1.0, 0.0]],
+        };
+        let scores = score_dense(&dense, &[1.0, 0.0], 2);
         assert_eq!(scores, vec![(3, 1.0), (1, 0.0)]);
     }
 }

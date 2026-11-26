@@ -81,10 +81,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let serve_cmd = ServeCommand::from_arg_matches(serve_matches)?;
         let base_path = serve_cmd.mode.path().clone();
 
+        // One registry for every interface and session, so that they share the
+        // loaded search index.
+        let config = Arc::new(Config::load_from_base_path(&base_path));
+        let capability_registry = Arc::new(CapabilityRegistry::new(base_path, config));
+
         match serve_cmd.mode {
             ServerMode::Stdio { .. } => {
                 // Start stdio MCP server
-                let service = TaskSearchService::new(base_path).serve(stdio()).await?;
+                let service = TaskSearchService::new(capability_registry)
+                    .serve(stdio())
+                    .await?;
 
                 // Wait for either service completion or Ctrl-C
                 tokio::select! {
@@ -106,23 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 use tokio_util::sync::CancellationToken;
 
                 let ct = CancellationToken::new();
-                let base_path_clone = base_path.clone();
+                let mcp_registry = capability_registry.clone();
                 let config =
                     StreamableHttpServerConfig::default().with_cancellation_token(ct.clone());
                 let service = StreamableHttpService::new(
-                    move || Ok(TaskSearchService::new(base_path_clone.clone())),
+                    move || Ok(TaskSearchService::new(mcp_registry.clone())),
                     Arc::new(LocalSessionManager::default()),
                     config,
                 );
-
-                // Load configuration from base path
-                let config = Arc::new(Config::load_from_base_path(&base_path));
-
-                // Create capability registry
-                let capability_registry = Arc::new(capabilities::CapabilityRegistry::new(
-                    base_path.clone(),
-                    config.clone(),
-                ));
 
                 // Create router with base routes and state
                 let mut router = axum::Router::new()

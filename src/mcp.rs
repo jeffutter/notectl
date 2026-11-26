@@ -1,5 +1,4 @@
 use crate::capabilities::CapabilityRegistry;
-use notectl_core::config::Config;
 use notectl_daily_notes::{
     GetDailyNoteRequest, GetDailyNoteResponse, SearchDailyNotesRequest, SearchDailyNotesResponse,
 };
@@ -23,7 +22,6 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::borrow::Cow;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// MCP Service for task searching and tag extraction
@@ -36,16 +34,9 @@ pub struct TaskSearchService {
 
 #[tool_router]
 impl TaskSearchService {
-    pub fn new(base_path: PathBuf) -> Self {
-        // Load configuration from base path
-        let config = Arc::new(Config::load_from_base_path(&base_path));
-
-        // Create capability registry
-        let capability_registry = Arc::new(CapabilityRegistry::new(
-            base_path.clone(),
-            Arc::clone(&config),
-        ));
-
+    /// Create a service over `capability_registry`. Sessions given the same
+    /// registry share its capabilities, including the loaded search index.
+    pub fn new(capability_registry: Arc<CapabilityRegistry>) -> Self {
         // Build tool router starting with macro-generated routes
         let tool_router = Self::tool_router()
             .with_async_tool::<search_tools::SearchTool>()

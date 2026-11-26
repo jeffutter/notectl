@@ -5,6 +5,7 @@ pub mod civil_date;
 pub mod embeddings;
 pub mod fusion;
 pub mod index;
+mod loaded;
 pub mod search;
 pub mod sparse;
 pub mod storage;
@@ -13,6 +14,7 @@ pub mod tokenize;
 pub use capability::*;
 pub use chunker::Chunker;
 pub use embeddings::{Embedder, EmbeddingConfig, TaskType};
+pub use loaded::IndexCache;
 pub use search::{SearchMode, SearchOptions, SearchOutcome, search};
 pub use storage::{SearchIndex, SearchManifest};
 
