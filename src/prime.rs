@@ -186,6 +186,11 @@ sparse (BM25 keyword) only.
   --model <id>               override the model name sent to the embedding API (no default)
   --dim <N>                  override embedding dimension ceiling (default: 4096, i.e. no truncation)
 
+`index`, and a `search` that has to reindex first, show a progress bar on
+stderr when it is a terminal. stdout carries only the JSON result.
+Over HTTP, send `Accept: text/event-stream` to /api/search/index or /api/search
+to get `progress` events, then one `result` or `error` event.
+
 `{bin} search{vp} <query>`    search across indexed notes
   --limit N                  max results (default 50)
   --mode hybrid|dense|sparse scoring mode (default: hybrid)

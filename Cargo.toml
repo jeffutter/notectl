@@ -40,17 +40,21 @@ tokio = { version = "1", features = [
   "net",
   "signal",
   "sync",
+  "time",
 ] }
 tokio-util = { version = "0.7" }
 blake3 = "1"
 dirs = "7"
+futures-util = "0.3"
 indicatif = "0.18"
+sse-stream = "0.2"
 tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.13", features = [
   "json",
   "rustls",
+  "stream",
 ], default-features = false }
 
 # Workspace members
@@ -75,12 +79,14 @@ repository.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
+futures-util.workspace = true
 mimalloc = { version = "0.1.52" }
 reqwest.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sse-stream.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

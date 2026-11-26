@@ -7,11 +7,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::IsTerminal;
 use std::path::Path;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use notectl_core::config::Config;
+use notectl_core::progress::{Progress, ProgressSink};
 
 use crate::SearchError;
 use crate::chunker::{Chunk, Chunker};
@@ -48,6 +47,8 @@ pub struct IndexBuilder<'a> {
     chunker: &'a Chunker,
     /// Optional dense embedder (None to skip embeddings).
     embedder: Option<&'a mut Embedder>,
+    /// Receives a report as the build advances.
+    progress: ProgressSink,
 }
 
 impl<'a> IndexBuilder<'a> {
@@ -65,7 +66,14 @@ impl<'a> IndexBuilder<'a> {
             index,
             chunker,
             embedder,
+            progress: notectl_core::progress::ignore(),
         }
+    }
+
+    /// Report build progress to `progress`.
+    pub fn with_progress(mut self, progress: ProgressSink) -> Self {
+        self.progress = progress;
+        self
     }
 
     /// Run the full build pipeline: walk -> diff -> chunk -> embed -> persist.
@@ -94,6 +102,12 @@ impl<'a> IndexBuilder<'a> {
         base_path: &Path,
         config: &Config,
     ) -> Result<BuildSummary, SearchError> {
+        (self.progress)(Progress {
+            message: "Checking for changes".to_string(),
+            current: 0,
+            total: None,
+        });
+
         // Step 1: Compute staleness diff.
         let diff =
             crate::storage::compute_staleness_diff(base_path, config, self.index.manifest())?;
@@ -151,25 +165,6 @@ impl<'a> IndexBuilder<'a> {
             .collect();
         current_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // Progress bar tracks files, not chunks — chunk count isn't known
-        // until the vault is walked, since chunking happens incrementally
-        // alongside embedding rather than all up front.
-        let pb = if std::io::stdout().is_terminal() {
-            let bar = ProgressBar::new(current_files.len() as u64);
-            bar.set_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "{spinner:.green} [{elapsed}] {bar:40} {percent}% ({pos}/{len} files)",
-                    )
-                    .unwrap()
-                    .progress_chars("##-"),
-            );
-            bar.set_message("Indexing");
-            Some(bar)
-        } else {
-            None
-        };
-
         // Steps 3-4: walk -> chunk -> embed -> persist, streamed in bounded
         // batches instead of materializing the whole vault's text/vectors.
         //
@@ -189,7 +184,16 @@ impl<'a> IndexBuilder<'a> {
         let mut embeddings_unavailable = false;
         let mut total_chunks: usize = 0;
 
-        for (rel_path, abs_path) in &current_files {
+        // Progress counts files, not chunks: the chunk total isn't known
+        // until the whole vault has been walked.
+        let files_total = current_files.len() as u64;
+
+        for (files_done, (rel_path, abs_path)) in (0u64..).zip(&current_files) {
+            self.report_files("Indexing", files_done, files_total, total_chunks);
+            // Reading and chunking never await on their own. Yield so that
+            // progress listeners run, and so the build can be cancelled.
+            tokio::task::yield_now().await;
+
             let content = match fs::read_to_string(abs_path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -224,6 +228,10 @@ impl<'a> IndexBuilder<'a> {
                 pending.push(chunk);
 
                 if pending.len() >= BATCH_SIZE {
+                    // Embedding is the slow step, so say when it is running.
+                    if self.embedder.is_some() && !embeddings_unavailable {
+                        self.report_files("Embedding", files_done, files_total, total_chunks);
+                    }
                     self.flush_batch(
                         &mut pending,
                         &mut vector_writer,
@@ -242,13 +250,10 @@ impl<'a> IndexBuilder<'a> {
                     chunk_ids,
                 },
             );
-
-            if let Some(ref bar) = pb {
-                bar.inc(1);
-            }
         }
 
         // Flush the final partial batch, if any.
+        self.report_files("Finishing", files_total, files_total, total_chunks);
         self.flush_batch(
             &mut pending,
             &mut vector_writer,
@@ -266,10 +271,6 @@ impl<'a> IndexBuilder<'a> {
         } else {
             false
         };
-
-        if let Some(bar) = pb {
-            bar.finish_with_message("Indexing complete");
-        }
 
         // Step 5: Build file info list (sorted by path).
         let files: Vec<FileInfo> = file_info_map.values().cloned().collect();
@@ -310,6 +311,14 @@ impl<'a> IndexBuilder<'a> {
             has_embeddings,
             content_hash: overall_hash,
         })
+    }
+
+    fn report_files(&self, activity: &str, done: u64, total: u64, chunks: usize) {
+        (self.progress)(Progress {
+            message: format!("{activity} files ({chunks} chunks)"),
+            current: done,
+            total: Some(total),
+        });
     }
 
     /// Collect chunk IDs from the manifest's FileInfo entries for removed files,
@@ -436,8 +445,12 @@ fn metadata_mtime_secs(path: &Path) -> std::io::Result<u64> {
 /// Convenience: create an IndexBuilder from base_path and config.
 ///
 /// Opens or creates the SearchIndex, builds the Chunker, and optionally
-/// creates an Embedder. Callers can then invoke `.build()` directly.
-pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSummary, SearchError> {
+/// creates an Embedder, then runs the build, reporting to `progress`.
+pub async fn build_index(
+    base_path: &Path,
+    config: &Config,
+    progress: ProgressSink,
+) -> Result<BuildSummary, SearchError> {
     let chunk_config = ChunkConfigSnapshot {
         max_tokens: config.search.max_seq_tokens,
         overlap_tokens: config.search.chunk_overlap_tokens,
@@ -455,7 +468,8 @@ pub async fn build_index(base_path: &Path, config: &Config) -> Result<BuildSumma
     let chunker = Chunker::new(crate::chunker::ChunkerConfig::from_config(config));
 
     let mut embedder = EmbeddingConfig::from_search_config(&config.search).map(Embedder::new);
-    let mut builder = IndexBuilder::new(&mut index, &chunker, embedder.as_mut());
+    let mut builder =
+        IndexBuilder::new(&mut index, &chunker, embedder.as_mut()).with_progress(progress);
     builder.build(base_path, config).await
 }
 

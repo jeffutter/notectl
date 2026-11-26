@@ -10,6 +10,7 @@
 use std::path::Path;
 
 use notectl_core::config::{Config, SearchConfig};
+use notectl_core::progress::ProgressSink;
 
 use crate::chunker::Chunk;
 use crate::fusion::{cosine_top_k, rrf_fuse};
@@ -167,6 +168,7 @@ pub async fn search(
     config: &Config,
     query: &str,
     options: SearchOptions,
+    progress: ProgressSink,
 ) -> SearchResult<SearchOutcome> {
     let index_dir = config.search.resolve_index_dir(base_path);
 
@@ -194,7 +196,7 @@ pub async fn search(
         }
         _ if !options.no_reindex => {
             // Rebuild the index to pick up changes.
-            let summary = crate::index::build_index(base_path, config).await?;
+            let summary = crate::index::build_index(base_path, config, progress).await?;
             tracing::info!(
                 "Reindex complete: {} files, {} chunks, embeddings={}",
                 summary.files_indexed,
@@ -738,9 +740,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "rust programming", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "rust programming",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         let results = outcome.results;
 
         // Should get results.
@@ -768,7 +776,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "anything", options).await.unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "anything",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         assert!(outcome.results.is_empty());
     }
 
@@ -801,9 +817,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "programming", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "programming",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         let results = outcome.results;
         assert!(
             results.len() <= 2,
@@ -842,9 +864,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "cloud computing", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "cloud computing",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         let results = outcome.results;
 
         // The new file shouldn't appear since we didn't reindex.
@@ -886,9 +914,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "rust memory safety", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "rust memory safety",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         let results = outcome.results;
 
         // Results should be sorted descending by score.
@@ -933,9 +967,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "testing frameworks", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "testing frameworks",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
         let results = outcome.results;
 
         assert!(!results.is_empty(), "Should have results");
@@ -1018,7 +1058,14 @@ mod tests {
             ..Default::default()
         };
 
-        let result = search(&base, &config, "rust programming", options).await;
+        let result = search(
+            &base,
+            &config,
+            "rust programming",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await;
 
         // Assert: should be Ok with sparse-scored results, NOT Err.
         match result {
@@ -1079,9 +1126,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = search(&base, &config, "rust programming", options)
-            .await
-            .unwrap();
+        let outcome = search(
+            &base,
+            &config,
+            "rust programming",
+            options,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
 
         // mode_used should be Sparse (degraded), NOT Hybrid (requested).
         assert!(
@@ -1107,9 +1160,15 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome_dense = search(&base, &config, "rust programming", options_dense)
-            .await
-            .unwrap();
+        let outcome_dense = search(
+            &base,
+            &config,
+            "rust programming",
+            options_dense,
+            notectl_core::progress::ignore(),
+        )
+        .await
+        .unwrap();
 
         assert!(
             matches!(outcome_dense.mode_used, SearchMode::Sparse),

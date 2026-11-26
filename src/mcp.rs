@@ -250,15 +250,18 @@ mod search_tools {
             let response = service
                 .capability_registry
                 .search()
-                .do_search(notectl_search::SearchQuery {
-                    query: params.query,
-                    limit: params.limit.unwrap_or(50),
-                    mode: params.mode.unwrap_or_default(),
-                    no_reindex: params.no_reindex.unwrap_or(false),
-                    tags: params.tags,
-                    enable_recency: params.enable_recency.unwrap_or(false),
-                    recency_weight: params.recency_weight,
-                })
+                .do_search(
+                    notectl_search::SearchQuery {
+                        query: params.query,
+                        limit: params.limit.unwrap_or(50),
+                        mode: params.mode.unwrap_or_default(),
+                        no_reindex: params.no_reindex.unwrap_or(false),
+                        tags: params.tags,
+                        enable_recency: params.enable_recency.unwrap_or(false),
+                        recency_weight: params.recency_weight,
+                    },
+                    notectl_core::progress::ignore(),
+                )
                 .await?;
             Ok(response)
         }
@@ -302,7 +305,12 @@ mod search_tools {
             let response = service
                 .capability_registry
                 .search()
-                .build_index(params.reindex.unwrap_or(false), params.model, params.dim)
+                .build_index(
+                    params.reindex.unwrap_or(false),
+                    params.model,
+                    params.dim,
+                    notectl_core::progress::ignore(),
+                )
                 .await?;
             Ok(response)
         }

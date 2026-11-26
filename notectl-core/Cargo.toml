@@ -10,6 +10,7 @@ async-trait.workspace = true
 clap.workspace = true
 dirs.workspace = true
 glob.workspace = true
+indicatif.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

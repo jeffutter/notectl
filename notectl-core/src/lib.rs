@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod file_walker;
 pub mod operation;
+pub mod progress;
 
 pub use config::Config;
 pub use error::{internal_error, invalid_params, json_error};

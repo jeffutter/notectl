@@ -24,7 +24,6 @@ chrono = "0.4"
 
 # Dense embedding: HTTP client to an OpenAI-compatible /v1/embeddings endpoint
 reqwest.workspace = true
-indicatif.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

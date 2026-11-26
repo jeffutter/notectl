@@ -295,6 +295,33 @@ The HTTP server exposes:
 - `GET /tools` - list all available tools with schemas
 - `POST /mcp` - MCP protocol endpoint
 
+#### Indexing progress
+
+`/api/search/index`, and `/api/search` (which reindexes first when the index is
+stale), can stream progress as [server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html).
+Ask for it with an `Accept` header; use `-N` so `curl` prints events as they arrive:
+
+```bash
+curl -N -X POST http://localhost:8000/api/search/index \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -d '{}'
+```
+
+```text
+event: progress
+data: {"message":"Embedding files (128 chunks)","current":41,"total":512}
+
+event: result
+data: {"files_indexed":512, ...}
+```
+
+The stream ends with one `result` event (the usual JSON response) or one `error`
+event. The HTTP status is 200 in both cases, because it is sent before the work
+runs. Without the header, both endpoints return a single JSON response.
+
+`notectl-remote` requests the stream itself and draws a progress bar on stderr.
+
 ## Output Format
 
 The task search outputs JSON with the following structure:

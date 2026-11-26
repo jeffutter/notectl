@@ -3,6 +3,7 @@ use clap::{CommandFactory, FromArgMatches};
 use notectl_core::CapabilityResult;
 use notectl_core::config::Config;
 use notectl_core::error::internal_error;
+use notectl_core::progress::{self, ProgressSink};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -190,6 +191,7 @@ impl SearchCapability {
         reindex: bool,
         model_override: Option<String>,
         dim_override: Option<u32>,
+        progress: ProgressSink,
     ) -> CapabilityResult<IndexResponse> {
         let start = std::time::Instant::now();
 
@@ -231,7 +233,7 @@ impl SearchCapability {
             }
         }
 
-        let summary = crate::index::build_index(&self.base_path, &config)
+        let summary = crate::index::build_index(&self.base_path, &config, progress)
             .await
             .map_err(|e| internal_error(format!("Index build failed: {e}")))?;
 
@@ -247,7 +249,13 @@ impl SearchCapability {
     }
 
     /// Execute a search query with the given options.
-    pub async fn do_search(&self, query: SearchQuery) -> CapabilityResult<SearchResponse> {
+    ///
+    /// `progress` receives reports if the index has to be rebuilt first.
+    pub async fn do_search(
+        &self,
+        query: SearchQuery,
+        progress: ProgressSink,
+    ) -> CapabilityResult<SearchResponse> {
         let rrf_recency_weight = if query.enable_recency {
             query
                 .recency_weight
@@ -266,9 +274,15 @@ impl SearchCapability {
             tags: query.tags,
         };
 
-        let outcome = crate::search::search(&self.base_path, &self.config, &query.query, options)
-            .await
-            .map_err(|e| internal_error(format!("Search failed: {e}")))?;
+        let outcome = crate::search::search(
+            &self.base_path,
+            &self.config,
+            &query.query,
+            options,
+            progress,
+        )
+        .await
+        .map_err(|e| internal_error(format!("Search failed: {e}")))?;
 
         // Use the actual effective mode from the search pipeline, not the requested mode.
         let mode_used = match outcome.mode_used {
@@ -340,11 +354,29 @@ impl notectl_core::operation::Operation for IndexOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
+        self.execute_json_with_progress(json, progress::ignore())
+            .await
+    }
+
+    fn reports_progress(&self) -> bool {
+        true
+    }
+
+    async fn execute_json_with_progress(
+        &self,
+        json: serde_json::Value,
+        progress: ProgressSink,
+    ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: IndexRequest = serde_json::from_value(json)
             .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
         let response = self
             .capability
-            .build_index(request.reindex.unwrap_or(false), request.model, request.dim)
+            .build_index(
+                request.reindex.unwrap_or(false),
+                request.model,
+                request.dim,
+                progress,
+            )
             .await?;
         Ok(serde_json::to_value(response).unwrap())
     }
@@ -363,11 +395,17 @@ impl notectl_core::operation::Operation for IndexOperation {
                     request.reindex.unwrap_or(false),
                     request.model.clone(),
                     request.dim,
+                    progress::terminal(),
                 )
                 .await?
         } else {
             self.capability
-                .build_index(request.reindex.unwrap_or(false), request.model, request.dim)
+                .build_index(
+                    request.reindex.unwrap_or(false),
+                    request.model,
+                    request.dim,
+                    progress::terminal(),
+                )
                 .await?
         };
 
@@ -467,9 +505,25 @@ impl notectl_core::operation::Operation for SearchOperation {
         &self,
         json: serde_json::Value,
     ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
+        self.execute_json_with_progress(json, progress::ignore())
+            .await
+    }
+
+    fn reports_progress(&self) -> bool {
+        true
+    }
+
+    async fn execute_json_with_progress(
+        &self,
+        json: serde_json::Value,
+        progress: ProgressSink,
+    ) -> Result<serde_json::Value, rmcp::model::ErrorData> {
         let request: SearchRequest = serde_json::from_value(json)
             .map_err(|e| notectl_core::error::invalid_params(e.to_string()))?;
-        let response = self.capability.do_search(request.to_query()).await?;
+        let response = self
+            .capability
+            .do_search(request.to_query(), progress)
+            .await?;
         Ok(serde_json::to_value(response).unwrap())
     }
 
@@ -482,9 +536,13 @@ impl notectl_core::operation::Operation for SearchOperation {
         let response = if let Some(ref vault_path) = request.vault_path {
             let config = Arc::new(Config::load_from_base_path(vault_path.as_path()));
             let capability = SearchCapability::new(vault_path.clone(), config);
-            capability.do_search(request.to_query()).await?
+            capability
+                .do_search(request.to_query(), progress::terminal())
+                .await?
         } else {
-            self.capability.do_search(request.to_query()).await?
+            self.capability
+                .do_search(request.to_query(), progress::terminal())
+                .await?
         };
 
         Ok(serde_json::to_string_pretty(&response)?)
@@ -719,7 +777,10 @@ mod build_index_tests {
         let index_dir = config.search.resolve_index_dir(&base);
 
         // Initial build (non-reindex) to create real index artifacts.
-        let resp = cap.build_index(false, None, None).await.unwrap();
+        let resp = cap
+            .build_index(false, None, None, progress::ignore())
+            .await
+            .unwrap();
         assert!(!resp.content_hash.is_empty());
         assert!(resp.files_indexed >= 1);
         assert!(
@@ -746,7 +807,7 @@ mod build_index_tests {
         fs::write(models_dir.join("model.bin"), b"model data").unwrap();
 
         // Rebuild with --reindex.
-        let result = cap.build_index(true, None, None).await;
+        let result = cap.build_index(true, None, None, progress::ignore()).await;
         assert!(
             result.is_ok(),
             "build_index(reindex=true) should succeed: {:?}",
@@ -804,7 +865,7 @@ mod build_index_tests {
         let cap = SearchCapability::new(base.clone(), Arc::new(Config::default()));
 
         // Call build_index with reindex=true on a fresh vault (no prior index).
-        let result = cap.build_index(true, None, None).await;
+        let result = cap.build_index(true, None, None, progress::ignore()).await;
         assert!(
             result.is_ok(),
             "build_index(reindex=true) on fresh vault should succeed: {:?}",

@@ -1,5 +1,7 @@
+use notectl::progress_stream;
 use notectl_core::config::Config;
 use notectl_core::operation::Operation;
+use notectl_core::progress;
 use notectl_daily_notes::{DailyNoteCapability, GetDailyNoteOperation, SearchDailyNotesOperation};
 use notectl_files::{FileCapability, ListFilesOperation, ReadFilesOperation, RecentFilesOperation};
 use notectl_outline::{
@@ -8,6 +10,7 @@ use notectl_outline::{
 use notectl_search::{IndexOperation, SearchCapability, SearchOperation};
 use notectl_tags::{ExtractTagsOperation, ListTagsOperation, SearchByTagsOperation, TagCapability};
 use notectl_tasks::{SearchTasksOperation, TaskCapability};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -123,15 +126,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let url = format!("{}{}", server, operation.path());
 
                 let client = reqwest::Client::new();
-                let response = client
-                    .post(&url)
-                    .json(&json)
+                let mut request = client.post(&url).json(&json);
+                if operation.reports_progress() {
+                    // Servers without progress support ignore this and reply
+                    // with plain JSON.
+                    request = request.header(ACCEPT, progress_stream::MEDIA_TYPE);
+                }
+                let response = request
                     .send()
                     .await
                     .map_err(|e| format!("Failed to connect to {}: {}", url, e))?;
 
                 let status = response.status();
-                let body = response.text().await?;
+                let is_event_stream = response
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.starts_with(progress_stream::MEDIA_TYPE));
+
+                let body = if is_event_stream {
+                    // The sink is dropped, clearing the bar, before any output.
+                    let sink = progress::terminal();
+                    match progress_stream::read(response.bytes_stream(), &sink).await {
+                        Ok(result) => result,
+                        Err(message) => {
+                            drop(sink);
+                            eprintln!("Error: {}", message);
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    response.text().await?
+                };
 
                 if status.is_success() {
                     println!("{}", body);

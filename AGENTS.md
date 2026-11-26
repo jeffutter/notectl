@@ -281,6 +281,10 @@ Each workspace crate provides one or more **capabilities** that encapsulate a fu
   - `execute_json()`: HTTP/MCP execution with JSON I/O
   - `execute_from_args()`: CLI execution from clap ArgMatches
   - `input_schema()`: JSON schema for the operation's input
+  - `reports_progress()` / `execute_json_with_progress()`: opt-in for
+    long-running operations. Reports go to a `notectl_core::progress::ProgressSink`;
+    local CLI runs use `progress::terminal()`, and HTTP streams them as SSE
+    (`src/progress_stream.rs`, also used by `notectl-remote`)
 
 - **`src/capabilities/mod.rs`**: `CapabilityRegistry` - the integration point
   - Instantiates all capabilities from workspace crates

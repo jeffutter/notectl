@@ -1,3 +1,4 @@
+use crate::progress::ProgressSink;
 use async_trait::async_trait;
 use rmcp::model::ErrorData;
 use std::error::Error;
@@ -37,6 +38,24 @@ pub trait Operation: Send + Sync + 'static {
     /// This method performs type erasure by accepting and returning JSON values,
     /// allowing dynamic dispatch across different operation types.
     async fn execute_json(&self, json: serde_json::Value) -> Result<serde_json::Value, ErrorData>;
+
+    /// Whether [`Operation::execute_json_with_progress`] reports progress.
+    ///
+    /// Interface adapters use this to decide whether to offer a progress
+    /// stream to their clients.
+    fn reports_progress(&self) -> bool {
+        false
+    }
+
+    /// Like [`Operation::execute_json`], sending progress reports to
+    /// `progress` while running.
+    async fn execute_json_with_progress(
+        &self,
+        json: serde_json::Value,
+        _progress: ProgressSink,
+    ) -> Result<serde_json::Value, ErrorData> {
+        self.execute_json(json).await
+    }
 
     /// Execute the operation from parsed CLI arguments
     ///
