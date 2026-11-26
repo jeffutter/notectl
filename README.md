@@ -243,6 +243,15 @@ Each result includes: `id`, `source_file`, `score`, `heading` (optional), and `p
 
 The response also includes `mode_used` which reflects the actual mode that ran — if you request `dense` but embeddings are unavailable, it auto-degrades to `sparse` and reports this in the response.
 
+#### Incremental updates
+
+`index` and `search` re-read and re-chunk the vault when any file changed, but only send a chunk
+to the embedding endpoint when no stored vector matches its model, dimension, title and text.
+`search` does this before every query unless you pass `--no-reindex true`. If the endpoint fails,
+the update completes with the vectors it has, and the next `index` or `search` retries the rest.
+
+Upgrading from an index written by an older version embeds everything once.
+
 The index is stored in `.notectl/search/` within the vault. This directory should be gitignored — add `.notectl/` to your `.gitignore`.
 
 ### Configuring the Embedding Endpoint
@@ -259,8 +268,9 @@ embedding_api_base = "https://your-server/v1"
 ```
 
 Also settable via `NOTECTL_SEARCH_MODEL_ID`, `NOTECTL_SEARCH_EMBEDDING_API_BASE`, and
-`NOTECTL_SEARCH_EMBEDDING_API_KEY`. Changing `model_id`, `embedding_api_base`, or `embedding_dim`
-triggers a full reindex. `embedding_dim` (default: 4096, effectively "no truncation") lets you
+`NOTECTL_SEARCH_EMBEDDING_API_KEY`. Changing `model_id` or `embedding_dim` re-embeds everything.
+Changing `embedding_api_base` does not, so use `--reindex true` if the new server runs a different
+model under the same name. `embedding_dim` (default: 4096, effectively "no truncation") lets you
 opt into Matryoshka truncation for models that support it, to save storage.
 
 If `embedding_api_base` isn't set, or the endpoint is unreachable, searches degrade gracefully to

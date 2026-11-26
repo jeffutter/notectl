@@ -181,8 +181,12 @@ NOTECTL_SEARCH_EMBEDDING_API_BASE / NOTECTL_SEARCH_MODEL_ID /
 NOTECTL_SEARCH_EMBEDDING_API_KEY. Without it, search silently degrades to
 sparse (BM25 keyword) only.
 
+Only chunks whose model, dimension, title or text changed are embedded; other
+vectors are reused. `search` runs the same update first when files have changed
+or some chunks still lack an embedding (e.g. after the endpoint was down).
+
 `{bin} index{vp}`              build or update the search index
-  --reindex true|false       force full rebuild (wipe manifest.json, chunks/, vectors.bin)
+  --reindex true|false       force full rebuild and re-embed (wipe manifest.json, chunks/, vectors.bin)
   --model <id>               override the model name sent to the embedding API (no default)
   --dim <N>                  override embedding dimension ceiling (default: 4096, i.e. no truncation)
 

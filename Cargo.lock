@@ -1257,6 +1257,7 @@ name = "notectl-search"
 version = "0.13.0"
 dependencies = [
  "async-trait",
+ "axum",
  "blake3",
  "chrono",
  "clap",

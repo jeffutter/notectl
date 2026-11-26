@@ -120,6 +120,24 @@ fn apply_prefix(content: &str, title: Option<&str>, task: TaskType) -> String {
     }
 }
 
+/// Identifies the vector a document embeds to: a hash of the model, the
+/// dimension ceiling and the exact input sent.
+pub(crate) fn document_key(
+    model_id: &str,
+    embedding_dim: u32,
+    content: &str,
+    title: Option<&str>,
+) -> blake3::Hash {
+    let input = apply_prefix(content, title, TaskType::RetrievalDocument);
+    let mut hasher = blake3::Hasher::new();
+    // Length-prefix the model name so field boundaries are unambiguous.
+    hasher.update(&(model_id.len() as u64).to_le_bytes());
+    hasher.update(model_id.as_bytes());
+    hasher.update(&embedding_dim.to_le_bytes());
+    hasher.update(input.as_bytes());
+    hasher.finalize()
+}
+
 /// Normalize a vector to unit length (L2 norm).
 fn normalize(vector: &[f32]) -> Vec<f32> {
     let magnitude: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -156,6 +174,9 @@ impl Embedder {
     pub fn new(config: EmbeddingConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
+            // A cold model load happens after connecting, so an unreachable
+            // server can be given up on much sooner.
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         Self { client, config }

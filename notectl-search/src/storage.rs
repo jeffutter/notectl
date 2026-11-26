@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::Write;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs::{self, File, TryLockError};
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use blake3::Hasher as Blake3Hasher;
 use notectl_core::config::Config;
@@ -10,12 +11,25 @@ use tempfile::NamedTempFile;
 use crate::SearchError;
 use crate::chunker::Chunk;
 
-/// Current manifest format version. Bumped from 2 → 3 because
-/// IndexBuilder::build now writes vault-relative Chunk.source_file/id
-/// values instead of absolute paths (TASK-6); old v2 manifests may
-/// contain absolute-path chunk entries for files that haven't changed
-/// since upgrade, so they must be treated as stale and rebuilt.
-pub const INDEX_FORMAT_VERSION: u32 = 3;
+/// Current index format version. Bumped from 3 → 4 because vectors.bin became
+/// a store keyed by [`ChunkEntry::embedding_key`] instead of an array whose
+/// positions had to match the manifest's chunk order. Older indexes are
+/// discarded and rebuilt.
+pub const INDEX_FORMAT_VERSION: u32 = 4;
+
+/// First bytes of vectors.bin.
+const VECTORS_MAGIC: &[u8; 4] = b"NCVK";
+
+/// Length of the vectors.bin header: magic, then dimension as u32 LE.
+const VECTORS_HEADER_LEN: usize = 8;
+
+/// How often a build waiting for the index lock tries again.
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Held while modifying an index; released on drop.
+pub struct IndexLock {
+    _file: File,
+}
 
 /// Old v1 manifest version — handled gracefully on open (treated as empty).
 #[allow(dead_code)]
@@ -33,6 +47,21 @@ pub struct ChunkConfigSnapshot {
     pub overlap_tokens: usize,
     pub min_chunk_size: usize,
     pub merge_threshold: usize,
+    /// Heading sections left out of the index
+    pub exclude_headings: Vec<String>,
+}
+
+impl ChunkConfigSnapshot {
+    /// The settings in `config` that determine how files are chunked.
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            max_tokens: config.search.max_seq_tokens,
+            overlap_tokens: config.search.chunk_overlap_tokens,
+            min_chunk_size: config.search.min_chunk_tokens,
+            merge_threshold: config.search.merge_threshold,
+            exclude_headings: config.exclude_headings.clone(),
+        }
+    }
 }
 
 /// Per-file metadata stored in the manifest.
@@ -64,6 +93,10 @@ pub struct ChunkEntry {
     /// updated > created > date. None if no date found.
     #[serde(default)]
     pub date: Option<u64>,
+    /// Hex key of this chunk's vector in vectors.bin. It identifies the
+    /// model, dimension and exact text embedded, so a stored vector can be
+    /// reused whenever the key matches.
+    pub embedding_key: String,
 }
 
 /// Richer manifest stored as `.notectl/search/manifest.json`.
@@ -85,7 +118,7 @@ pub struct SearchManifest {
     pub content_hash: String,
     /// RFC 3339 timestamp of last successful index
     pub last_indexed: Option<String>,
-    /// Whether dense embeddings are available
+    /// Whether every chunk has a dense embedding
     pub has_embeddings: bool,
 }
 
@@ -150,6 +183,9 @@ pub enum StalenessDiff {
     },
     /// Full rebuild required (param mismatch, version mismatch, etc.).
     FullRebuild(RebuildReason),
+    /// Files are unchanged, but an embedding endpoint is configured and some
+    /// chunks have no vector yet (it failed or was unset during a build).
+    MissingEmbeddings,
 }
 
 impl StalenessDiff {
@@ -184,12 +220,7 @@ pub fn compute_staleness_diff(
             manifest.embedding_dim,
         )));
     }
-    let current_chunk_config = ChunkConfigSnapshot {
-        max_tokens: config.search.max_seq_tokens,
-        overlap_tokens: config.search.chunk_overlap_tokens,
-        min_chunk_size: config.search.min_chunk_tokens,
-        merge_threshold: config.search.merge_threshold,
-    };
+    let current_chunk_config = ChunkConfigSnapshot::from_config(config);
     if manifest.chunk_config != current_chunk_config {
         return Ok(StalenessDiff::FullRebuild(
             RebuildReason::ChunkConfigChanged,
@@ -264,7 +295,14 @@ pub fn compute_staleness_diff(
 
     // If nothing changed at all, return UpToDate.
     if added.is_empty() && modified.is_empty() && removed.is_empty() {
-        return Ok(StalenessDiff::UpToDate);
+        let missing_embeddings = config.search.embedding_api_base.is_some()
+            && !manifest.chunks.is_empty()
+            && !manifest.has_embeddings;
+        return Ok(if missing_embeddings {
+            StalenessDiff::MissingEmbeddings
+        } else {
+            StalenessDiff::UpToDate
+        });
     }
 
     Ok(StalenessDiff::Incremental {
@@ -306,26 +344,6 @@ pub(crate) fn atomic_write_json(path: &Path, data: &str) -> Result<(), SearchErr
     let mut tmp = NamedTempFile::new_in(dir)
         .map_err(|e| SearchError::Storage(format!("Failed to create temp file in {dir:?}: {e}")))?;
     tmp.write_all(data.as_bytes())
-        .map_err(|e| SearchError::Storage(format!("Failed to write temp file: {e}")))?;
-    tmp.flush()
-        .map_err(|e| SearchError::Storage(format!("Failed to flush temp file: {e}")))?;
-    tmp.persist(path).map_err(|e| {
-        SearchError::Storage(format!("Failed to persist temp file to {path:?}: {e}"))
-    })?;
-    Ok(())
-}
-
-/// Write binary data atomically using a temp file + rename.
-pub(crate) fn atomic_write_binary(path: &Path, data: &[u8]) -> Result<(), SearchError> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| SearchError::Storage(format!("Cannot determine parent dir for {path:?}")))?;
-    fs::create_dir_all(dir)
-        .map_err(|e| SearchError::Storage(format!("Failed to create dir {dir:?}: {e}")))?;
-
-    let mut tmp = NamedTempFile::new_in(dir)
-        .map_err(|e| SearchError::Storage(format!("Failed to create temp file in {dir:?}: {e}")))?;
-    tmp.write_all(data)
         .map_err(|e| SearchError::Storage(format!("Failed to write temp file: {e}")))?;
     tmp.flush()
         .map_err(|e| SearchError::Storage(format!("Failed to flush temp file: {e}")))?;
@@ -418,6 +436,30 @@ impl SearchIndex {
         })
     }
 
+    /// Take the exclusive right to modify the index in `base_dir`, waiting for
+    /// any other build, in this process or another, to finish. `waiting` is
+    /// called each time the lock is found to be held.
+    pub async fn lock(base_dir: &Path, waiting: impl Fn()) -> Result<IndexLock, SearchError> {
+        let failed = |e: std::io::Error| SearchError::Storage(format!("Failed to lock index: {e}"));
+        fs::create_dir_all(base_dir).map_err(failed)?;
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(base_dir.join("lock"))
+            .map_err(failed)?;
+
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(IndexLock { _file: file }),
+                Err(TryLockError::WouldBlock) => waiting(),
+                Err(TryLockError::Error(e)) => return Err(failed(e)),
+            }
+            // Polling keeps the wait cancellable and off the blocking pool.
+            tokio::time::sleep(LOCK_RETRY_INTERVAL).await;
+        }
+    }
+
     /// Get the base directory path.
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
@@ -497,104 +539,56 @@ impl SearchIndex {
             .map_err(|e| SearchError::Storage(format!("Failed to read chunk {}: {e}", chunk_id)))
     }
 
-    /// Write dense embedding vectors to disk (flat f32 binary format).
+    /// Read the stored dense vectors, by embedding key.
     ///
-    /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
-    pub fn write_vectors(&self, vectors: &[Vec<f32>]) -> Result<(), SearchError> {
-        let vectors_path = self.base_dir.join("vectors.bin");
-
-        // Build the binary buffer in memory first.
-        let dim = vectors
-            .iter()
-            .find_map(|v| {
-                if v.is_empty() {
-                    None
-                } else {
-                    Some(v.len() as u32)
-                }
-            })
-            .unwrap_or(0);
-
-        let count = vectors.len() as u64;
-        let dim_usize = dim as usize;
-        let mut buf: Vec<u8> = Vec::with_capacity(12 + vectors.len() * dim_usize * 4);
-        buf.extend_from_slice(&count.to_le_bytes());
-        buf.extend_from_slice(&dim.to_le_bytes());
-        for vec in vectors {
-            for v in vec {
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-
-        atomic_write_binary(&vectors_path, &buf)
-    }
-
-    /// Read dense embedding vectors from disk.
-    ///
-    /// Wire format: `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`
-    pub fn read_vectors(&self) -> Result<Vec<Vec<f32>>, SearchError> {
+    /// Wire format: `[magic: 4 bytes][dim: u32 LE]` followed by one record per
+    /// vector, `[key: 32 bytes][dim f32 LE values]`.
+    pub fn read_vectors(&self) -> Result<HashMap<blake3::Hash, Vec<f32>>, SearchError> {
         let vectors_path = self.base_dir.join("vectors.bin");
         if !vectors_path.exists() {
-            return Ok(Vec::new());
+            return Ok(HashMap::new());
         }
 
         let data = fs::read(&vectors_path)
             .map_err(|e| SearchError::Storage(format!("Failed to open vectors file: {e}")))?;
+        let corrupt = || SearchError::Storage("Vectors file is corrupt".to_string());
 
-        if data.len() < 12 {
-            // Not enough bytes for header.
-            return Ok(Vec::new());
+        let (header, records) = data
+            .split_at_checked(VECTORS_HEADER_LEN)
+            .ok_or_else(corrupt)?;
+        if &header[..4] != VECTORS_MAGIC {
+            return Err(corrupt());
+        }
+        let dim = u32::from_le_bytes(header[4..].try_into().map_err(|_| corrupt())?) as usize;
+        let record_len = blake3::OUT_LEN + dim * 4;
+        if dim == 0 || !records.len().is_multiple_of(record_len) {
+            return Err(corrupt());
         }
 
-        let count = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-        ]) as usize;
-        let dim = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
-
-        if count == 0 || dim == 0 {
-            return Ok(Vec::new());
-        }
-
-        let expected_len = 12 + count * dim * 4;
-        if data.len() < expected_len {
-            return Err(SearchError::Storage(format!(
-                "Vectors file truncated: expected {expected_len} bytes, got {}",
-                data.len()
-            )));
-        }
-
-        let mut vectors = Vec::with_capacity(count);
-        for i in 0..count {
-            let offset = 12 + i * dim * 4;
-            let mut vec = Vec::with_capacity(dim);
-            for j in 0..dim {
-                let byte_offset = offset + j * 4;
-                let bytes = [
-                    data[byte_offset],
-                    data[byte_offset + 1],
-                    data[byte_offset + 2],
-                    data[byte_offset + 3],
-                ];
-                vec.push(f32::from_le_bytes(bytes));
-            }
-            vectors.push(vec);
-        }
-
-        Ok(vectors)
+        records
+            .chunks_exact(record_len)
+            .map(|record| {
+                let (key, values) = record.split_at(blake3::OUT_LEN);
+                let key = blake3::Hash::from_slice(key).map_err(|_| corrupt())?;
+                let vector = values
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect();
+                Ok((key, vector))
+            })
+            .collect()
     }
 
     /// Begin a streaming write of `vectors.bin`.
     ///
-    /// Unlike [`Self::write_vectors`], which requires the full vector array
-    /// up front, this lets callers append batches incrementally (bounding
-    /// peak memory to one batch at a time) while still writing the file
-    /// atomically: nothing is renamed into place until
-    /// [`VectorWriter::finish`] is called.
+    /// Callers append vectors one at a time, so peak memory stays bounded
+    /// while the file is still replaced atomically: nothing is renamed into
+    /// place until [`VectorWriter::finish`] is called.
     ///
-    /// `dim` is the configured embedding dimension — known before any
-    /// vectors exist, so (unlike `write_vectors`) it doesn't need to be
-    /// inferred from the data.
-    pub fn begin_vector_write(&self, dim: u32) -> Result<VectorWriter, SearchError> {
+    /// Every vector written must have `dim` values.
+    pub fn begin_vector_write(&self, dim: usize) -> Result<VectorWriter, SearchError> {
         let dest = self.base_dir.join("vectors.bin");
         fs::create_dir_all(&self.base_dir)
             .map_err(|e| SearchError::Storage(format!("Failed to create index directory: {e}")))?;
@@ -603,15 +597,17 @@ impl SearchIndex {
             SearchError::Storage(format!("Failed to create temp file for vectors: {e}"))
         })?;
 
-        // Placeholder header — count is unknown until `finish` patches it in.
-        tmp.write_all(&0u64.to_le_bytes())
-            .and_then(|_| tmp.write_all(&dim.to_le_bytes()))
+        let dim_header = u32::try_from(dim)
+            .map_err(|_| SearchError::Storage(format!("Vector dimension {dim} is too large")))?;
+        tmp.write_all(VECTORS_MAGIC)
+            .and_then(|_| tmp.write_all(&dim_header.to_le_bytes()))
             .map_err(|e| SearchError::Storage(format!("Failed to write vectors header: {e}")))?;
 
         Ok(VectorWriter {
-            tmp,
+            tmp: BufWriter::new(tmp),
             dest,
-            count: 0,
+            dim,
+            written: HashSet::new(),
         })
     }
 
@@ -625,20 +621,28 @@ impl SearchIndex {
         Ok(())
     }
 
-    /// Remove specific chunk files from disk by their IDs.
-    pub fn remove_chunks(&self, chunk_ids: &[String]) -> Result<(), SearchError> {
+    /// Delete chunk files that no chunk in the manifest refers to, left behind
+    /// by edited and removed notes.
+    pub fn prune_chunks(&self) -> Result<(), SearchError> {
         let chunks_dir = self.base_dir.join("chunks");
         if !chunks_dir.exists() {
             return Ok(());
         }
 
-        for id in chunk_ids {
-            let fname = Self::chunk_filename(id);
-            let chunk_path = chunks_dir.join(format!("{fname}.txt"));
-            if chunk_path.exists() {
-                fs::remove_file(&chunk_path).map_err(|e| {
-                    SearchError::Storage(format!("Failed to remove chunk {id}: {e}"))
-                })?;
+        let live: HashSet<String> = self
+            .manifest
+            .chunks
+            .iter()
+            .map(|c| format!("{}.txt", Self::chunk_filename(&c.id)))
+            .collect();
+        let failed =
+            |e: std::io::Error| SearchError::Storage(format!("Failed to prune chunks: {e}"));
+
+        for entry in fs::read_dir(&chunks_dir).map_err(failed)? {
+            let entry = entry.map_err(failed)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".txt") && !live.contains(&name) {
+                fs::remove_file(entry.path()).map_err(failed)?;
             }
         }
 
@@ -675,61 +679,48 @@ impl SearchIndex {
 
 /// Streaming writer for `vectors.bin`, obtained via [`SearchIndex::begin_vector_write`].
 ///
-/// Wire format (matches [`SearchIndex::write_vectors`]):
-/// `[count: u64 LE][dim: u32 LE][vec0 as dim * 4 bytes]...[vecN as dim * 4 bytes]`.
-/// The count is written as a placeholder up front and patched in by
-/// [`Self::finish`], which is also where the file is atomically renamed into
-/// place — a build that fails before calling `finish` leaves the destination
-/// file untouched, same as today's all-at-once `write_vectors`.
+/// A build that fails before calling [`Self::finish`] leaves the existing file
+/// untouched.
 pub struct VectorWriter {
-    tmp: NamedTempFile,
+    tmp: BufWriter<NamedTempFile>,
     dest: PathBuf,
-    count: u64,
+    dim: usize,
+    written: HashSet<blake3::Hash>,
 }
 
 impl VectorWriter {
-    /// Append one batch of vectors, bounding peak memory to this batch
-    /// rather than the whole vault.
-    pub fn write_batch(&mut self, vectors: &[Vec<f32>]) -> Result<(), SearchError> {
-        if vectors.is_empty() {
-            return Ok(());
-        }
-
-        // One buffer, one write_all per batch — not one syscall per float.
-        let dim = vectors[0].len();
-        let mut buf: Vec<u8> = Vec::with_capacity(vectors.len() * dim * 4);
-        for vec in vectors {
-            for v in vec {
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-
-        self.tmp
-            .write_all(&buf)
-            .map_err(|e| SearchError::Storage(format!("Failed to write vector batch: {e}")))?;
-        self.count += vectors.len() as u64;
-        Ok(())
+    /// Whether a vector has already been written under `key`.
+    pub fn contains(&self, key: &blake3::Hash) -> bool {
+        self.written.contains(key)
     }
 
-    /// Patch in the final count and atomically persist the file.
-    pub fn finish(mut self) -> Result<(), SearchError> {
-        use std::io::{Seek, SeekFrom};
+    /// Append a vector. A key that is already present is ignored.
+    pub fn write(&mut self, key: blake3::Hash, vector: &[f32]) -> Result<(), SearchError> {
+        if vector.len() != self.dim {
+            // Same model name, different output: the server's model changed.
+            return Err(SearchError::Storage(format!(
+                "Embedding dimension changed from {} to {}; reindex with --reindex true",
+                self.dim,
+                vector.len()
+            )));
+        }
+        if !self.written.insert(key) {
+            return Ok(());
+        }
+        let values: Vec<u8> = vector.iter().flat_map(|v| v.to_le_bytes()).collect();
+        self.tmp
+            .write_all(key.as_bytes())
+            .and_then(|_| self.tmp.write_all(&values))
+            .map_err(|e| SearchError::Storage(format!("Failed to write vector: {e}")))
+    }
 
-        self.tmp
-            .flush()
+    /// Atomically persist the file.
+    pub fn finish(self) -> Result<(), SearchError> {
+        let tmp = self
+            .tmp
+            .into_inner()
             .map_err(|e| SearchError::Storage(format!("Failed to flush vectors: {e}")))?;
-        self.tmp
-            .as_file_mut()
-            .seek(SeekFrom::Start(0))
-            .map_err(|e| SearchError::Storage(format!("Failed to seek vectors header: {e}")))?;
-        self.tmp
-            .write_all(&self.count.to_le_bytes())
-            .map_err(|e| SearchError::Storage(format!("Failed to patch vectors count: {e}")))?;
-        self.tmp
-            .flush()
-            .map_err(|e| SearchError::Storage(format!("Failed to flush vectors: {e}")))?;
-
-        self.tmp.persist(&self.dest).map_err(|e| {
+        tmp.persist(&self.dest).map_err(|e| {
             SearchError::Storage(format!("Failed to persist vectors to {:?}: {e}", self.dest))
         })?;
         Ok(())
@@ -793,6 +784,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         );
 
@@ -814,6 +806,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         );
 
@@ -825,6 +818,7 @@ mod tests {
             chunk_ids: vec!["test.md:0:intro".to_string()],
         });
         manifest.chunks.push(ChunkEntry {
+            embedding_key: String::new(),
             id: "test.md:0:intro".to_string(),
             source_file: "test.md".to_string(),
             line_start: 0,
@@ -865,6 +859,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -888,6 +883,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -905,6 +901,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -969,6 +966,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1040,6 +1038,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1102,6 +1101,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1155,6 +1155,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1193,43 +1194,6 @@ mod tests {
         assert_eq!(text2, "More content here for testing.");
     }
 
-    #[test]
-    fn test_remove_chunks() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config();
-        let index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        let chunks = vec![Chunk {
-            id: "file1.md:0:a".to_string(),
-            source_file: "file1.md".to_string(),
-            line_start: 0,
-            line_end: 3,
-            heading: None,
-            heading_path: Vec::new(),
-            tags: vec![],
-            date: None,
-            text: "chunk one".to_string(),
-        }];
-
-        index.write_chunks(&chunks).unwrap();
-        assert!(index.read_chunk("file1.md:0:a").is_ok());
-
-        // Remove the chunk.
-        index.remove_chunks(&["file1.md:0:a".to_string()]).unwrap();
-        assert!(index.read_chunk("file1.md:0:a").is_err());
-    }
-
     // ---- Staleness diff tests (direct calls to compute_staleness_diff) ----
 
     /// Helper: create a FileInfo entry for a given path and content.
@@ -1252,6 +1216,7 @@ mod tests {
                 overlap_tokens: 64,
                 min_chunk_size: 32,
                 merge_threshold: 30,
+                exclude_headings: Vec::new(),
             },
         )
     }
@@ -1431,6 +1396,7 @@ mod tests {
             overlap_tokens: 64,
             min_chunk_size: 32,
             merge_threshold: 5,
+            exclude_headings: Vec::new(),
         };
         manifest.files.push(make_file_info("note.md", "content"));
 
@@ -1556,6 +1522,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1583,6 +1550,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1610,6 +1578,7 @@ mod tests {
                     overlap_tokens: 64,
                     min_chunk_size: 32,
                     merge_threshold: 5,
+                    exclude_headings: Vec::new(),
                 },
             ),
         };
@@ -1632,6 +1601,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();
@@ -1640,62 +1610,71 @@ mod tests {
         index.remove_vectors().unwrap();
     }
 
-    #[test]
-    fn test_vector_writer_streams_batches_matching_write_vectors() {
-        let tmp = TempDir::new().unwrap();
+    fn open(dir: &Path) -> SearchIndex {
         let config = test_config();
-
-        let index = SearchIndex::open_or_create(
-            tmp.path(),
+        SearchIndex::open_or_create(
+            dir,
             config.search.model_id.clone(),
             config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
+            ChunkConfigSnapshot::from_config(&config),
         )
-        .unwrap();
-
-        let dim = 4u32;
-        let batch1 = vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]];
-        let batch2 = vec![vec![9.0, 10.0, 11.0, 12.0]];
-
-        let mut writer = index.begin_vector_write(dim).unwrap();
-        writer.write_batch(&batch1).unwrap();
-        writer.write_batch(&batch2).unwrap();
-        writer.finish().unwrap();
-
-        let read_back = index.read_vectors().unwrap();
-        let mut expected = batch1;
-        expected.extend(batch2);
-        assert_eq!(read_back, expected);
+        .unwrap()
     }
 
     #[test]
-    fn test_vector_writer_empty_batches_produce_zero_count() {
+    fn test_vectors_round_trip_by_key() {
         let tmp = TempDir::new().unwrap();
-        let config = test_config();
+        let index = open(tmp.path());
+        let (a, b) = (blake3::hash(b"a"), blake3::hash(b"b"));
 
-        let index = SearchIndex::open_or_create(
-            tmp.path(),
-            config.search.model_id.clone(),
-            config.search.embedding_dim,
-            ChunkConfigSnapshot {
-                max_tokens: config.search.max_seq_tokens,
-                overlap_tokens: config.search.chunk_overlap_tokens,
-                min_chunk_size: config.search.min_chunk_tokens,
-                merge_threshold: config.search.merge_threshold,
-            },
-        )
-        .unwrap();
-
-        let writer = index.begin_vector_write(4).unwrap();
+        let mut writer = index.begin_vector_write(2).unwrap();
+        writer.write(a, &[1.0, 2.0]).unwrap();
+        writer.write(b, &[3.0, 4.0]).unwrap();
+        writer.write(a, &[9.0, 9.0]).unwrap();
         writer.finish().unwrap();
 
-        let read_back = index.read_vectors().unwrap();
-        assert!(read_back.is_empty());
+        let vectors = index.read_vectors().unwrap();
+        assert_eq!(vectors.len(), 2);
+        assert_eq!(vectors[&a], vec![1.0, 2.0]);
+        assert_eq!(vectors[&b], vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_vector_writer_rejects_a_different_dimension() {
+        let tmp = TempDir::new().unwrap();
+        let mut writer = open(tmp.path()).begin_vector_write(2).unwrap();
+        assert!(writer.write(blake3::hash(b"a"), &[1.0]).is_err());
+    }
+
+    #[test]
+    fn test_read_vectors_rejects_a_truncated_file() {
+        let tmp = TempDir::new().unwrap();
+        let index = open(tmp.path());
+        let mut writer = index.begin_vector_write(2).unwrap();
+        writer.write(blake3::hash(b"a"), &[1.0, 2.0]).unwrap();
+        writer.finish().unwrap();
+
+        let path = tmp.path().join("vectors.bin");
+        let data = fs::read(&path).unwrap();
+        fs::write(&path, &data[..data.len() - 1]).unwrap();
+        assert!(index.read_vectors().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_lock_waits_for_the_current_holder() {
+        let tmp = TempDir::new().unwrap();
+        let held = SearchIndex::lock(tmp.path(), || {}).await.unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let second = SearchIndex::lock(tmp.path(), move || {
+            let _ = tx.send(());
+        });
+        let release = async {
+            rx.recv().await.unwrap();
+            drop(held);
+        };
+        let (second, ()) = tokio::join!(second, release);
+        assert!(second.is_ok());
     }
 
     // ---- Reindex cleanup preserves models/ ----
@@ -1715,6 +1694,7 @@ mod tests {
                 overlap_tokens: config.search.chunk_overlap_tokens,
                 min_chunk_size: config.search.min_chunk_tokens,
                 merge_threshold: config.search.merge_threshold,
+                exclude_headings: Vec::new(),
             },
         )
         .unwrap();

@@ -62,7 +62,10 @@ pub struct IndexResponse {
     pub files_indexed: usize,
     /// Number of chunks produced
     pub chunks_produced: usize,
-    /// Whether embeddings were computed
+    /// Number of chunks sent to the embedding endpoint; the rest reused
+    /// stored vectors
+    pub chunks_embedded: usize,
+    /// Whether every chunk has an embedding
     pub has_embeddings: bool,
     /// Overall content hash
     pub content_hash: String,
@@ -204,36 +207,7 @@ impl SearchCapability {
             config.search.embedding_dim = dim;
         }
 
-        // If --reindex, wipe index artifacts (preserve models/).
-        if reindex {
-            let index_dir = config.search.resolve_index_dir(&self.base_path);
-            if index_dir.exists() {
-                let index = crate::storage::SearchIndex::open_or_create(
-                    &index_dir,
-                    config.search.model_id.clone(),
-                    config.search.embedding_dim,
-                    crate::storage::ChunkConfigSnapshot {
-                        max_tokens: config.search.max_seq_tokens,
-                        overlap_tokens: config.search.chunk_overlap_tokens,
-                        min_chunk_size: config.search.min_chunk_tokens,
-                        merge_threshold: config.search.merge_threshold,
-                    },
-                )
-                .map_err(|e| internal_error(format!("Failed to open index for cleanup: {e}")))?;
-
-                index
-                    .remove_manifest()
-                    .map_err(|e| internal_error(format!("Failed to remove manifest: {e}")))?;
-                index
-                    .clear_chunks()
-                    .map_err(|e| internal_error(format!("Failed to clear chunks: {e}")))?;
-                index
-                    .remove_vectors()
-                    .map_err(|e| internal_error(format!("Failed to remove vectors: {e}")))?;
-            }
-        }
-
-        let summary = crate::index::build_index(&self.base_path, &config, progress)
+        let summary = crate::index::build_index(&self.base_path, &config, reindex, progress)
             .await
             .map_err(|e| internal_error(format!("Index build failed: {e}")))?;
 
@@ -242,6 +216,7 @@ impl SearchCapability {
         Ok(IndexResponse {
             files_indexed: summary.files_indexed,
             chunks_produced: summary.chunks_produced,
+            chunks_embedded: summary.chunks_embedded,
             has_embeddings: summary.has_embeddings,
             content_hash: summary.content_hash,
             duration_ms,
@@ -796,7 +771,7 @@ mod build_index_tests {
         // produce. If the --reindex cleanup path actually runs, clear_chunks() removes the
         // entire chunks/ directory, so this sentinel must be gone afterward.
         fs::write(
-            index_dir.join("chunks").join("_stale_sentinel.txt"),
+            index_dir.join("chunks").join("_stale_sentinel.bin"),
             b"stale",
         )
         .unwrap();
@@ -835,7 +810,7 @@ mod build_index_tests {
         assert!(
             !index_dir
                 .join("chunks")
-                .join("_stale_sentinel.txt")
+                .join("_stale_sentinel.bin")
                 .exists(),
             "stale sentinel chunk file must be removed by --reindex cleanup, proving the wipe actually ran"
         );

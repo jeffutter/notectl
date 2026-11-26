@@ -173,12 +173,7 @@ pub async fn search(
     let index_dir = config.search.resolve_index_dir(base_path);
 
     // Ensure the index directory exists (open_or_create creates it if missing).
-    let chunk_config = ChunkConfigSnapshot {
-        max_tokens: config.search.max_seq_tokens,
-        overlap_tokens: config.search.chunk_overlap_tokens,
-        min_chunk_size: config.search.min_chunk_tokens,
-        merge_threshold: config.search.merge_threshold,
-    };
+    let chunk_config = ChunkConfigSnapshot::from_config(config);
 
     let mut index = SearchIndex::open_or_create(
         &index_dir,
@@ -196,7 +191,7 @@ pub async fn search(
         }
         _ if !options.no_reindex => {
             // Rebuild the index to pick up changes.
-            let summary = crate::index::build_index(base_path, config, progress).await?;
+            let summary = crate::index::build_index(base_path, config, false, progress).await?;
             tracing::info!(
                 "Reindex complete: {} files, {} chunks, embeddings={}",
                 summary.files_indexed,
@@ -242,13 +237,27 @@ pub async fn search(
 
     // Read dense vectors ONCE if the requested mode could use them.
     // For Sparse mode, skip entirely — has_vectors cannot affect the outcome.
-    let raw_vectors: Vec<Vec<f32>> = if options.mode.needs_dense() {
-        index.read_vectors().unwrap_or_default()
+    // Chunks without a vector are left out of dense ranking;
+    // `vector_chunks[i]` is the chunk that `raw_vectors[i]` belongs to.
+    let (vector_chunks, raw_vectors): (Vec<usize>, Vec<Vec<f32>>) = if options.mode.needs_dense() {
+        let stored = index.read_vectors().unwrap_or_else(|e| {
+            tracing::warn!("{e}. Searching without dense vectors.");
+            Default::default()
+        });
+        manifest
+            .chunks
+            .iter()
+            .enumerate()
+            .filter_map(|(chunk_idx, entry)| {
+                let key = blake3::Hash::from_hex(&entry.embedding_key).ok()?;
+                Some((chunk_idx, stored.get(&key)?.clone()))
+            })
+            .unzip()
     } else {
-        Vec::new()
+        Default::default()
     };
 
-    let has_vectors = !raw_vectors.is_empty() && raw_vectors.len() == manifest.chunks.len();
+    let has_vectors = !raw_vectors.is_empty();
 
     // -----------------------------------------------------------------------
     // Steps 2-4: Load artifacts, embed query, score & rank
@@ -373,7 +382,8 @@ pub async fn search(
     // Score & rank based on the typed inputs.
     let fused: Vec<(usize, f64)> = match inputs {
         ScoreInputs::Dense { query_vec, vectors } => {
-            let dense_scores = cosine_top_k(&vectors, &query_vec, options.max_results);
+            let dense_scores =
+                score_dense(&vectors, &vector_chunks, &query_vec, options.max_results);
             rrf_fuse(
                 &dense_scores,
                 &[],
@@ -398,7 +408,12 @@ pub async fn search(
             indexer,
         } => {
             // Use 2x max_results for cosine to give BM25 long-tail terms a chance.
-            let dense_scores = cosine_top_k(&vectors, &query_vec, options.max_results * 2);
+            let dense_scores = score_dense(
+                &vectors,
+                &vector_chunks,
+                &query_vec,
+                options.max_results * 2,
+            );
             let sparse_scores = indexer.score_query(query);
             rrf_fuse(
                 &dense_scores,
@@ -464,6 +479,19 @@ pub async fn search(
         results,
         mode_used: final_mode,
     })
+}
+
+/// Cosine top-k over `vectors`, reported as chunk indices.
+fn score_dense(
+    vectors: &[Vec<f32>],
+    vector_chunks: &[usize],
+    query_vec: &[f32],
+    k: usize,
+) -> Vec<(usize, f32)> {
+    cosine_top_k(vectors, query_vec, k)
+        .into_iter()
+        .map(|(i, score)| (vector_chunks[i], score))
+        .collect()
 }
 
 /// Apply recency weighting to fused search results.
@@ -576,6 +604,7 @@ mod tests {
             overlap_tokens: config.search.chunk_overlap_tokens,
             min_chunk_size: config.search.min_chunk_tokens,
             merge_threshold: config.search.merge_threshold,
+            exclude_headings: Vec::new(),
         };
         let mut index = SearchIndex::open_or_create(
             &config.search.resolve_index_dir(base),
@@ -1033,6 +1062,7 @@ mod tests {
             overlap_tokens: config.search.chunk_overlap_tokens,
             min_chunk_size: config.search.min_chunk_tokens,
             merge_threshold: config.search.merge_threshold,
+            exclude_headings: Vec::new(),
         };
         let index = crate::storage::SearchIndex::open_or_create(
             &index_dir,
@@ -1046,8 +1076,12 @@ mod tests {
         let chunk_count = index.manifest().chunks.len();
         assert!(chunk_count > 0, "Expected chunks in manifest");
         let dim = config.search.embedding_dim as usize;
-        let fake_vectors: Vec<Vec<f32>> = vec![vec![0.1f32; dim]; chunk_count];
-        index.write_vectors(&fake_vectors).unwrap();
+        let mut writer = index.begin_vector_write(dim).unwrap();
+        for entry in &index.manifest().chunks {
+            let key = blake3::Hash::from_hex(&entry.embedding_key).unwrap();
+            writer.write(key, &vec![0.1f32; dim]).unwrap();
+        }
+        writer.finish().unwrap();
 
         // Now search with Dense mode. The model cache dir doesn't have a downloaded model,
         // so Embedder::is_ready() == false, but has_vectors == true (fake vectors.bin).
@@ -1190,6 +1224,7 @@ mod tests {
                 overlap_tokens: 64,
                 min_chunk_size: 32,
                 merge_threshold: 30,
+                exclude_headings: Vec::new(),
             },
             files: vec![
                 crate::storage::FileInfo {
@@ -1215,6 +1250,7 @@ mod tests {
                     heading_path: Vec::new(),
                     tags: vec![],
                     date: Some(1_700_000_000),
+                    embedding_key: String::new(),
                 },
                 crate::storage::ChunkEntry {
                     id: "new:0".to_string(),
@@ -1225,6 +1261,7 @@ mod tests {
                     heading_path: Vec::new(),
                     tags: vec![],
                     date: Some(1_800_000_000),
+                    embedding_key: String::new(),
                 },
             ],
             content_hash: String::new(),
@@ -1253,10 +1290,12 @@ mod tests {
                 overlap_tokens: 64,
                 min_chunk_size: 32,
                 merge_threshold: 30,
+                exclude_headings: Vec::new(),
             },
             files: vec![],
             chunks: vec![
                 crate::storage::ChunkEntry {
+                    embedding_key: String::new(),
                     id: "old:0".to_string(),
                     source_file: "old.md".to_string(),
                     line_start: 0,
@@ -1267,6 +1306,7 @@ mod tests {
                     date: Some(1_700_000_000), // older
                 },
                 crate::storage::ChunkEntry {
+                    embedding_key: String::new(),
                     id: "new:0".to_string(),
                     source_file: "new.md".to_string(),
                     line_start: 0,
@@ -1306,6 +1346,7 @@ mod tests {
                 overlap_tokens: 64,
                 min_chunk_size: 32,
                 merge_threshold: 30,
+                exclude_headings: Vec::new(),
             },
             files: vec![],
             chunks: vec![
@@ -1318,6 +1359,7 @@ mod tests {
                     heading_path: Vec::new(),
                     tags: vec![],
                     date: Some(1_750_000_000),
+                    embedding_key: String::new(),
                 },
                 crate::storage::ChunkEntry {
                     id: "b:0".to_string(),
@@ -1328,6 +1370,7 @@ mod tests {
                     heading_path: Vec::new(),
                     tags: vec![],
                     date: Some(1_750_000_000),
+                    embedding_key: String::new(),
                 },
             ],
             content_hash: String::new(),
@@ -1357,6 +1400,7 @@ mod tests {
                 overlap_tokens: 64,
                 min_chunk_size: 32,
                 merge_threshold: 30,
+                exclude_headings: Vec::new(),
             },
             files: vec![crate::storage::FileInfo {
                 path: "no-date.md".to_string(),
@@ -1365,6 +1409,7 @@ mod tests {
                 chunk_ids: vec!["no-date:0".to_string()],
             }],
             chunks: vec![crate::storage::ChunkEntry {
+                embedding_key: String::new(),
                 id: "no-date:0".to_string(),
                 source_file: "no-date.md".to_string(),
                 line_start: 0,
@@ -1384,5 +1429,13 @@ mod tests {
 
         // Should not panic and should produce results using mtime fallback
         assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn dense_scores_name_chunks_not_vector_positions() {
+        // Chunks 0 and 2 have no vector.
+        let vectors = vec![vec![0.0, 1.0], vec![1.0, 0.0]];
+        let scores = score_dense(&vectors, &[1, 3], &[1.0, 0.0], 2);
+        assert_eq!(scores, vec![(3, 1.0), (1, 0.0)]);
     }
 }
